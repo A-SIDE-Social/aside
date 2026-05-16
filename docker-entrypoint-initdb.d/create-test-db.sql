@@ -1,0 +1,2 @@
+CREATE DATABASE aside_test;
+GRANT ALL PRIVILEGES ON DATABASE aside_test TO aside;

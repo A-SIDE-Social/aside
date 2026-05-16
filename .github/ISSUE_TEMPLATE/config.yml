@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/aside-social/aside/security/policy
+    about: For security issues, do NOT open a public issue. See SECURITY.md.
+  - name: Hosted A/SIDE support
+    url: mailto:hello@a-side.social
+    about: If you use the hosted product at a-side.social and need help with your account.

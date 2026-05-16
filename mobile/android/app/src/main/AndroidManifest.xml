@@ -1,0 +1,73 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Android 14+ (API 34): required to receive Activity.register
+         ScreenCaptureCallback notifications when the user takes a
+         screenshot of our app. No-op on devices below API 34. Pairs
+         with org.lab1908.kin.kin.ScreenshotPlugin. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
+    <application
+        android:label="A/SIDE"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name="org.lab1908.kin.kin.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- Android App Links: handle https://example.com/<slug>
+                 taps directly without showing a browser disambiguator.
+                 `autoVerify="true"` tells Android to verify ownership
+                 by fetching /.well-known/assetlinks.json from the host
+                 on install. `pathPattern=".{12}"` narrows the match
+                 to slug-shaped paths only — single-segment, exactly
+                 12 characters — so /about, /blog/* etc. continue to
+                 open in the browser. (Android's pathPattern is a
+                 glob, not a full regex; we rely on the AASA + server
+                 side validating slug shape, this filter is a coarse
+                 cut at the OS layer.) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"
+                      android:host="example.com"
+                      android:pathPattern="/............"/>
+                <data android:scheme="https"
+                      android:host="www.example.com"
+                      android:pathPattern="/............"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

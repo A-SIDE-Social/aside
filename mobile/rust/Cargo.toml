@@ -1,0 +1,49 @@
+[package]
+name = "aside_crypto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+
+# Signal's first-party Rust impl. Not on crates.io — pulled via git
+# and pinned to a specific commit for reproducible builds. This rev
+# is the one Phase 1a/1b pipeline was validated against. Update with
+# `cargo update -p libsignal-protocol` after review.
+# Exposes IdentityKeyPair, SignedPreKeyRecord, PreKeyRecord, the
+# whole X3DH + Double Ratchet machinery, and sender-key group
+# crypto. For Phase 1a/1b we only exercise the key-material types;
+# Phase 1e brings in the sessions.
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", rev = "98915c442d814cd420f4e1a15630ade0d48e66ae" }
+
+# Needed for the CSPRNG passed into libsignal's `generate` calls.
+# Pinned to rand 0.9 to match libsignal's workspace (rand_core 0.9
+# has a different CryptoRng trait from 0.6 — can't mix).
+rand = "0.9"
+anyhow = "1"
+
+# AEAD for DM attachment blob encryption (Phase 1g). ChaCha20-
+# Poly1305 over AES-GCM because it's what Signal uses for file
+# encryption, and it's constant-time on platforms without AES
+# hardware acceleration. We generate a fresh 32-byte key per
+# attachment and prepend the 12-byte nonce to the ciphertext.
+chacha20poly1305 = "0.10"
+
+# libsignal's session APIs (process_prekey_bundle, message_encrypt,
+# message_decrypt) are async. The InMem stores we feed them don't
+# actually do I/O though — pure memory access — so a simple blocking
+# executor is sufficient. Already a transitive dep via flutter_rust_
+# bridge + libsignal; making it explicit for the import path.
+futures = "0.3"
+
+# Sender-key group messaging (Phase 1f) uses `uuid::Uuid` as the
+# distribution identifier. libsignal's workspace pins `uuid = "1.5"`;
+# we accept any 1.x — semver-compatible interop with whatever
+# libsignal pulls in is what we want here.
+uuid = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

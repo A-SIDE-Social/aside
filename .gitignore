@@ -1,0 +1,22 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+
+# Local / env
+.env
+.env.local
+.DS_Store
+tmp/
+
+# Logs
+*.log
+
+# Secrets — never commit
+*.p8
+*-firebase-adminsdk-*.json
+firebase-service-account.json
+
+# Runtime artifacts
+uploads/

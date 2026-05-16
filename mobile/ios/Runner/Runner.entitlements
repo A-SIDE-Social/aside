@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>development</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.lab1908.instadamn</string>
+	</array>
+	<!-- Universal Links: tells iOS that this app handles
+	     https://example.com/... and https://www.example.com/...
+	     URLs. The AASA file at /.well-known/apple-app-site-association
+	     narrows the paths to slug-shaped only. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:example.com</string>
+		<string>applinks:www.example.com</string>
+	</array>
+</dict>
+</plist>
