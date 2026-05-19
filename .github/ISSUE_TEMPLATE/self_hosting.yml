@@ -2,6 +2,7 @@ name: Self-hosting or local setup help
 description: Report setup, build, configuration, Docker, Firebase, or deployment trouble.
 title: "[Self-hosting]: "
 labels:
+  - "type: question"
   - "area: self-hosting"
   - "status: needs triage"
 body:
