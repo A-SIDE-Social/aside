@@ -135,6 +135,24 @@ Match the checks to the files changed:
 - Public behavior fixes should include a regression test whenever
   feasible.
 
+## Issue labels
+
+Maintainers use labels to make triage predictable:
+
+- `type: *` describes the kind of work: bug, feature, docs,
+  security, maintenance, question.
+- `area: *` identifies ownership: mobile, server, e2ee,
+  self-hosting, push notifications, subscriptions, admin, docs,
+  ci.
+- `priority: p0` through `priority: p3` describes urgency. `p0`
+  is reserved for security incidents, production outages, or
+  serious data-loss/privacy problems.
+- `status: *` describes where the issue is in triage: needs
+  triage, needs repro, accepted, blocked, duplicate, not planned,
+  or not actionable.
+- `good first issue` and `help wanted` mean the issue is suitable
+  for contributors outside the maintainer team.
+
 ## Disclosure
 
 For security vulnerabilities, **please don't open a public issue.**

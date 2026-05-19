@@ -1,0 +1,99 @@
+name: Bug report
+description: Report something broken in the backend, mobile app, or self-hosted setup.
+title: "[Bug]: "
+labels:
+  - "type: bug"
+  - "status: needs triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For security vulnerabilities, do not open a public issue. Use the security contact in `SECURITY.md`.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Pick the closest area. Maintainers may relabel during triage.
+      options:
+        - Mobile app
+        - Backend/API
+        - End-to-end encrypted DMs
+        - Push notifications
+        - Subscriptions/paywall
+        - Self-hosting/setup
+        - Admin/broadcast tooling
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: Tapping an existing emoji reaction from post detail leaves it selected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Give exact steps. If this only happens sometimes, include what makes it more likely.
+      placeholder: |
+        1. Open a post detail screen.
+        2. Tap an emoji reaction that I already selected.
+        3. Observe that it stays selected.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: App version/build number, git commit, Docker image tag, or branch.
+      placeholder: "1.3.0 / v1.3.0 / commit SHA"
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Hosted A/SIDE
+        - Self-hosted
+        - Local development
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Device, OS, browser, Docker/Postgres versions, or other relevant setup details.
+      placeholder: |
+        iPhone 15 Pro, iOS 18.5
+        Android 15 emulator
+        Docker Desktop 4.x, Postgres 16
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or screen recording
+      description: Redact tokens, emails, phone numbers, private keys, and user content.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submit checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed or redacted private user data, secrets, and credentials.
+          required: true

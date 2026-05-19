@@ -1,0 +1,64 @@
+name: Feature request
+description: Propose a product or developer-experience improvement.
+title: "[Feature]: "
+labels:
+  - "type: feature"
+  - "status: needs triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A/SIDE has a narrow product scope: closed network, chronological feed, no ads, no tracking SDKs, no AI training on user content, and E2EE DMs. Requests that conflict with those principles are better as forks than upstream PRs.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Mobile app
+        - Backend/API
+        - End-to-end encrypted DMs
+        - Self-hosting/setup
+        - Admin/broadcast tooling
+        - Documentation
+        - Developer tooling
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or maintainer problem should this solve?
+      placeholder: It is hard for self-hosters to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest useful version of the change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else could solve this, and why is this proposal better?
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and scope
+      description: Note migration, self-hosting, App Store, API, or privacy implications.
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Design principles
+      options:
+        - label: This does not add public profiles, search, discovery, federation, or algorithmic ranking.
+          required: true
+        - label: This does not weaken or bypass E2EE DMs.
+          required: true
+        - label: This does not add ads, tracking SDKs, analytics, or user-content training.
+          required: true
+        - label: I understand maintainers may close requests outside the project scope.
+          required: true
