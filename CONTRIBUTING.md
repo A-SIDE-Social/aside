@@ -97,13 +97,43 @@ cd mobile && flutter pub get && flutter run
 
 1. Open an issue first for anything that isn't a small bug fix.
 2. Fork, branch from `main`, push your branch.
-3. Open a PR. Include:
-   - What changed and why.
-   - How to test it.
-   - Screenshots / video for UI changes.
+3. Open a PR using the project template. Replace every placeholder
+   with concrete details before requesting review.
 4. CI must pass. Reviewer feedback gets addressed in additional
    commits (we squash on merge, so commit hygiene on the PR
    branch isn't critical).
+
+### PR description standard
+
+Every PR should make review possible without reconstructing intent
+from the diff. Include:
+
+- **Summary:** What changed, in plain language.
+- **Problem:** The bug, risk, or user need this addresses.
+- **Implementation notes:** Any non-obvious design choices,
+  tradeoffs, or compatibility concerns.
+- **Tests:** Exact commands run and whether they passed. If a
+  relevant test was not run, say why.
+- **UI evidence:** Screenshots or video for visible UI changes.
+- **Risk / rollback:** What could break and how to revert or
+  mitigate it.
+
+Small documentation-only PRs can keep this brief, but they should
+still include summary and validation notes.
+
+### Testing expectations
+
+Match the checks to the files changed:
+
+- Server changes: run `npm run lint`; run `npm test` for behavior
+  changes.
+- Mobile changes: run `cd mobile && flutter analyze`; run focused
+  tests for the touched area and `flutter test` before merge when
+  practical.
+- Rust crypto changes: run `cd mobile/rust && cargo test`, and
+  request security-focused review.
+- Public behavior fixes should include a regression test whenever
+  feasible.
 
 ## Disclosure
 
