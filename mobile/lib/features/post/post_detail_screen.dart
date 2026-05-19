@@ -46,10 +46,9 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
   int? _likeCountOverride;
 
   // Local reaction override — when non-null, takes precedence over
-  // post.reactions for rendering. Set after a successful toggle via
-  // the API (we replace with the server's authoritative response).
-  // Stays in sync with the feed provider via the parallel call to
-  // feedNotifier.toggleReaction below.
+  // post.reactions for rendering. Set optimistically, then replaced
+  // with the server's authoritative response returned by the feed
+  // provider.
   List<PostReaction>? _reactionsOverride;
 
   @override
@@ -137,49 +136,19 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
     );
   }
 
-  /// Toggle an emoji reaction on the detail screen. Mirrors the
-  /// _toggleLike pattern: optimistic local override + parallel call
-  /// to feedNotifier so the cached feed updates too. Replaces the
-  /// override with the server's canonical reactions list when the
-  /// toggle round-trips successfully.
+  /// Toggle an emoji reaction on the detail screen. The feed provider
+  /// owns the API call so the feed cache and detail screen stay in
+  /// sync without sending two server toggles for one tap.
   Future<void> _toggleReaction(Post post, String emoji) async {
     final current = _reactionsOverride ?? post.reactions;
-    final next = <PostReaction>[];
-    var found = false;
-    for (final r in current) {
-      if (r.emoji != emoji) {
-        next.add(r);
-        continue;
-      }
-      found = true;
-      final newCount = r.reactedByMe ? r.count - 1 : r.count + 1;
-      if (newCount > 0) {
-        next.add(r.copyWith(
-          count: newCount,
-          reactedByMe: !r.reactedByMe,
-        ));
-      }
-    }
-    if (!found) {
-      next.add(PostReaction(emoji: emoji, count: 1, reactedByMe: true));
-    }
+    final next = togglePostReactionList(current, emoji);
     setState(() => _reactionsOverride = next);
 
-    // Keep feed in sync — fire-and-forget; feed provider does its
-    // own optimistic + server-replace cycle.
-    ref.read(feedNotifierProvider.notifier).toggleReaction(post.id, emoji);
-
-    try {
-      final api = ref.read(apiServiceProvider);
-      final serverReactions = await api.togglePostReaction(post.id, emoji);
-      if (!mounted) return;
-      final parsed = serverReactions
-          .map((r) => PostReaction.fromJson(r as Map<String, dynamic>))
-          .toList();
-      setState(() => _reactionsOverride = parsed);
-    } catch (_) {
-      // Optimistic guess stays. Next provider invalidation re-syncs.
-    }
+    final serverReactions = await ref
+        .read(feedNotifierProvider.notifier)
+        .toggleReaction(post.id, emoji);
+    if (!mounted || serverReactions == null) return;
+    setState(() => _reactionsOverride = serverReactions);
   }
 
   void _cancelEdit() {

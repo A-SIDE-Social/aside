@@ -56,44 +56,52 @@ class _PostCardState extends State<PostCard>
   // photo. Pop-in (scale 0.4 → 1.2 with overshoot ease), settle
   // (1.2 → 1.0), hold, then fade out. Total ~700 ms — long enough
   // to register, short enough not to block scrolling.
-  late final AnimationController _heartCtrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 700),
-  );
-  late final Animation<double> _heartScale = TweenSequence<double>([
-    TweenSequenceItem(
-      tween:
-          Tween(begin: 0.4, end: 1.25).chain(CurveTween(curve: Curves.easeOut)),
-      weight: 25,
-    ),
-    TweenSequenceItem(
-      tween:
-          Tween(begin: 1.25, end: 1.0).chain(CurveTween(curve: Curves.easeIn)),
-      weight: 15,
-    ),
-    TweenSequenceItem(
-      tween: ConstantTween(1.0),
-      weight: 35,
-    ),
-    TweenSequenceItem(
-      tween:
-          Tween(begin: 1.0, end: 1.15).chain(CurveTween(curve: Curves.easeOut)),
-      weight: 25,
-    ),
-  ]).animate(_heartCtrl);
-  late final Animation<double> _heartOpacity = TweenSequence<double>([
-    TweenSequenceItem(
-      tween:
-          Tween(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeOut)),
-      weight: 15,
-    ),
-    TweenSequenceItem(tween: ConstantTween(1.0), weight: 60),
-    TweenSequenceItem(
-      tween:
-          Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeIn)),
-      weight: 25,
-    ),
-  ]).animate(_heartCtrl);
+  late final AnimationController _heartCtrl;
+  late final Animation<double> _heartScale;
+  late final Animation<double> _heartOpacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _heartCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _heartScale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween(begin: 0.4, end: 1.25)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 25,
+      ),
+      TweenSequenceItem(
+        tween: Tween(begin: 1.25, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeIn)),
+        weight: 15,
+      ),
+      TweenSequenceItem(
+        tween: ConstantTween(1.0),
+        weight: 35,
+      ),
+      TweenSequenceItem(
+        tween: Tween(begin: 1.0, end: 1.15)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 25,
+      ),
+    ]).animate(_heartCtrl);
+    _heartOpacity = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween(begin: 0.0, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 15,
+      ),
+      TweenSequenceItem(tween: ConstantTween(1.0), weight: 60),
+      TweenSequenceItem(
+        tween:
+            Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeIn)),
+        weight: 25,
+      ),
+    ]).animate(_heartCtrl);
+  }
 
   @override
   void dispose() {

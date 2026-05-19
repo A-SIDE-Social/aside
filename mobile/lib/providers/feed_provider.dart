@@ -131,44 +131,22 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
   /// after a successful toggle, so success replaces; failure is
   /// rare enough that "guess stuck for one tick, refresh fixes it"
   /// is the right v1 trade-off.
-  Future<void> toggleReaction(String postId, String emoji) async {
+  Future<List<PostReaction>?> toggleReaction(
+      String postId, String emoji) async {
     final current = state.value;
-    if (current == null) return;
+    if (current != null) {
+      final index = current.indexWhere((p) => p.id == postId);
+      if (index != -1) {
+        final post = current[index];
+        final optimisticReactions =
+            togglePostReactionList(post.reactions, emoji);
 
-    final post = current.firstWhere(
-      (p) => p.id == postId,
-      orElse: () => current.first,
-    );
-    if (post.id != postId) return;
-
-    // Optimistic: find existing entry for this emoji, flip + adjust.
-    final optimisticReactions = <PostReaction>[];
-    var found = false;
-    for (final r in post.reactions) {
-      if (r.emoji != emoji) {
-        optimisticReactions.add(r);
-        continue;
+        state = AsyncValue.data(current.map((p) {
+          if (p.id != postId) return p;
+          return p.copyWith(reactions: optimisticReactions);
+        }).toList());
       }
-      found = true;
-      final newCount = r.reactedByMe ? r.count - 1 : r.count + 1;
-      if (newCount > 0) {
-        optimisticReactions.add(r.copyWith(
-          count: newCount,
-          reactedByMe: !r.reactedByMe,
-        ));
-      }
-      // newCount == 0 → drop the entry entirely.
     }
-    if (!found) {
-      optimisticReactions.add(
-        PostReaction(emoji: emoji, count: 1, reactedByMe: true),
-      );
-    }
-
-    state = AsyncValue.data(current.map((p) {
-      if (p.id != postId) return p;
-      return p.copyWith(reactions: optimisticReactions);
-    }).toList());
 
     try {
       final api = ref.read(apiServiceProvider);
@@ -178,14 +156,17 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
           .map((r) => PostReaction.fromJson(r as Map<String, dynamic>))
           .toList();
       final latest = state.value;
-      if (latest == null) return;
-      state = AsyncValue.data(latest.map((p) {
-        if (p.id != postId) return p;
-        return p.copyWith(reactions: parsed);
-      }).toList());
+      if (latest != null && latest.any((p) => p.id == postId)) {
+        state = AsyncValue.data(latest.map((p) {
+          if (p.id != postId) return p;
+          return p.copyWith(reactions: parsed);
+        }).toList());
+      }
+      return parsed;
     } catch (_) {
       // Optimistic guess stays; next refresh will re-sync. See
       // method-level comment for why.
+      return null;
     }
   }
 

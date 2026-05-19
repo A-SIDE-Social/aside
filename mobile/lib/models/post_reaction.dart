@@ -39,3 +39,34 @@ class PostReaction {
     );
   }
 }
+
+List<PostReaction> togglePostReactionList(
+  List<PostReaction> current,
+  String emoji,
+) {
+  final next = <PostReaction>[];
+  var found = false;
+
+  for (final reaction in current) {
+    if (reaction.emoji != emoji) {
+      next.add(reaction);
+      continue;
+    }
+
+    found = true;
+    final newCount =
+        reaction.reactedByMe ? reaction.count - 1 : reaction.count + 1;
+    if (newCount > 0) {
+      next.add(reaction.copyWith(
+        count: newCount,
+        reactedByMe: !reaction.reactedByMe,
+      ));
+    }
+  }
+
+  if (!found) {
+    next.add(PostReaction(emoji: emoji, count: 1, reactedByMe: true));
+  }
+
+  return next;
+}

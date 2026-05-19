@@ -211,6 +211,105 @@ void main() {
       });
     });
 
+    group('toggleReaction', () {
+      test('optimistically removes own emoji reaction', () async {
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((_) async => {
+              'posts': [
+                postJson(id: 'p1', reactions: [
+                  {'emoji': '🔥', 'count': 1, 'reacted_by_me': true},
+                ]),
+              ]
+            });
+        when(() => mockApi.togglePostReaction('p1', '🔥'))
+            .thenAnswer((_) async => []);
+
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+
+        await Future.delayed(Duration.zero);
+        await Future.delayed(Duration.zero);
+
+        final future = notifier.toggleReaction('p1', '🔥');
+
+        var posts = container.read(feedNotifierProvider).value!;
+        expect(posts[0].reactions, isEmpty);
+
+        final canonical = await future;
+        expect(canonical, isEmpty);
+        posts = container.read(feedNotifierProvider).value!;
+        expect(posts[0].reactions, isEmpty);
+        verify(() => mockApi.togglePostReaction('p1', '🔥')).called(1);
+      });
+
+      test('replaces optimistic emoji reaction with canonical server state',
+          () async {
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((_) async => {
+              'posts': [
+                postJson(id: 'p1', reactions: [
+                  {'emoji': '🔥', 'count': 2, 'reacted_by_me': false},
+                ]),
+              ]
+            });
+        when(() => mockApi.togglePostReaction('p1', '🔥'))
+            .thenAnswer((_) async => [
+                  {'emoji': '🔥', 'count': 4, 'reacted_by_me': true},
+                ]);
+
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+
+        await Future.delayed(Duration.zero);
+        await Future.delayed(Duration.zero);
+
+        final future = notifier.toggleReaction('p1', '🔥');
+
+        var posts = container.read(feedNotifierProvider).value!;
+        expect(posts[0].reactions.single.count, 3);
+        expect(posts[0].reactions.single.reactedByMe, isTrue);
+
+        final canonical = await future;
+        expect(canonical?.single.count, 4);
+        expect(canonical?.single.reactedByMe, isTrue);
+        posts = container.read(feedNotifierProvider).value!;
+        expect(posts[0].reactions.single.count, 4);
+        expect(posts[0].reactions.single.reactedByMe, isTrue);
+        verify(() => mockApi.togglePostReaction('p1', '🔥')).called(1);
+      });
+
+      test('still calls the API when the post is not in the feed cache',
+          () async {
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((_) async => {'posts': []});
+        when(() => mockApi.togglePostReaction('missing-post', '🔥'))
+            .thenAnswer((_) async => [
+                  {'emoji': '🔥', 'count': 1, 'reacted_by_me': true},
+                ]);
+
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+
+        await Future.delayed(Duration.zero);
+        await Future.delayed(Duration.zero);
+
+        final canonical = await notifier.toggleReaction('missing-post', '🔥');
+
+        expect(canonical?.single.emoji, '🔥');
+        expect(canonical?.single.count, 1);
+        expect(canonical?.single.reactedByMe, isTrue);
+        expect(container.read(feedNotifierProvider).value, isEmpty);
+        verify(() => mockApi.togglePostReaction('missing-post', '🔥'))
+            .called(1);
+      });
+    });
+
     group('cursor pagination', () {
       // Build 25 regression: the cursor used to be `posts.last.id` (a UUID),
       // which the backend then bound to a `$2::timestamptz` parameter and
