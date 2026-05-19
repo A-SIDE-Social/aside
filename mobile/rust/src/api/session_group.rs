@@ -29,9 +29,9 @@
 
 use futures::executor::block_on;
 use libsignal_protocol::{
-    DeviceId, InMemSenderKeyStore, ProtocolAddress, SenderKeyDistributionMessage, SenderKeyMessage,
-    SenderKeyRecord, SenderKeyStore, create_sender_key_distribution_message, group_decrypt,
-    group_encrypt, process_sender_key_distribution_message,
+    create_sender_key_distribution_message, group_decrypt, group_encrypt,
+    process_sender_key_distribution_message, DeviceId, InMemSenderKeyStore, ProtocolAddress,
+    SenderKeyDistributionMessage, SenderKeyMessage, SenderKeyRecord, SenderKeyStore,
 };
 use uuid::Uuid;
 
@@ -159,16 +159,13 @@ pub fn process_group_sender_key(
     let sender = address_for(&sender_user_id)?;
     let distribution_id = parse_distribution_id(&conversation_id)?;
 
-    let mut store =
-        build_store_with(&sender, distribution_id, existing_sender_record.as_deref())?;
+    let mut store = build_store_with(&sender, distribution_id, existing_sender_record.as_deref())?;
 
     let skdm = SenderKeyDistributionMessage::try_from(skdm_bytes.as_slice())
         .map_err(|e| anyhow::anyhow!("SKDM parse: {e}"))?;
 
     block_on(process_sender_key_distribution_message(
-        &sender,
-        &skdm,
-        &mut store,
+        &sender, &skdm, &mut store,
     ))
     .map_err(|e| anyhow::anyhow!("process_sender_key_distribution_message: {e}"))?;
 
@@ -305,19 +302,18 @@ mod tests {
             alice_send1.ciphertext,
         )
         .unwrap();
-        assert_eq!(carol_got.plaintext, msg1, "carol decrypts alice's message 1");
+        assert_eq!(
+            carol_got.plaintext, msg1,
+            "carol decrypts alice's message 1"
+        );
 
         // Now Bob sends. His sender key chain is separate from
         // Alice's — he creates his own SKDM + distributes.
         let bob_skdm = create_group_sender_key(bob.clone(), conv_id.clone(), None).unwrap();
 
-        let alice_rec_for_bob = process_group_sender_key(
-            bob.clone(),
-            conv_id.clone(),
-            bob_skdm.skdm.clone(),
-            None,
-        )
-        .unwrap();
+        let alice_rec_for_bob =
+            process_group_sender_key(bob.clone(), conv_id.clone(), bob_skdm.skdm.clone(), None)
+                .unwrap();
         let carol_rec_for_bob =
             process_group_sender_key(bob.clone(), conv_id.clone(), bob_skdm.skdm, None).unwrap();
 
@@ -366,6 +362,9 @@ mod tests {
             alice_send2.ciphertext,
         )
         .unwrap();
-        assert_eq!(bob_got2.plaintext, msg3, "bob decrypts alice's second message on the same chain");
+        assert_eq!(
+            bob_got2.plaintext, msg3,
+            "bob decrypts alice's second message on the same chain"
+        );
     }
 }

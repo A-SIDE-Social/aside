@@ -6,6 +6,7 @@
 // Public halves are returned as a [PublicKeyBundle] for upload to
 // the server key registry (Phase 1c wires the actual endpoint).
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -198,6 +199,7 @@ class PublicKyberPreKey {
 class SignalClient {
   final KeyStorage _storage;
   bool _ffiReady = false;
+  final Map<String, Future<void>> _sessionTails = {};
 
   SignalClient(this._storage);
 
@@ -454,6 +456,21 @@ class SignalClient {
     return s != null;
   }
 
+  Future<T> _withPeerSessionLock<T>(
+    String peerUserId,
+    Future<T> Function() action,
+  ) {
+    final previous = _sessionTails[peerUserId] ?? Future<void>.value();
+    final run = previous.catchError((_) {}).then((_) => action());
+    final tail = run.then<void>((_) {}, onError: (_, __) {});
+    _sessionTails[peerUserId] = tail;
+    return run.whenComplete(() {
+      if (identical(_sessionTails[peerUserId], tail)) {
+        _sessionTails.remove(peerUserId);
+      }
+    });
+  }
+
   /// Derives our registration id from the stored identity public key.
   /// Deterministic — same algorithm in Rust — so peers can compute
   /// each other's registration id from identity_key_pub without it
@@ -482,6 +499,35 @@ class SignalClient {
     PeerKeyBundle bundle,
   ) async {
     await initialize();
+    return _withPeerSessionLock(
+      peerUserId,
+      () => _startSessionWithPeerUnlocked(ownUserId, peerUserId, bundle),
+    );
+  }
+
+  /// Atomically checks for an existing session and, only if absent,
+  /// fetches a fresh bundle and starts one. This closes the race where
+  /// two sends could both observe "no session", consume two server
+  /// bundles, then overwrite each other's local SessionRecord.
+  Future<StartSessionOutcome?> ensureSessionWithPeer(
+    String ownUserId,
+    String peerUserId,
+    Future<PeerKeyBundle> Function() fetchBundle,
+  ) async {
+    await initialize();
+    return _withPeerSessionLock(peerUserId, () async {
+      final existing = await _storage.loadSession(peerUserId);
+      if (existing != null) return null;
+      final bundle = await fetchBundle();
+      return _startSessionWithPeerUnlocked(ownUserId, peerUserId, bundle);
+    });
+  }
+
+  Future<StartSessionOutcome> _startSessionWithPeerUnlocked(
+    String ownUserId,
+    String peerUserId,
+    PeerKeyBundle bundle,
+  ) async {
     final identity = await _storage.loadIdentityKeyPair();
     if (identity == null) {
       throw StateError('no identity key; call generateInitialKeys() first');
@@ -580,31 +626,33 @@ class SignalClient {
     Uint8List plaintext,
   ) async {
     await initialize();
-    final identity = await _storage.loadIdentityKeyPair();
-    if (identity == null) {
-      throw StateError('no identity key; call generateInitialKeys() first');
-    }
-    final session = await _storage.loadSession(peerUserId);
-    if (session == null) {
-      throw StateError(
-        'no session with $peerUserId; call startSessionWithPeer() first',
-      );
-    }
-    final regId = deriveRegistrationId(identityPublicKey: identity.publicKey);
+    return _withPeerSessionLock(peerUserId, () async {
+      final identity = await _storage.loadIdentityKeyPair();
+      if (identity == null) {
+        throw StateError('no identity key; call generateInitialKeys() first');
+      }
+      final session = await _storage.loadSession(peerUserId);
+      if (session == null) {
+        throw StateError(
+          'no session with $peerUserId; call startSessionWithPeer() first',
+        );
+      }
+      final regId = deriveRegistrationId(identityPublicKey: identity.publicKey);
 
-    final result = encrypt1To1(
-      ownUserId: ownUserId,
-      remoteUserId: peerUserId,
-      ownIdentitySerialized: identity.serialized,
-      ownRegistrationId: regId,
-      sessionSerialized: session,
-      plaintext: plaintext,
-    );
-    await _storage.saveSession(peerUserId, result.updatedSessionSerialized);
-    return EncryptedMessage(
-      messageType: result.messageType,
-      ciphertext: result.ciphertext,
-    );
+      final result = encrypt1To1(
+        ownUserId: ownUserId,
+        remoteUserId: peerUserId,
+        ownIdentitySerialized: identity.serialized,
+        ownRegistrationId: regId,
+        sessionSerialized: session,
+        plaintext: plaintext,
+      );
+      await _storage.saveSession(peerUserId, result.updatedSessionSerialized);
+      return EncryptedMessage(
+        messageType: result.messageType,
+        ciphertext: result.ciphertext,
+      );
+    });
   }
 
   /// Decrypts a message from [peerUserId]. Dispatches by message
@@ -618,67 +666,77 @@ class SignalClient {
     Uint8List ciphertext,
   ) async {
     await initialize();
-    final identity = await _storage.loadIdentityKeyPair();
-    if (identity == null) {
-      throw StateError('no identity key; call generateInitialKeys() first');
-    }
-    final regId = deriveRegistrationId(identityPublicKey: identity.publicKey);
-
-    if (messageType == 2) {
-      // PreKey path — first message from this peer. We need to hand
-      // libsignal our SignedPreKey, all unconsumed OTPKs, and all
-      // unconsumed Kyber prekeys so it can pick the right ones the
-      // incoming PKM references.
-      final spk = await _storage.loadSignedPreKey();
-      if (spk == null) {
-        throw StateError('no signed prekey; call generateInitialKeys()');
+    return _withPeerSessionLock(peerUserId, () async {
+      final identity = await _storage.loadIdentityKeyPair();
+      if (identity == null) {
+        throw StateError('no identity key; call generateInitialKeys() first');
       }
+      final regId = deriveRegistrationId(identityPublicKey: identity.publicKey);
 
-      final otpkIds = await _storage.listOneTimePreKeyIds();
-      final otpkRecords = <Uint8List>[];
-      for (final id in otpkIds) {
-        final r = await _storage.loadOneTimePreKey(id);
-        if (r != null) otpkRecords.add(r.serialized);
-      }
+      if (messageType == 2) {
+        // PreKey path — first message from this peer. We need to hand
+        // libsignal our SignedPreKey, all unconsumed OTPKs, and all
+        // unconsumed Kyber prekeys so it can pick the right ones the
+        // incoming PKM references.
+        final spk = await _storage.loadSignedPreKey();
+        if (spk == null) {
+          throw StateError('no signed prekey; call generateInitialKeys()');
+        }
 
-      final kpkIds = await _storage.listKyberPreKeyIds();
-      final kpkRecords = <Uint8List>[];
-      for (final id in kpkIds) {
-        final r = await _storage.loadKyberPreKey(id);
-        if (r != null) kpkRecords.add(r.serialized);
-      }
+        final otpkIds = await _storage.listOneTimePreKeyIds();
+        final otpkRecords = <Uint8List>[];
+        for (final id in otpkIds) {
+          final r = await _storage.loadOneTimePreKey(id);
+          if (r != null) otpkRecords.add(r.serialized);
+        }
 
-      final result = decryptPrekey1To1(
-        ownUserId: ownUserId,
-        remoteUserId: peerUserId,
-        ownIdentitySerialized: identity.serialized,
-        ownRegistrationId: regId,
-        signedPrekeyRecordsSerialized: [spk.serialized],
-        oneTimePrekeyRecordsSerialized: otpkRecords,
-        kyberPrekeyRecordsSerialized: kpkRecords,
-        ciphertext: ciphertext,
-      );
-      await _storage.saveSession(peerUserId, result.updatedSessionSerialized);
-      return result.plaintext;
-    } else {
-      // Whisper / SignalMessage path — session must already exist.
-      final session = await _storage.loadSession(peerUserId);
-      if (session == null) {
-        throw StateError(
-          'no session with $peerUserId for SignalMessage decrypt',
+        final kpkIds = await _storage.listKyberPreKeyIds();
+        final kpkRecords = <Uint8List>[];
+        for (final id in kpkIds) {
+          final r = await _storage.loadKyberPreKey(id);
+          if (r != null) kpkRecords.add(r.serialized);
+        }
+
+        final result = decryptPrekey1To1(
+          ownUserId: ownUserId,
+          remoteUserId: peerUserId,
+          ownIdentitySerialized: identity.serialized,
+          ownRegistrationId: regId,
+          signedPrekeyRecordsSerialized: [spk.serialized],
+          oneTimePrekeyRecordsSerialized: otpkRecords,
+          kyberPrekeyRecordsSerialized: kpkRecords,
+          ciphertext: ciphertext,
         );
+        await _storage.saveSession(peerUserId, result.updatedSessionSerialized);
+        final consumedOtpk = result.consumedOneTimePrekeyId;
+        if (consumedOtpk != null) {
+          await _storage.deleteOneTimePreKey(consumedOtpk);
+        }
+        final consumedKpk = result.consumedKyberPrekeyId;
+        if (consumedKpk != null) {
+          await _storage.deleteKyberPreKey(consumedKpk);
+        }
+        return result.plaintext;
+      } else {
+        // Whisper / SignalMessage path — session must already exist.
+        final session = await _storage.loadSession(peerUserId);
+        if (session == null) {
+          throw StateError(
+            'no session with $peerUserId for SignalMessage decrypt',
+          );
+        }
+        final result = decryptSignal1To1(
+          ownUserId: ownUserId,
+          remoteUserId: peerUserId,
+          ownIdentitySerialized: identity.serialized,
+          ownRegistrationId: regId,
+          sessionSerialized: session,
+          ciphertext: ciphertext,
+        );
+        await _storage.saveSession(peerUserId, result.updatedSessionSerialized);
+        return result.plaintext;
       }
-      final result = decryptSignal1To1(
-        ownUserId: ownUserId,
-        remoteUserId: peerUserId,
-        ownIdentitySerialized: identity.serialized,
-        ownRegistrationId: regId,
-        sessionSerialized: session,
-        ciphertext: ciphertext,
-      );
-      await _storage.saveSession(peerUserId, result.updatedSessionSerialized);
-      return result.plaintext;
-    }
+    });
   }
 
   // ── Phase 1f: group sessions (Sender Keys) ─────────────────

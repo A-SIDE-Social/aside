@@ -11,6 +11,23 @@ import { SLUG_REGEX } from '../lib/slugs';
 
 const router = Router();
 
+async function canFetchKeyBundle(requesterId: string, targetId: string): Promise<boolean> {
+  if (requesterId === targetId) return false;
+  if (await isMutualFollow(requesterId, targetId)) return true;
+
+  const { rows } = await query(
+    `SELECT 1
+     FROM conversation_members requester
+     JOIN conversation_members target
+       ON target.conversation_id = requester.conversation_id
+     WHERE requester.user_id = $1
+       AND target.user_id = $2
+     LIMIT 1`,
+    [requesterId, targetId],
+  );
+  return rows.length > 0;
+}
+
 // GET /me
 router.get(
   '/me',
@@ -401,8 +418,15 @@ router.get(
   '/:id/keybundle',
   keyBundleLimit,
   asyncHandler(async (req: any, res: any) => {
+    const requesterId = req.user!.userId;
     const targetId = req.params.id;
     if (!targetId) throw new AppError(400, 'user id required');
+    if (!(await canFetchKeyBundle(requesterId, targetId))) {
+      throw new AppError(
+        403,
+        'Must be mutual followers or share a conversation to fetch a key bundle',
+      );
+    }
 
     const client = await getClient();
     try {

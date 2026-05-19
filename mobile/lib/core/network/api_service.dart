@@ -669,6 +669,7 @@ class ApiService {
     String? ciphertextBase64,
     String? envelopeType,
     int? protocolVersion,
+    int? conversationEpoch,
     // Phase 1f: for `envelope_type == 'signal_skdm'` control rows,
     // targets a single member of the group so only that user
     // receives the row on fetch + socket. Server rejects this field
@@ -683,6 +684,7 @@ class ApiService {
         if (ciphertextBase64 != null) 'ciphertext': ciphertextBase64,
         if (envelopeType != null) 'envelope_type': envelopeType,
         if (protocolVersion != null) 'protocol_version': protocolVersion,
+        if (conversationEpoch != null) 'conversation_epoch': conversationEpoch,
         if (recipientId != null) 'recipient_id': recipientId,
       },
     );

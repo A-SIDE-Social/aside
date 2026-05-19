@@ -12,9 +12,8 @@
 //                  signature produced with the IdentityKey.
 
 use libsignal_protocol::{
-    GenericSignedPreKey, IdentityKeyPair, KeyPair, KyberPreKeyId, KyberPreKeyRecord,
-    PreKeyId, PreKeyRecord, SignedPreKeyId, SignedPreKeyRecord, Timestamp,
-    kem,
+    kem, GenericSignedPreKey, IdentityKeyPair, KeyPair, KyberPreKeyId, KyberPreKeyRecord, PreKeyId,
+    PreKeyRecord, SignedPreKeyId, SignedPreKeyRecord, Timestamp,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 

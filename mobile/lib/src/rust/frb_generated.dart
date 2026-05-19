@@ -904,11 +904,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DecryptResult dco_decode_decrypt_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return DecryptResult(
       updatedSessionSerialized: dco_decode_list_prim_u_8_strict(arr[0]),
       plaintext: dco_decode_list_prim_u_8_strict(arr[1]),
+      consumedOneTimePrekeyId: dco_decode_opt_box_autoadd_u_32(arr[2]),
+      consumedKyberPrekeyId: dco_decode_opt_box_autoadd_u_32(arr[3]),
     );
   }
 
@@ -1112,9 +1114,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_updatedSessionSerialized =
         sse_decode_list_prim_u_8_strict(deserializer);
     var var_plaintext = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_consumedOneTimePrekeyId =
+        sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_consumedKyberPrekeyId =
+        sse_decode_opt_box_autoadd_u_32(deserializer);
     return DecryptResult(
         updatedSessionSerialized: var_updatedSessionSerialized,
-        plaintext: var_plaintext);
+        plaintext: var_plaintext,
+        consumedOneTimePrekeyId: var_consumedOneTimePrekeyId,
+        consumedKyberPrekeyId: var_consumedKyberPrekeyId);
   }
 
   @protected
@@ -1333,6 +1341,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(self.updatedSessionSerialized, serializer);
     sse_encode_list_prim_u_8_strict(self.plaintext, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.consumedOneTimePrekeyId, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.consumedKyberPrekeyId, serializer);
   }
 
   @protected

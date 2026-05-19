@@ -835,9 +835,13 @@ impl SseDecode for crate::api::session_1to1::DecryptResult {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_updatedSessionSerialized = <Vec<u8>>::sse_decode(deserializer);
         let mut var_plaintext = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_consumedOneTimePrekeyId = <Option<u32>>::sse_decode(deserializer);
+        let mut var_consumedKyberPrekeyId = <Option<u32>>::sse_decode(deserializer);
         return crate::api::session_1to1::DecryptResult {
             updated_session_serialized: var_updatedSessionSerialized,
             plaintext: var_plaintext,
+            consumed_one_time_prekey_id: var_consumedOneTimePrekeyId,
+            consumed_kyber_prekey_id: var_consumedKyberPrekeyId,
         };
     }
 }
@@ -1119,6 +1123,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::session_1to1::DecryptResult {
         [
             self.updated_session_serialized.into_into_dart().into_dart(),
             self.plaintext.into_into_dart().into_dart(),
+            self.consumed_one_time_prekey_id
+                .into_into_dart()
+                .into_dart(),
+            self.consumed_kyber_prekey_id.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1335,6 +1343,8 @@ impl SseEncode for crate::api::session_1to1::DecryptResult {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<u8>>::sse_encode(self.updated_session_serialized, serializer);
         <Vec<u8>>::sse_encode(self.plaintext, serializer);
+        <Option<u32>>::sse_encode(self.consumed_one_time_prekey_id, serializer);
+        <Option<u32>>::sse_encode(self.consumed_kyber_prekey_id, serializer);
     }
 }
 

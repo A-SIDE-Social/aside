@@ -31,15 +31,38 @@
 use std::time::SystemTime;
 
 use libsignal_protocol::{
-    CiphertextMessageType, DeviceId, GenericSignedPreKey, IdentityKey, IdentityKeyPair,
-    InMemIdentityKeyStore, InMemKyberPreKeyStore, InMemPreKeyStore, InMemSessionStore,
-    InMemSignedPreKeyStore, KyberPreKeyId, KyberPreKeyRecord, PreKeyBundle, PreKeyId,
-    PreKeyRecord, PreKeySignalMessage, ProtocolAddress, SessionRecord, SignalMessage,
-    SignedPreKeyId, SignedPreKeyRecord, kem, message_decrypt_prekey, message_decrypt_signal,
-    message_encrypt, process_prekey_bundle,
+    kem,
+    message_decrypt_prekey,
+    message_decrypt_signal,
+    message_encrypt,
+    process_prekey_bundle,
+    CiphertextMessageType,
+    DeviceId,
+    GenericSignedPreKey,
+    IdentityKey,
+    IdentityKeyPair,
+    InMemIdentityKeyStore,
+    InMemKyberPreKeyStore,
+    InMemPreKeyStore,
+    InMemSessionStore,
+    InMemSignedPreKeyStore,
+    KyberPreKeyId,
+    KyberPreKeyRecord,
     // Storage trait impls — needed to call load_session, store_session,
     // save_pre_key, etc. on the InMem stores.
-    KyberPreKeyStore, PreKeyStore, SessionStore, SignedPreKeyStore,
+    KyberPreKeyStore,
+    PreKeyBundle,
+    PreKeyId,
+    PreKeyRecord,
+    PreKeySignalMessage,
+    PreKeyStore,
+    ProtocolAddress,
+    SessionRecord,
+    SessionStore,
+    SignalMessage,
+    SignedPreKeyId,
+    SignedPreKeyRecord,
+    SignedPreKeyStore,
 };
 
 use futures::executor::block_on;
@@ -62,6 +85,13 @@ pub struct DecryptResult {
     pub updated_session_serialized: Vec<u8>,
     /// Recovered plaintext bytes.
     pub plaintext: Vec<u8>,
+    /// One-time PreKey id referenced by a decrypted PreKeySignalMessage,
+    /// if the sender used one. Dart deletes this local private key after
+    /// a successful decrypt so local inventory tracks server consumption.
+    pub consumed_one_time_prekey_id: Option<u32>,
+    /// Kyber PreKey id referenced by a decrypted PreKeySignalMessage.
+    /// Dart deletes this local private key after a successful decrypt.
+    pub consumed_kyber_prekey_id: Option<u32>,
 }
 
 /// Common addressing convention: each peer is keyed by their user id
@@ -251,9 +281,7 @@ pub fn decrypt_prekey_1to1(
     for bytes in signed_prekey_records_serialized {
         let record = SignedPreKeyRecord::deserialize(&bytes)
             .map_err(|e| anyhow::anyhow!("SPK deserialize: {e}"))?;
-        let id = record
-            .id()
-            .map_err(|e| anyhow::anyhow!("SPK id: {e}"))?;
+        let id = record.id().map_err(|e| anyhow::anyhow!("SPK id: {e}"))?;
         block_on(spk_store.save_signed_pre_key(id, &record))
             .map_err(|e| anyhow::anyhow!("SPK save: {e}"))?;
     }
@@ -262,9 +290,7 @@ pub fn decrypt_prekey_1to1(
     for bytes in one_time_prekey_records_serialized {
         let record = PreKeyRecord::deserialize(&bytes)
             .map_err(|e| anyhow::anyhow!("OTPK deserialize: {e}"))?;
-        let id = record
-            .id()
-            .map_err(|e| anyhow::anyhow!("OTPK id: {e}"))?;
+        let id = record.id().map_err(|e| anyhow::anyhow!("OTPK id: {e}"))?;
         block_on(otpk_store.save_pre_key(id, &record))
             .map_err(|e| anyhow::anyhow!("OTPK save: {e}"))?;
     }
@@ -273,15 +299,15 @@ pub fn decrypt_prekey_1to1(
     for bytes in kyber_prekey_records_serialized {
         let record = KyberPreKeyRecord::deserialize(&bytes)
             .map_err(|e| anyhow::anyhow!("Kyber deserialize: {e}"))?;
-        let id = record
-            .id()
-            .map_err(|e| anyhow::anyhow!("Kyber id: {e}"))?;
+        let id = record.id().map_err(|e| anyhow::anyhow!("Kyber id: {e}"))?;
         block_on(kyber_store.save_kyber_pre_key(id, &record))
             .map_err(|e| anyhow::anyhow!("Kyber save: {e}"))?;
     }
 
     let pkm = PreKeySignalMessage::try_from(ciphertext.as_slice())
         .map_err(|e| anyhow::anyhow!("PreKeySignalMessage parse: {e}"))?;
+    let consumed_one_time_prekey_id = pkm.pre_key_id().map(Into::<u32>::into);
+    let consumed_kyber_prekey_id = pkm.kyber_pre_key_id().map(Into::<u32>::into);
 
     let mut rng = rand::rng();
     let plaintext = block_on(message_decrypt_prekey(
@@ -307,6 +333,8 @@ pub fn decrypt_prekey_1to1(
     Ok(DecryptResult {
         updated_session_serialized: updated_bytes,
         plaintext,
+        consumed_one_time_prekey_id,
+        consumed_kyber_prekey_id,
     })
 }
 
@@ -355,6 +383,8 @@ pub fn decrypt_signal_1to1(
     Ok(DecryptResult {
         updated_session_serialized: updated_bytes,
         plaintext,
+        consumed_one_time_prekey_id: None,
+        consumed_kyber_prekey_id: None,
     })
 }
 
@@ -427,7 +457,10 @@ mod tests {
             plaintext.clone(),
         )
         .unwrap();
-        assert_eq!(encrypted.message_type, 2, "first message should be PKM (type 2)");
+        assert_eq!(
+            encrypted.message_type, 2,
+            "first message should be PKM (type 2)"
+        );
 
         let spk_record = SignedPreKeyRecord::new(
             SignedPreKeyId::from(bob_spk_id),

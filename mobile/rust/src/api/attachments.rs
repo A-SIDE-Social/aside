@@ -43,10 +43,7 @@ pub fn generate_file_key() -> Vec<u8> {
 /// is prepended so the recipient can decrypt with just the file key
 /// and the blob bytes — no separate nonce transport.
 #[flutter_rust_bridge::frb(sync)]
-pub fn encrypt_attachment(
-    file_key: Vec<u8>,
-    plaintext: Vec<u8>,
-) -> anyhow::Result<Vec<u8>> {
+pub fn encrypt_attachment(file_key: Vec<u8>, plaintext: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     if file_key.len() != KEY_LEN {
         anyhow::bail!(
             "file_key must be {} bytes (got {})",
