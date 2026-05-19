@@ -1,0 +1,41 @@
+name: Documentation issue
+description: Report missing, stale, confusing, or incorrect documentation.
+title: "[Docs]: "
+labels:
+  - "type: docs"
+  - "area: docs"
+  - "status: needs triage"
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Documentation location
+      description: File, section, URL, or command output.
+      placeholder: README.md / Running locally
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or incorrect?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: Optional, but concrete replacement text is welcome.
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Audience
+      options:
+        - First-time contributor
+        - Self-hoster
+        - Mobile developer
+        - Backend developer
+        - Security reviewer
+        - Maintainer
+        - Other
+    validations:
+      required: true

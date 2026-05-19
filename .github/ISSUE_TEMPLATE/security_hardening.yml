@@ -1,0 +1,48 @@
+name: Security hardening
+description: Suggest a non-sensitive security or privacy improvement.
+title: "[Security hardening]: "
+labels:
+  - "type: security"
+  - "status: needs triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not use this form for exploitable vulnerabilities or sensitive reports. Email the address in `SECURITY.md` instead. Use this only for public hardening ideas, documentation improvements, dependency concerns, or defense-in-depth work.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Authentication/session handling
+        - Authorization/access control
+        - E2EE implementation
+        - Push notification metadata
+        - Data retention/deletion
+        - Dependencies/supply chain
+        - Self-hosting defaults
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Hardening proposal
+      description: What should change, and what risk does it reduce?
+    validations:
+      required: true
+  - type: textarea
+    id: public-context
+    attributes:
+      label: Public context
+      description: Link public advisories, docs, prior art, or relevant standards if available.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This is not an active vulnerability report or exploit disclosure.
+          required: true
+        - label: This issue does not include secrets, private user data, or reproduction details that would put users at risk.
+          required: true

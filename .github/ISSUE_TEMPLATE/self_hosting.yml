@@ -1,0 +1,73 @@
+name: Self-hosting or local setup help
+description: Report setup, build, configuration, Docker, Firebase, or deployment trouble.
+title: "[Self-hosting]: "
+labels:
+  - "type: question"
+  - "area: self-hosting"
+  - "status: needs triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for public, reproducible setup issues. Do not paste production secrets, private Firebase files, signing keys, `.env` values, or private user data.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Backend Docker/local development
+        - Postgres/migrations
+        - Flutter mobile build
+        - Firebase push setup
+        - RevenueCat/subscriptions
+        - Resend/email
+        - Object storage/media
+        - Deploy overlay/private config
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      placeholder: Run the backend locally with Docker, build the Android debug app, configure Firebase, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run
+      description: Paste exact commands and the point where things fail.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Redact secrets before posting.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Docker, Node, Flutter, Xcode/Android Studio, Java, and commit/tag.
+      placeholder: |
+        macOS 15.5
+        Node 22.x
+        Flutter 3.x
+        Docker Desktop 4.x
+        ASIDE_REF=v1.3.0
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submit checks
+      options:
+        - label: I am not posting secrets, private keys, signing files, tokens, or production `.env` values.
+          required: true
+        - label: I checked `README.md` and `CONTRIBUTING.md` first.
+          required: true
