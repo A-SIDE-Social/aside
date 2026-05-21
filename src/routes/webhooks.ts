@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { query } from '../db/pool';
 import { config } from '../config';
 import { PRODUCT_TO_PLAN } from '../constants';
@@ -6,6 +7,12 @@ import { asyncHandler } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 
 const router = Router();
+
+function constantTimeTokenEqual(received: string, expected: string): boolean {
+  const receivedHash = crypto.createHash('sha256').update(received).digest();
+  const expectedHash = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(receivedHash, expectedHash);
+}
 
 // ---------------------------------------------------------------------------
 // POST /revenuecat — RevenueCat server-to-server webhook
@@ -16,7 +23,10 @@ router.post(
     // 1. Validate shared secret
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!config.revenuecatWebhookSecret || token !== config.revenuecatWebhookSecret) {
+    if (
+      !config.revenuecatWebhookSecret ||
+      !constantTimeTokenEqual(token, config.revenuecatWebhookSecret)
+    ) {
       throw new AppError(401, 'Unauthorized');
     }
 

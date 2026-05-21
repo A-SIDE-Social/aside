@@ -5,8 +5,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts",
-    "migrate": "tsx src/db/migrate.ts",
+    "dev": "NODE_ENV=development tsx watch src/index.ts",
+    "migrate": "NODE_ENV=development tsx src/db/migrate.ts",
     "test": "jest --runInBand --forceExit",
     "lint": "tsc --noEmit"
   },

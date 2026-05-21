@@ -3,12 +3,13 @@ import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { config } from './config';
 import { AuthPayload } from './middleware/auth';
+import { corsOrigin } from './lib/cors';
 
 let io: Server;
 
 export function initSocket(httpServer: HttpServer): Server {
   io = new Server(httpServer, {
-    cors: { origin: '*' },
+    cors: { origin: corsOrigin },
   });
 
   io.use((socket: Socket, next) => {

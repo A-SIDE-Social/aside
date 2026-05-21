@@ -7,9 +7,9 @@
 // reactions accepts Y) would silently expose private posts.
 //
 // Returns the post row on success. Throws AppError(404) if the post
-// is missing or soft-deleted; AppError(403) if the requester isn't
-// the owner AND not a mutual follow AND/OR not a member of any
-// group the post is scoped to.
+// is missing, soft-deleted, or inaccessible to the requester. Using
+// the same status for missing and private posts avoids confirming
+// that a private post id exists.
 
 import { query } from '../db/pool';
 import { AppError } from '../middleware/errorHandler';
@@ -17,8 +17,12 @@ import { isMutualFollow } from '../helpers';
 
 export async function verifyPostAccess(postId: string, userId: string) {
   const { rows: posts } = await query(
-    'SELECT id, user_id FROM posts WHERE id = $1 AND deleted_at IS NULL',
-    [postId],
+    `SELECT id, user_id
+       FROM posts
+      WHERE id = $1
+        AND deleted_at IS NULL
+        AND (expires_at IS NULL OR expires_at > NOW() OR user_id = $2)`,
+    [postId, userId],
   );
   if (posts.length === 0) throw new AppError(404, 'Post not found');
 
@@ -26,7 +30,7 @@ export async function verifyPostAccess(postId: string, userId: string) {
 
   if (post.user_id !== userId) {
     const mutual = await isMutualFollow(userId, post.user_id);
-    if (!mutual) throw new AppError(403, 'Not authorized to view this post');
+    if (!mutual) throw new AppError(404, 'Post not found');
 
     // Group scoping: if the post is scoped to one or more groups,
     // viewer must be a member of at least one of them.
@@ -41,7 +45,7 @@ export async function verifyPostAccess(postId: string, userId: string) {
         [groupIds, userId],
       );
       if (membership.length === 0) {
-        throw new AppError(403, 'Not authorized to view this post');
+        throw new AppError(404, 'Post not found');
       }
     }
   }
