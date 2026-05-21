@@ -51,7 +51,7 @@ describe('GET /admin/users — gating', () => {
 
     // Sign the cookie value the way cookie-parser expects so the
     // middleware actually reads it from req.signedCookies.
-    const cookie = signCookie('admin_session', token, config.jwtSecret);
+    const cookie = signCookie('admin_session', token, config.cookieSecret);
 
     // Make sure the test user isn't accidentally in adminUserIds.
     config.adminUserIds = [];
@@ -107,7 +107,7 @@ describe('POST /admin/users/:id/email — change email happy path', () => {
       .send({ email: admin.email });
     const csrfCookieRaw = pickSetCookie(requestOtp.headers, 'admin_csrf');
     expect(csrfCookieRaw).toBeTruthy();
-    const csrfValue = unsignCookieValue(csrfCookieRaw!, config.jwtSecret);
+    const csrfValue = unsignCookieValue(csrfCookieRaw!, config.cookieSecret);
     expect(csrfValue).toBeTruthy();
 
     const verify = await request(app)
@@ -127,7 +127,10 @@ describe('POST /admin/users/:id/email — change email happy path', () => {
     // form. (The middleware's render path calls ensureCsrf, but
     // the cookie is already set from login — we just need to
     // know its value to embed in our POST.)
-    const csrfForPost = unsignCookieValue(newCsrfCookie!, config.jwtSecret)!;
+    const csrfForPost = unsignCookieValue(
+      newCsrfCookie!,
+      config.cookieSecret,
+    )!;
 
     const change = await request(app)
       .post(`/admin/users/${targetId}/email`)
@@ -223,4 +226,3 @@ function unsignCookieValue(cookie: string, secret: string): string | null {
     .replace(/=+$/, '');
   return submittedSig === expectedSig ? value : null;
 }
-

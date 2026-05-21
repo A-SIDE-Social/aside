@@ -404,20 +404,19 @@ router.post(
     // convenience.
     const isDevEnv =
       config.nodeEnv === 'development' || config.nodeEnv === 'test';
-    // In dev/test: always use a fixed code (falls back to '123456'
-    // if DEV_OTP env var isn't set). Matches the historical local-dev
-    // experience so tests don't need to wire up Postmark.
+    // In dev/test: DEV_OTP applies to every email, but only when it
+    // is explicitly configured. Without DEV_OTP, dev/test requests
+    // still generate a random code and send/log through sendOtpEmail.
     //
     // In production: DEV_OTP applies ONLY to emails explicitly listed
     // in DEV_OTP_ALLOWED_EMAILS (typically App Store reviewers). Any
     // other email gets a genuine random OTP via Postmark. If DEV_OTP
     // is unset in prod, the allowlist is ignored and no backdoor
     // exists.
-    const emailAllowedForDevOtp = isDevEnv ||
-      (!!config.devOtp &&
-          config.devOtpAllowedEmails.includes(normalizedEmail));
+    const emailAllowedForDevOtp = !!config.devOtp &&
+      (isDevEnv || config.devOtpAllowedEmails.includes(normalizedEmail));
     const code = emailAllowedForDevOtp
-      ? (config.devOtp || '123456')
+      ? config.devOtp
       : crypto.randomInt(100000, 999999).toString();
 
     // Hash and store

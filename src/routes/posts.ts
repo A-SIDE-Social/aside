@@ -8,6 +8,7 @@ import { AppError } from '../middleware/errorHandler';
 import { getPresignedUploadUrl, deleteStorageObjects } from '../storage';
 import { getPlanLimits, LIMITS } from '../constants';
 import { notifyNewPost } from '../firebase';
+import { verifyPostAccess } from '../lib/postAccess';
 
 const router = Router();
 
@@ -161,12 +162,7 @@ router.post(
     const userId = req.user!.userId;
     const postId = req.params.id;
 
-    // Verify post exists
-    const { rows: posts } = await query(
-      'SELECT id FROM posts WHERE id = $1 AND deleted_at IS NULL',
-      [postId],
-    );
-    if (posts.length === 0) throw new AppError(404, 'Post not found');
+    await verifyPostAccess(postId, userId);
 
     await query(
       `INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2)
@@ -189,6 +185,8 @@ router.delete(
   asyncHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
     const postId = req.params.id;
+
+    await verifyPostAccess(postId, userId);
 
     await query(
       'DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2',
@@ -220,17 +218,7 @@ router.get(
     const userId = req.user!.userId;
     const postId = req.params.id;
 
-    // Verify the post exists + caller has access (owner or mutual).
-    const { rows: posts } = await query(
-      'SELECT user_id FROM posts WHERE id = $1 AND deleted_at IS NULL',
-      [postId],
-    );
-    if (posts.length === 0) throw new AppError(404, 'Post not found');
-    const ownerId = posts[0].user_id;
-    if (ownerId !== userId) {
-      const mutual = await isMutualFollow(userId, ownerId);
-      if (!mutual) throw new AppError(403, 'Forbidden');
-    }
+    await verifyPostAccess(postId, userId);
 
     const { rows } = await query(
       `SELECT u.id, u.display_name, u.avatar_url
@@ -271,7 +259,7 @@ router.get(
     // Verify access: must be own post or mutual follow
     if (post.user_id !== userId) {
       const mutual = await isMutualFollow(userId, post.user_id);
-      if (!mutual) throw new AppError(403, 'Not authorized to view this post');
+      if (!mutual) throw new AppError(404, 'Post not found');
 
       // Check group scoping
       const { rows: postGroups } = await query(
@@ -284,7 +272,7 @@ router.get(
           'SELECT 1 FROM group_members WHERE group_id = ANY($1) AND member_user_id = $2 LIMIT 1',
           [groupIds, userId],
         );
-        if (membership.length === 0) throw new AppError(403, 'Not authorized to view this post');
+        if (membership.length === 0) throw new AppError(404, 'Post not found');
       }
     }
 
@@ -454,7 +442,7 @@ router.get(
     // Must be mutual follow (unless viewing own posts)
     if (targetUserId !== userId) {
       const mutual = await isMutualFollow(userId, targetUserId);
-      if (!mutual) throw new AppError(403, 'Must be mutual followers to view posts');
+      if (!mutual) throw new AppError(404, 'User not found');
     }
 
     const subStatus = await getUserSubscriptionStatus(userId);

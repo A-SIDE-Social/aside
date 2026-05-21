@@ -207,8 +207,8 @@ router.put(
 
 // POST /comments/:id/like - Like a comment (idempotent).
 // Mirrors POST /posts/:id/like — same INSERT ... ON CONFLICT DO NOTHING
-// pattern, same response shape. No access check (matches post likes);
-// knowing the comment id is already a reasonable proxy for access.
+// pattern and response shape. Comment ids are unguessable UUIDs and
+// comment-list access gates on post visibility.
 router.post(
   '/comments/:id/like',
   authenticate,

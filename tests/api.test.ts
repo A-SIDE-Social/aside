@@ -678,6 +678,37 @@ describe('Users', () => {
     expect(res2.body.user.is_followed_by).toBe(true);
   });
 
+  test('GET /v1/users/search only returns mutual follows', async () => {
+    const { user: viewer, token } = await createTestUser({
+      display_name: 'Search Viewer',
+    });
+    const { user: mutual } = await createTestUser({
+      display_name: 'Search Match Mutual',
+    });
+    const { user: oneWay } = await createTestUser({
+      display_name: 'Search Match One Way',
+    });
+    const { user: stranger } = await createTestUser({
+      display_name: 'Search Match Stranger',
+    });
+
+    await createMutualFollow(viewer.id, mutual.id);
+    await query(
+      'INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)',
+      [viewer.id, oneWay.id],
+    );
+
+    const res = await request(app)
+      .get('/v1/users/search?q=Search%20Match')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const ids = res.body.users.map((u: any) => u.id);
+    expect(ids).toContain(mutual.id);
+    expect(ids).not.toContain(oneWay.id);
+    expect(ids).not.toContain(stranger.id);
+  });
+
   test('DELETE /v1/users/me soft-deletes account', async () => {
     const { user, token } = await createTestUser();
     const res = await request(app)
@@ -1934,7 +1965,8 @@ describe('Posts & Feed', () => {
     const res = await request(app)
       .get(`/v1/posts/${createRes.body.post.id}`)
       .set('Authorization', `Bearer ${strangerToken}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Post not found');
   });
 
   test('DELETE /v1/posts/:id hard-deletes post', async () => {
@@ -2336,6 +2368,16 @@ describe('Posts & Feed', () => {
     expect(res.status).toBe(200);
     expect(res.body.posts.length).toBeGreaterThanOrEqual(1);
   });
+
+  test('GET /v1/posts/by-user/:id hides non-mutual profiles', async () => {
+    const { token: strangerToken } = await createTestUser();
+
+    const res = await request(app)
+      .get(`/v1/posts/by-user/${userB.id}`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('User not found');
+  });
 });
 
 // ==================== POST LIKES ====================
@@ -2401,6 +2443,28 @@ describe('Post Likes', () => {
     expect(res.status).toBe(200);
     expect(res.body.liked).toBe(false);
     expect(res.body.like_count).toBe(0);
+  });
+
+  test('Non-mutual users cannot like or inspect a private post', async () => {
+    const { token: strangerToken } = await createTestUser();
+
+    const likeRes = await request(app)
+      .post(`/v1/posts/${postId}/like`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(likeRes.status).toBe(404);
+    expect(likeRes.body.error).toBe('Post not found');
+
+    const unlikeRes = await request(app)
+      .delete(`/v1/posts/${postId}/like`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(unlikeRes.status).toBe(404);
+    expect(unlikeRes.body.error).toBe('Post not found');
+
+    const likesRes = await request(app)
+      .get(`/v1/posts/${postId}/likes`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(likesRes.status).toBe(404);
+    expect(likesRes.body.error).toBe('Post not found');
   });
 
   test('Multiple users can like the same post', async () => {
@@ -2813,15 +2877,13 @@ describe('Post Reactions', () => {
     }
   });
 
-  test('Outsider (no mutual follow) gets 403, NOT 404', async () => {
-    // 403 means "the post exists but you can't see it"; 404 would
-    // leak the post's existence. Note: a "Post not found" message
-    // would be just as fine — what matters is access is denied.
+  test('Outsider (no mutual follow) gets normalized 404', async () => {
     const res = await request(app)
       .post(`/v1/posts/${postId}/reactions/toggle`)
       .set('Authorization', `Bearer ${outsiderToken}`)
       .send({ emoji: '🔥' });
-    expect([403, 404]).toContain(res.status);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Post not found');
   });
 
   test('GET .../reactions/:emoji/users lists users for that emoji', async () => {
@@ -2852,7 +2914,8 @@ describe('Post Reactions', () => {
     const res = await request(app)
       .get(`/v1/posts/${postId}/reactions/${encodeURIComponent('🔥')}/users`)
       .set('Authorization', `Bearer ${outsiderToken}`);
-    expect([403, 404]).toContain(res.status);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Post not found');
   });
 
   test('GET /v1/feed enriches each post with reactions array', async () => {
@@ -3017,7 +3080,8 @@ describe('Comments', () => {
       .post(`/v1/posts/${postId}/comments`)
       .set('Authorization', `Bearer ${strangerToken}`)
       .send({ body: 'Sneaky comment' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Post not found');
   });
 
   test('PUT /v1/comments/:id edits own comment', async () => {
@@ -6527,6 +6591,22 @@ describe('Health & Docs', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
   });
+
+  test('CORS allows configured origins', async () => {
+    const res = await request(app)
+      .get('/health')
+      .set('Origin', 'http://localhost:3000');
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+  });
+
+  test('CORS omits allow-origin for disallowed origins', async () => {
+    const res = await request(app)
+      .get('/health')
+      .set('Origin', 'https://example.invalid');
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
 });
 
 // ==================== REVENUECAT WEBHOOKS ====================
@@ -6539,11 +6619,18 @@ describe('RevenueCat Webhooks', () => {
   });
 
   test('POST /v1/webhooks/revenuecat rejects wrong secret', async () => {
-    const res = await request(app)
-      .post('/v1/webhooks/revenuecat')
-      .set('Authorization', 'Bearer wrong-secret')
-      .send({ event: { id: 'evt2', type: 'INITIAL_PURCHASE', app_user_id: 'x', product_id: 'aside_pro_monthly' } });
-    expect(res.status).toBe(401);
+    const { config } = require('../src/config');
+    const originalSecret = config.revenuecatWebhookSecret;
+    config.revenuecatWebhookSecret = 'test-secret';
+    try {
+      const res = await request(app)
+        .post('/v1/webhooks/revenuecat')
+        .set('Authorization', 'Bearer wrong-secret')
+        .send({ event: { id: 'evt2', type: 'INITIAL_PURCHASE', app_user_id: 'x', product_id: 'aside_pro_monthly' } });
+      expect(res.status).toBe(401);
+    } finally {
+      config.revenuecatWebhookSecret = originalSecret;
+    }
   });
 
   test('POST /v1/webhooks/revenuecat with INITIAL_PURCHASE activates subscription', async () => {

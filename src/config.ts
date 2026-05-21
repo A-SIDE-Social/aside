@@ -11,6 +11,44 @@ function envList(name: string, fallback: string[] = []): string[] {
     .filter(Boolean);
 }
 
+const validNodeEnvs = new Set(['development', 'test', 'production']);
+const insecureSecretDefaults = new Set([
+  'dev-secret',
+  'dev-refresh-secret',
+  'dev-cookie-secret',
+  'change-me',
+  'change-me-too',
+  'change-me-cookie',
+]);
+
+function requireNodeEnv(): 'development' | 'test' | 'production' {
+  const value = process.env.NODE_ENV;
+  if (!value) {
+    throw new Error('[FATAL] NODE_ENV must be explicitly set. Refusing to start.');
+  }
+  if (!validNodeEnvs.has(value)) {
+    throw new Error(
+      `[FATAL] NODE_ENV must be one of development, test, production. Got ${value}.`,
+    );
+  }
+  return value as 'development' | 'test' | 'production';
+}
+
+const nodeEnv = requireNodeEnv();
+
+function secretOrDefault(name: string, fallback: string): string {
+  const value = process.env[name];
+  if (
+    nodeEnv === 'production' &&
+    (!value || insecureSecretDefaults.has(value))
+  ) {
+    throw new Error(
+      `[FATAL] ${name} must be a strong secret in production. Refusing to start.`,
+    );
+  }
+  return value || fallback;
+}
+
 function hostnameFromUrl(value: string): string | null {
   try {
     return new URL(value).hostname.toLowerCase();
@@ -30,9 +68,10 @@ const inviteLinkHostName = hostnameFromUrl(inviteLinkHost);
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   databaseUrl: process.env.DATABASE_URL || 'postgres://aside:aside_dev_password@localhost:5433/aside',
-  jwtSecret: process.env.JWT_SECRET || 'dev-secret',
-  jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret',
-  jwtExpiresIn: '1y',
+  jwtSecret: secretOrDefault('JWT_SECRET', 'dev-secret'),
+  jwtRefreshSecret: secretOrDefault('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
+  cookieSecret: secretOrDefault('COOKIE_SECRET', 'dev-cookie-secret'),
+  jwtExpiresIn: '15m',
   refreshTokenExpiresIn: '1y',
   s3Region: process.env.S3_REGION || process.env.AWS_REGION || 'us-east-1',
   s3Bucket: process.env.S3_BUCKET || 'aside-media-dev',
@@ -40,7 +79,7 @@ export const config = {
   s3AccessKey: process.env.S3_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID || '',
   s3SecretKey: process.env.S3_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
   cdnUrl: process.env.CDN_URL || process.env.CLOUDFRONT_URL || '',  // e.g. https://media.example.com or https://bucket.nyc3.cdn.digitaloceanspaces.com
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv,
   devOtp: process.env.DEV_OTP || '',  // Fixed OTP code. In dev/test it applies to every email; in production it ONLY applies to emails in devOtpAllowedEmails (must be set, otherwise DEV_OTP is ignored in prod).
   devOtpAllowedEmails: (process.env.DEV_OTP_ALLOWED_EMAILS || '')
     .split(',')
@@ -53,6 +92,7 @@ export const config = {
   revenuecatApiKey: process.env.REVENUECAT_API_KEY || '',
   adminUserIds: (process.env.ADMIN_USER_IDS || '').split(',').filter(Boolean),
   publicAppUrl,
+  corsAllowedOrigins: envList('CORS_ALLOWED_ORIGINS', [publicAppUrl]),
   inviteLinkHost,
   inviteLinkAllowedHosts: envList(
     'INVITE_LINK_ALLOWED_HOSTS',

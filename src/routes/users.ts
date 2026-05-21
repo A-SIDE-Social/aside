@@ -127,34 +127,33 @@ router.patch(
   }),
 );
 
-// GET /search?q=... — still active for family management.
+// GET /search?q=... — mutual-follow-only user search.
 //
-// The personal-invite-link plan called for locking this down (the
-// "no public search" promise). BUT existing shipped app builds use
-// this endpoint to find users to add to a family subscription —
-// see `family_management_screen.dart`. Returning 410 would break
-// that flow for everyone on a build that hasn't yet been replaced.
-//
-// Proper fix is a follow-up: either (a) migrate family management
-// to a slug-based add flow, or (b) constrain this endpoint to
-// search only over mutual follows (preserving the no-stranger-
-// discovery property while still serving the family use case).
-// Until then, leave the endpoint working as-is.
+// Used by family management and older search UI surfaces. Keep the
+// response shape stable, but do not expose the full user base: every
+// returned user must already be mutually connected with the caller.
 router.get(
   '/search',
   asyncHandler(async (req: any, res: any) => {
+    const userId = req.user!.userId;
     const q = (req.query.q as string || '').trim();
     if (!q || q.length < 1) throw new AppError(400, 'Search query is required');
 
     const { rows } = await query(
-      `SELECT id, display_name, avatar_url
-       FROM users
-       WHERE deleted_at IS NULL
-         AND id != $1
-         AND display_name ILIKE $2
-       ORDER BY display_name ASC
+      `SELECT u.id, u.display_name, u.avatar_url
+       FROM users u
+       JOIN follows outbound
+         ON outbound.follower_id = $1
+        AND outbound.followee_id = u.id
+       JOIN follows inbound
+         ON inbound.follower_id = u.id
+        AND inbound.followee_id = $1
+       WHERE u.deleted_at IS NULL
+         AND u.id != $1
+         AND u.display_name ILIKE $2
+       ORDER BY u.display_name ASC
        LIMIT 20`,
-      [req.user!.userId, `%${q}%`],
+      [userId, `%${q}%`],
     );
 
     for (const row of rows) {

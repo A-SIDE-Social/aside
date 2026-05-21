@@ -8,17 +8,16 @@ import { router } from './routes';
 import { adminRouter } from './routes/admin';
 import { unsubscribeRouter } from './routes/unsubscribe';
 import { serveOpenApiDocs } from './openapi';
+import { corsOrigin } from './lib/cors';
 
 export const app = express();
 
 app.set('trust proxy', 1);
-app.use(cors());
+app.use(cors({ origin: corsOrigin, credentials: true }));
 // Cookie parser used only by /admin (the API auth uses Bearer
-// headers). Signing key reuses the JWT secret since both are
-// existing operator-controlled secrets — no second env var to
-// rotate. Mounted globally so the admin router can read signed
+// headers). Mounted globally so the admin router can read signed
 // cookies without further setup.
-app.use(cookieParser(config.jwtSecret));
+app.use(cookieParser(config.cookieSecret));
 // JSON limit raised to 5 MB so the contact-sync endpoint can
 // accept users with normal-sized address books. Default Express
 // limit is 100 KB, which holds ~1,400 SHA-256 hashes — anyone
