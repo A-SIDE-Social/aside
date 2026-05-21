@@ -249,6 +249,37 @@ void main() {
       expect(captured['body'], 'Hi');
       expect(captured['media_url'], 'https://example.com/img.jpg');
     });
+
+    test('sendMessage can send E2EE epoch metadata', () async {
+      when(() => mockDio.post(
+            ApiEndpoints.messages('c1'),
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ''),
+            data: {
+              'message': {'id': 'm1'}
+            },
+            statusCode: 201,
+          ));
+
+      await apiService.sendMessage(
+        'c1',
+        ciphertextBase64: 'abc',
+        envelopeType: 'signal_group',
+        protocolVersion: 1,
+        conversationEpoch: 4,
+      );
+
+      final captured = verify(() => mockDio.post(
+            ApiEndpoints.messages('c1'),
+            data: captureAny(named: 'data'),
+          )).captured.single as Map<String, dynamic>;
+
+      expect(captured['ciphertext'], 'abc');
+      expect(captured['envelope_type'], 'signal_group');
+      expect(captured['protocol_version'], 1);
+      expect(captured['conversation_epoch'], 4);
+    });
   });
 
   group('ApiService Devices', () {

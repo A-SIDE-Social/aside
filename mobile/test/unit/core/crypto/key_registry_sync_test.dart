@@ -253,6 +253,45 @@ void main() {
       verify(() => signal.replenishKyberPreKeys(threshold: 2, batchSize: 10))
           .called(1);
     });
+
+    test('rolls back freshly persisted local prekeys if upload fails',
+        () async {
+      final freshOtpks = [
+        PublicOneTimePreKey(
+          id: 21,
+          public: Uint8List.fromList(List.generate(33, (i) => i)),
+        ),
+      ];
+      final freshKyber = [
+        PublicKyberPreKey(
+          id: 5,
+          public: Uint8List.fromList(List.generate(1568, (i) => i % 256)),
+          signature: Uint8List.fromList(List.generate(64, (i) => i + 50)),
+        ),
+      ];
+      when(() => signal.replenishOneTimePreKeys(
+            threshold: any(named: 'threshold'),
+            batchSize: any(named: 'batchSize'),
+          )).thenAnswer((_) async => freshOtpks);
+      when(() => signal.replenishKyberPreKeys(
+            threshold: any(named: 'threshold'),
+            batchSize: any(named: 'batchSize'),
+          )).thenAnswer((_) async => freshKyber);
+      when(() => api.replenishPreKeys(
+            oneTimePreKeys: any(named: 'oneTimePreKeys'),
+            kyberPreKeys: any(named: 'kyberPreKeys'),
+          )).thenThrow(Exception('network down'));
+      when(() => signal.consumeOneTimePreKey(any())).thenAnswer((_) async {});
+      when(() => signal.consumeKyberPreKey(any())).thenAnswer((_) async {});
+
+      await expectLater(
+        () => sync.replenishIfNeeded(),
+        throwsA(isA<Exception>()),
+      );
+
+      verify(() => signal.consumeOneTimePreKey(21)).called(1);
+      verify(() => signal.consumeKyberPreKey(5)).called(1);
+    });
   });
 
   group('rotateSignedPreKey', () {

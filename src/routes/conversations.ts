@@ -647,6 +647,7 @@ router.post(
       ciphertext,
       envelope_type,
       protocol_version,
+      conversation_epoch,
       recipient_id,
     } = req.body;
 
@@ -738,6 +739,24 @@ router.post(
           400,
           'recipient_id is only valid for signal_skdm messages',
         );
+      }
+
+      if (conv.conversation_type === 'group' && envelopeType === 'signal_group') {
+        if (
+          typeof conversation_epoch !== 'number' ||
+          !Number.isInteger(conversation_epoch)
+        ) {
+          throw new AppError(
+            400,
+            'conversation_epoch is required for signal_group messages',
+          );
+        }
+        if (conversation_epoch !== Number(conv.epoch ?? 0)) {
+          throw new AppError(
+            409,
+            'stale conversation epoch; refetch conversation before sending',
+          );
+        }
       }
     } else {
       if (ciphertext) {

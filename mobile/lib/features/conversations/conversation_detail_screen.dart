@@ -459,6 +459,21 @@ class _ConversationDetailScreenState
     return api.getUserKeyBundle(peerUserId);
   }
 
+  Future<StartSessionOutcome?> _ensurePeerSession(
+    SignalClient signal,
+    String ownId,
+    String peerId,
+  ) async {
+    final outcome = await signal.ensureSessionWithPeer(ownId, peerId, () async {
+      final bundleJson = await _fetchKeyBundle(peerId);
+      return PeerKeyBundle.fromServerJson(bundleJson);
+    });
+    if (outcome?.identityChanged == true) {
+      await _refreshPeerIdentityBanner();
+    }
+    return outcome;
+  }
+
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty || _sending) return;
@@ -508,11 +523,7 @@ class _ConversationDetailScreenState
         // First message to this peer: fetch their bundle and build a
         // session. The server atomically consumes one OTPK + one
         // Kyber prekey on the fetch, so this is one-shot.
-        if (!(await signal.hasSessionWith(peerId))) {
-          final bundleJson = await _fetchKeyBundle(peerId);
-          final bundle = PeerKeyBundle.fromServerJson(bundleJson);
-          await signal.startSessionWithPeer(ownId, peerId, bundle);
-        }
+        await _ensurePeerSession(signal, ownId, peerId);
 
         // Wrap the plaintext in the versioned JSON envelope so the
         // recipient can distinguish text vs image payloads. Pre-
@@ -541,7 +552,6 @@ class _ConversationDetailScreenState
         final envelope = encodeTextEnvelope(text);
         final raw = await _sendGroupE2eeEnvelope(
           convId: convId,
-          conv: conv,
           envelope: envelope,
         );
         final envelopeText = utf8.decode(envelope);
@@ -593,12 +603,16 @@ class _ConversationDetailScreenState
   /// into `_messages` — keeps this helper agnostic to payload type.
   Future<Message> _sendGroupE2eeEnvelope({
     required String convId,
-    required Conversation conv,
     required Uint8List envelope,
   }) async {
     final ownId = ref.read(authProvider).user!.id;
     final signal = ref.read(signalClientProvider);
     final api = ref.read(apiServiceProvider);
+    final currentConv =
+        Conversation.fromJson(await api.getConversationById(convId));
+    if (!currentConv.isE2ee || currentConv.type != 'group') {
+      throw StateError('conversation is no longer an E2EE group');
+    }
 
     // Step 1: make sure we have a sender-key chain AT THE CURRENT
     // CONVERSATION EPOCH. ensureOwnGroupSenderKey handles three
@@ -613,12 +627,12 @@ class _ConversationDetailScreenState
     final skdm = await signal.ensureOwnGroupSenderKey(
       ownUserId: ownId,
       conversationId: convId,
-      currentEpoch: conv.epoch,
+      currentEpoch: currentConv.epoch,
     );
 
     // Step 2: distribute the SKDM if we just generated one.
     if (skdm != null) {
-      final members = conv.members ?? const <User>[];
+      final members = currentConv.members ?? const <User>[];
       if (members.isEmpty) {
         // Defensive — /conversations/:id should always return the
         // member list for a group, but don't proceed silently if
@@ -633,11 +647,7 @@ class _ConversationDetailScreenState
 
         // Ensure a 1:1 session with this member. If we've never
         // messaged them directly, this pays one keybundle fetch.
-        if (!(await signal.hasSessionWith(m.id))) {
-          final bundleJson = await _fetchKeyBundle(m.id);
-          final bundle = PeerKeyBundle.fromServerJson(bundleJson);
-          await signal.startSessionWithPeer(ownId, m.id, bundle);
-        }
+        await _ensurePeerSession(signal, ownId, m.id);
 
         final skdmEnvelope = encodeGroupSkdmEnvelope(
           groupConversationId: convId,
@@ -674,6 +684,7 @@ class _ConversationDetailScreenState
       ciphertextBase64: base64.encode(ciphertext),
       envelopeType: 'signal_group',
       protocolVersion: 1,
+      conversationEpoch: currentConv.epoch,
     );
     return Message.fromJson(data as Map<String, dynamic>);
   }
@@ -762,16 +773,11 @@ class _ConversationDetailScreenState
         // SKDM distribution to any members we haven't sent to yet.
         raw = await _sendGroupE2eeEnvelope(
           convId: convId,
-          conv: conv,
           envelope: envelope,
         );
       } else {
         // Direct E2EE image — 1:1 Double Ratchet path.
-        if (!(await signal.hasSessionWith(peerId!))) {
-          final bundleJson = await _fetchKeyBundle(peerId);
-          final bundle = PeerKeyBundle.fromServerJson(bundleJson);
-          await signal.startSessionWithPeer(ownId, peerId, bundle);
-        }
+        await _ensurePeerSession(signal, ownId, peerId!);
 
         final encrypted =
             await signal.encryptMessageFor(ownId, peerId, envelope);

@@ -115,13 +115,28 @@ class DecryptResult {
   /// Recovered plaintext bytes.
   final Uint8List plaintext;
 
+  /// One-time PreKey id referenced by a decrypted PreKeySignalMessage,
+  /// if the sender used one. Dart deletes this local private key after
+  /// a successful decrypt so local inventory tracks server consumption.
+  final int? consumedOneTimePrekeyId;
+
+  /// Kyber PreKey id referenced by a decrypted PreKeySignalMessage.
+  /// Dart deletes this local private key after a successful decrypt.
+  final int? consumedKyberPrekeyId;
+
   const DecryptResult({
     required this.updatedSessionSerialized,
     required this.plaintext,
+    this.consumedOneTimePrekeyId,
+    this.consumedKyberPrekeyId,
   });
 
   @override
-  int get hashCode => updatedSessionSerialized.hashCode ^ plaintext.hashCode;
+  int get hashCode =>
+      updatedSessionSerialized.hashCode ^
+      plaintext.hashCode ^
+      consumedOneTimePrekeyId.hashCode ^
+      consumedKyberPrekeyId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -129,7 +144,9 @@ class DecryptResult {
       other is DecryptResult &&
           runtimeType == other.runtimeType &&
           updatedSessionSerialized == other.updatedSessionSerialized &&
-          plaintext == other.plaintext;
+          plaintext == other.plaintext &&
+          consumedOneTimePrekeyId == other.consumedOneTimePrekeyId &&
+          consumedKyberPrekeyId == other.consumedKyberPrekeyId;
 }
 
 /// Dart-facing result of encrypt_1to1.

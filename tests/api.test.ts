@@ -4708,6 +4708,7 @@ describe('E2EE message envelope', () => {
         .send({
           ciphertext: rb64(64),
           envelope_type: 'signal_group',
+          conversation_epoch: conv.epoch,
         });
 
       const list = await request(app)
@@ -4717,6 +4718,27 @@ describe('E2EE message envelope', () => {
       const row = list.body.conversations.find((c: any) => c.id === conv.id);
       expect(row).toBeDefined();
       expect(Number(row.unread_count)).toBe(1);
+    });
+
+    test('rejects signal_group with stale conversation_epoch', async () => {
+      const alice = await createTestUser();
+      const bob = await createTestUser();
+      const conv = await openE2eeGroup(alice, [bob]);
+
+      await query('UPDATE conversations SET epoch = epoch + 1 WHERE id = $1', [
+        conv.id,
+      ]);
+
+      const res = await request(app)
+        .post(`/v1/conversations/${conv.id}/messages`)
+        .set('Authorization', `Bearer ${alice.token}`)
+        .send({
+          ciphertext: rb64(64),
+          envelope_type: 'signal_group',
+          conversation_epoch: conv.epoch,
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/stale conversation epoch/i);
     });
   });
 
@@ -5847,6 +5869,7 @@ describe('E2EE key registry', () => {
     test('returns target user bundle and consumes one OTPK + one Kyber', async () => {
       const owner = await createTestUser();
       const caller = await createTestUser();
+      await createMutualFollow(owner.user.id, caller.user.id);
       await request(app)
         .post('/v1/devices/keys/upload')
         .set('Authorization', `Bearer ${owner.token}`)
@@ -5911,6 +5934,7 @@ describe('E2EE key registry', () => {
     test('returns null one_time_prekey when only OTPK pool is empty', async () => {
       const owner = await createTestUser();
       const caller = await createTestUser();
+      await createMutualFollow(owner.user.id, caller.user.id);
       // 1 OTPK + 3 Kyber so we can exhaust OTPKs while keeping Kyber.
       await request(app)
         .post('/v1/devices/keys/upload')
@@ -5935,6 +5959,7 @@ describe('E2EE key registry', () => {
     test('503 when Kyber pool is empty (PQC session setup blocked)', async () => {
       const owner = await createTestUser();
       const caller = await createTestUser();
+      await createMutualFollow(owner.user.id, caller.user.id);
       // 5 OTPKs + 1 Kyber so Kyber exhausts first.
       await request(app)
         .post('/v1/devices/keys/upload')
@@ -5966,6 +5991,7 @@ describe('E2EE key registry', () => {
     test('404 when target user has no active key set', async () => {
       const owner = await createTestUser(); // never uploads
       const caller = await createTestUser();
+      await createMutualFollow(owner.user.id, caller.user.id);
       const res = await request(app)
         .get(`/v1/users/${owner.user.id}/keybundle`)
         .set('Authorization', `Bearer ${caller.token}`);
@@ -5975,6 +6001,7 @@ describe('E2EE key registry', () => {
     test('404 after owner revokes keys', async () => {
       const owner = await createTestUser();
       const caller = await createTestUser();
+      await createMutualFollow(owner.user.id, caller.user.id);
       await request(app)
         .post('/v1/devices/keys/upload')
         .set('Authorization', `Bearer ${owner.token}`)
@@ -6003,6 +6030,9 @@ describe('E2EE key registry', () => {
         createTestUser(),
         createTestUser(),
       ]);
+      await Promise.all(
+        callers.map((c) => createMutualFollow(owner.user.id, c.user.id)),
+      );
       const results = await Promise.all(
         callers.map((c) =>
           request(app)
@@ -6018,6 +6048,31 @@ describe('E2EE key registry', () => {
       const kpkIds = results.map((r) => r.body.kyber_prekey?.id);
       expect(kpkIds.every((id) => typeof id === 'number')).toBe(true);
       expect(new Set(kpkIds).size).toBe(kpkIds.length);
+    });
+
+    test('403 for unrelated caller and does not consume prekeys', async () => {
+      const owner = await createTestUser();
+      const caller = await createTestUser();
+      await request(app)
+        .post('/v1/devices/keys/upload')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send(makeBundle(3, 1, 3, 1));
+
+      const res = await request(app)
+        .get(`/v1/users/${owner.user.id}/keybundle`)
+        .set('Authorization', `Bearer ${caller.token}`);
+      expect(res.status).toBe(403);
+
+      const unconsumed = await query(
+        `SELECT
+           (SELECT COUNT(*) FROM one_time_prekeys
+              WHERE user_id = $1 AND consumed_at IS NULL) AS otpk,
+           (SELECT COUNT(*) FROM kyber_prekeys
+              WHERE user_id = $1 AND consumed_at IS NULL) AS kpk`,
+        [owner.user.id],
+      );
+      expect(Number(unconsumed.rows[0].otpk)).toBe(3);
+      expect(Number(unconsumed.rows[0].kpk)).toBe(3);
     });
   });
 

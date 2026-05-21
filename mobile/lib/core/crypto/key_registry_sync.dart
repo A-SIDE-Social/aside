@@ -67,10 +67,21 @@ class KeyRegistrySync {
       return (otpks: 0, kyber: 0);
     }
 
-    await _api.replenishPreKeys(
-      oneTimePreKeys: freshOtpks.map((k) => k.toJson()).toList(growable: false),
-      kyberPreKeys: freshKyber.map((k) => k.toJson()).toList(growable: false),
-    );
+    try {
+      await _api.replenishPreKeys(
+        oneTimePreKeys:
+            freshOtpks.map((k) => k.toJson()).toList(growable: false),
+        kyberPreKeys: freshKyber.map((k) => k.toJson()).toList(growable: false),
+      );
+    } catch (_) {
+      for (final k in freshOtpks) {
+        await _signal.consumeOneTimePreKey(k.id);
+      }
+      for (final k in freshKyber) {
+        await _signal.consumeKyberPreKey(k.id);
+      }
+      rethrow;
+    }
     return (otpks: freshOtpks.length, kyber: freshKyber.length);
   }
 

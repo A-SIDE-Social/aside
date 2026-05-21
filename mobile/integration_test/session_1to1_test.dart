@@ -263,6 +263,8 @@ void main() {
     );
     expect(await bob.hasSessionWith('alice-id'), isTrue);
     expect(utf8.decode(decrypted), 'hello bob!');
+    expect(await bobStorage.loadOneTimePreKey(1), isNull);
+    expect(await bobStorage.loadKyberPreKey(1), isNull);
   });
 
   testWidgets('multi-message round-trip: PKM then SignalMessage', (_) async {
@@ -372,5 +374,6 @@ void main() {
       encrypted.ciphertext,
     );
     expect(utf8.decode(decrypted), 'no otpk but still works');
+    expect(await bobStorage.loadKyberPreKey(1), isNull);
   });
 }
