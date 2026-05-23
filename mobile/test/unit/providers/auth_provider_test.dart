@@ -202,6 +202,32 @@ void main() {
     });
   });
 
+  group('AuthNotifier.reregisterPushToken', () {
+    test('no-ops when push service has not been initialized', () async {
+      await notifier.reregisterPushToken();
+    });
+
+    test('delegates to the initialized push service', () async {
+      final mockPush = MockPushNotificationService();
+      when(() => mockPush.reregister()).thenAnswer((_) async {});
+
+      final pushContainer = ProviderContainer(overrides: [
+        authProvider.overrideWith(() => AuthNotifier(
+              secureStorage: mockStorage,
+              apiService: mockApi,
+              onDeepLink: (_) {},
+              pushService: mockPush,
+              autoInitialize: false,
+            )),
+      ]);
+      addTearDown(pushContainer.dispose);
+
+      await pushContainer.read(authProvider.notifier).reregisterPushToken();
+
+      verify(() => mockPush.reregister()).called(1);
+    });
+  });
+
   group('AuthNotifier.setUser', () {
     test('updates user in authenticated state', () {
       final user = User.fromJson(userJson(id: 'u1', displayName: 'Alice'));

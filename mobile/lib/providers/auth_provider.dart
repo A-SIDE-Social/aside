@@ -63,6 +63,7 @@ class AuthNotifier extends Notifier<AuthState> {
     void Function(String route)? onDeepLink,
     KeyRegistrySync? keyRegistrySync,
     SocketService? socketService,
+    PushNotificationService? pushService,
     bool autoInitialize = true,
     User? initialUser,
   })  : _injectedSecureStorage = secureStorage,
@@ -70,6 +71,7 @@ class AuthNotifier extends Notifier<AuthState> {
         _injectedOnDeepLink = onDeepLink,
         _injectedKeyRegistrySync = keyRegistrySync,
         _injectedSocketService = socketService,
+        _injectedPushService = pushService,
         _autoInitialize = autoInitialize,
         _initialUser = initialUser;
 
@@ -79,6 +81,7 @@ class AuthNotifier extends Notifier<AuthState> {
   final void Function(String route)? _injectedOnDeepLink;
   final KeyRegistrySync? _injectedKeyRegistrySync;
   final SocketService? _injectedSocketService;
+  final PushNotificationService? _injectedPushService;
   final bool _autoInitialize;
   final User? _initialUser;
 
@@ -122,6 +125,7 @@ class AuthNotifier extends Notifier<AuthState> {
     _keyRegistrySync = _injectedKeyRegistrySync ??
         KeyRegistrySync(ref.read(signalClientProvider), _apiService);
     _socketService = _injectedSocketService ?? ref.read(socketServiceProvider);
+    _pushService = _injectedPushService;
 
     _onDeepLink = _injectedOnDeepLink ??
         (route) {
@@ -184,6 +188,13 @@ class AuthNotifier extends Notifier<AuthState> {
       onDeepLink: _onDeepLink,
     );
     _pushService!.initialize();
+  }
+
+  /// Re-assert the FCM token with the backend. The backend upsert is
+  /// idempotent, so this is safe to call on every app resume and repairs a
+  /// missing server-side device-token row without waiting for token rotation.
+  Future<void> reregisterPushToken() async {
+    await _pushService?.reregister();
   }
 
   /// Check for existing tokens and attempt to load the user profile.
