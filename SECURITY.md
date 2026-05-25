@@ -95,4 +95,7 @@ such an audit will be published once available.
 We'll list researchers who've responsibly disclosed valid findings
 here, with their permission.
 
-_(empty for now — be the first)_
+- **Romain Frippiat** (GitHub: [@Kyuwei](https://github.com/Kyuwei))
+  — May 2026 security report covering authentication hardening, CORS
+  restrictions, webhook validation, token lifetime, and privacy
+  endpoint fixes.
