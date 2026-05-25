@@ -471,6 +471,11 @@ class _AsideAppState extends ConsumerState<AsideApp>
         // reach the server is at worst a re-occurrence of the bug,
         // never something the user needs to see.
         ref.read(apiServiceProvider).markFeedSeen().catchError((_) {});
+
+        // Re-assert the push token on resume. The backend upsert is
+        // idempotent, and this repairs the silent case where the server
+        // deleted our device-token row while the app was not running.
+        unawaited(ref.read(authProvider.notifier).reregisterPushToken());
       }
     } else if (state == AppLifecycleState.paused) {
       usage.pauseSession();

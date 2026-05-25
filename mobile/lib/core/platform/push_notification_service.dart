@@ -87,6 +87,23 @@ class PushNotificationService {
     }
   }
 
+  /// Re-assert the current FCM token with the backend.
+  ///
+  /// The server upserts device tokens, so this is safe to call on every
+  /// resume. It closes the case where the backend deleted a stale token
+  /// while the app was not running, but the local SDK still returns the
+  /// same cached token and therefore never emits an on-token-refresh event.
+  Future<void> reregister() async {
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token == null) return;
+      _currentToken = token;
+      await _registerToken(token);
+    } catch (e) {
+      debugPrint('[Push] reregister failed: $e');
+    }
+  }
+
   /// Handle messages received while the app is in the foreground.
   void _handleForegroundMessage(RemoteMessage message) {
     debugPrint('[Push] Foreground message: ${message.notification?.title}');
