@@ -20,7 +20,7 @@ class AppLimits {
   static const int storyExpirationHours = 24;
 
   // ── Plan-gated (only feed history) ──────────────────────────
-  static const int freeFeedHistoryDays = 7;
+  static const int freeFeedHistoryDays = 30;
 
   /// Returns the feed history limit in days, or null for unlimited.
   static int? feedHistoryDays(String? subscriptionStatus) {

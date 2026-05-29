@@ -1,7 +1,7 @@
 name: aside
 description: "A/SIDE — private photo + video + DM social for the friends who actually know you."
 publish_to: 'none'
-version: 1.3.0+47
+version: 1.3.3+50
 
 environment:
   sdk: ^3.5.0

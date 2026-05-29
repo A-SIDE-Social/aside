@@ -575,7 +575,7 @@ describe('Users', () => {
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.plan_limits).toBeDefined();
-    expect(res.body.plan_limits.feed_history_days).toBe(7); // free plan = 7 days
+    expect(res.body.plan_limits.feed_history_days).toBe(30); // free plan = 30 days
     expect(res.body.plan_limits.max_photos_per_post).toBe(10);
     expect(res.body.plan_limits.max_groups).toBe(10);
     expect(res.body.plan_limits.max_video_story_seconds).toBe(30);
@@ -587,7 +587,7 @@ describe('Users', () => {
       .get('/v1/users/me')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
-    expect(res.body.plan_limits.feed_history_days).toBe(7);
+    expect(res.body.plan_limits.feed_history_days).toBe(30);
   });
 
   test('GET /v1/users/me rejects unauthenticated', async () => {
@@ -5189,15 +5189,15 @@ describe('Groups', () => {
 
 // ==================== SUBSCRIPTION / FEED HISTORY GATE ====================
 describe('Feed history gate', () => {
-  test('Expired users cannot see posts older than 7 days', async () => {
+  test('Expired users cannot see posts older than 30 days', async () => {
     const { user: poster, token: posterToken } = await createTestUser();
     const { user: viewer, token: viewerToken } = await createTestUser({ subscription_status: 'expired' });
     await createMutualFollow(poster.id, viewer.id);
 
-    // Create an old post (10 days ago)
+    // Create an old post (35 days ago)
     await query(
       `INSERT INTO posts (user_id, caption, created_at)
-       VALUES ($1, 'old post', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, 'old post', NOW() - INTERVAL '35 days')`,
       [poster.id],
     );
 
@@ -5220,15 +5220,15 @@ describe('Feed history gate', () => {
     expect(captions).not.toContain('old post');
   });
 
-  test('Trial users can see posts older than 7 days', async () => {
+  test('Trial users can see posts older than 30 days', async () => {
     const { user: poster, token: posterToken } = await createTestUser();
     const { user: viewer, token: viewerToken } = await createTestUser({ subscription_status: 'trial' });
     await createMutualFollow(poster.id, viewer.id);
 
-    // Create an old post (10 days ago)
+    // Create an old post (35 days ago)
     await query(
       `INSERT INTO posts (user_id, caption, created_at)
-       VALUES ($1, 'old trial post', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, 'old trial post', NOW() - INTERVAL '35 days')`,
       [poster.id],
     );
 
@@ -5242,18 +5242,18 @@ describe('Feed history gate', () => {
   });
 
   // Own-profile bypass: a Free user looking at their OWN profile must
-  // see everything they posted, regardless of the 7-day history gate.
+  // see everything they posted, regardless of the 30-day history gate.
   // The gate is about what the platform shows you for free from the
   // wider network — it should never hide your own content from you.
-  test('Own profile shows full history for Free users (bypasses the 7-day gate)', async () => {
+  test('Own profile shows full history for Free users (bypasses the 30-day gate)', async () => {
     const { user: me, token: myToken } = await createTestUser({
       subscription_status: 'expired',
     });
 
-    // Old post (10 days ago) via direct insert so created_at is backdated.
+    // Old post (35 days ago) via direct insert so created_at is backdated.
     await query(
       `INSERT INTO posts (user_id, caption, created_at)
-       VALUES ($1, 'my old post', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, 'my old post', NOW() - INTERVAL '35 days')`,
       [me.id],
     );
     // Recent post (today) via the API.
@@ -5276,9 +5276,9 @@ describe('Feed history gate', () => {
   });
 
   // The bypass is self-only: a Free user viewing SOMEONE ELSE's
-  // profile still gets the 7-day cap. Otherwise the plan gate would
+  // profile still gets the 30-day cap. Otherwise the plan gate would
   // be trivial to circumvent.
-  test("Other user's profile still honors the 7-day gate for Free users", async () => {
+  test("Other user's profile still honors the 30-day gate for Free users", async () => {
     const { user: me, token: myToken } = await createTestUser({
       subscription_status: 'expired',
     });
@@ -5287,7 +5287,7 @@ describe('Feed history gate', () => {
 
     await query(
       `INSERT INTO posts (user_id, caption, created_at)
-       VALUES ($1, 'friend old post', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, 'friend old post', NOW() - INTERVAL '35 days')`,
       [friend.id],
     );
     await request(app)
@@ -5311,7 +5311,7 @@ describe('Feed history gate', () => {
   // mobile client whether a paywall banner should actually render.
   // Previously the banner appeared unconditionally for every Free
   // user at the end of the feed — even brand-new users with nothing
-  // past the 7-day cutoff — which read as a nag.
+  // past the 30-day cutoff — which read as a nag.
   test('GET /v1/feed returns has_older_posts: true for Free user with gated content', async () => {
     const { user: poster } = await createTestUser();
     const { user: viewer, token: viewerToken } = await createTestUser({
@@ -5319,10 +5319,10 @@ describe('Feed history gate', () => {
     });
     await createMutualFollow(poster.id, viewer.id);
 
-    // Backdate a post so it's behind the 7-day gate.
+    // Backdate a post so it's behind the 30-day gate.
     await query(
       `INSERT INTO posts (user_id, caption, created_at)
-       VALUES ($1, 'gated', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, 'gated', NOW() - INTERVAL '35 days')`,
       [poster.id],
     );
 
@@ -5340,7 +5340,7 @@ describe('Feed history gate', () => {
     });
     await createMutualFollow(poster.id, viewer.id);
 
-    // Recent post only — nothing past the 7-day cutoff.
+    // Recent post only — nothing past the 30-day cutoff.
     await request(app)
       .post('/v1/posts')
       .set('Authorization', `Bearer ${posterToken}`)
@@ -6614,7 +6614,7 @@ describe('RevenueCat Webhooks', () => {
   test('POST /v1/webhooks/revenuecat rejects missing auth', async () => {
     const res = await request(app)
       .post('/v1/webhooks/revenuecat')
-      .send({ event: { id: 'evt1', type: 'INITIAL_PURCHASE', app_user_id: 'x', product_id: 'aside_pro_monthly' } });
+      .send({ event: { id: 'evt1', type: 'INITIAL_PURCHASE', app_user_id: 'x', product_id: 'aside_pro_yearly' } });
     expect(res.status).toBe(401);
   });
 
@@ -6626,7 +6626,7 @@ describe('RevenueCat Webhooks', () => {
       const res = await request(app)
         .post('/v1/webhooks/revenuecat')
         .set('Authorization', 'Bearer wrong-secret')
-        .send({ event: { id: 'evt2', type: 'INITIAL_PURCHASE', app_user_id: 'x', product_id: 'aside_pro_monthly' } });
+        .send({ event: { id: 'evt2', type: 'INITIAL_PURCHASE', app_user_id: 'x', product_id: 'aside_pro_yearly' } });
       expect(res.status).toBe(401);
     } finally {
       config.revenuecatWebhookSecret = originalSecret;
@@ -6649,8 +6649,8 @@ describe('RevenueCat Webhooks', () => {
           id: `evt-${Date.now()}-activate`,
           type: 'INITIAL_PURCHASE',
           app_user_id: user.id,
-          product_id: 'aside_pro_monthly',
-          expiration_at_ms: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          product_id: 'aside_pro_yearly',
+          expiration_at_ms: Date.now() + 365 * 24 * 60 * 60 * 1000,
         },
       });
     expect(res.status).toBe(200);
@@ -6676,13 +6676,13 @@ describe('RevenueCat Webhooks', () => {
     await request(app)
       .post('/v1/webhooks/revenuecat')
       .set('Authorization', 'Bearer test-secret')
-      .send({ event: { id: eventId, type: 'INITIAL_PURCHASE', app_user_id: user.id, product_id: 'aside_pro_monthly' } });
+      .send({ event: { id: eventId, type: 'INITIAL_PURCHASE', app_user_id: user.id, product_id: 'aside_pro_yearly' } });
 
     // Second call with same event ID
     const res = await request(app)
       .post('/v1/webhooks/revenuecat')
       .set('Authorization', 'Bearer test-secret')
-      .send({ event: { id: eventId, type: 'INITIAL_PURCHASE', app_user_id: user.id, product_id: 'aside_pro_monthly' } });
+      .send({ event: { id: eventId, type: 'INITIAL_PURCHASE', app_user_id: user.id, product_id: 'aside_pro_yearly' } });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('already_processed');
@@ -6702,7 +6702,7 @@ describe('RevenueCat Webhooks', () => {
       .post('/v1/webhooks/revenuecat')
       .set('Authorization', 'Bearer test-secret')
       .send({
-        event: { id: `evt-${Date.now()}-exp`, type: 'EXPIRATION', app_user_id: user.id, product_id: 'aside_pro_monthly' },
+        event: { id: `evt-${Date.now()}-exp`, type: 'EXPIRATION', app_user_id: user.id, product_id: 'aside_pro_yearly' },
       });
     expect(res.status).toBe(200);
 
@@ -6738,7 +6738,7 @@ describe('RevenueCat Webhooks', () => {
           id: `evt-${Date.now()}-fam`,
           type: 'INITIAL_PURCHASE',
           app_user_id: owner.user.id,
-          product_id: 'aside_pro_family_monthly',
+          product_id: 'aside_pro_family_yearly',
         },
       });
     expect(res.status).toBe(200);
@@ -6747,6 +6747,34 @@ describe('RevenueCat Webhooks', () => {
     const { rows } = await query('SELECT subscription_status, subscription_plan FROM users WHERE id = $1', [member.user.id]);
     expect(rows[0].subscription_status).toBe('active');
     expect(rows[0].subscription_plan).toBe('pro_family');
+
+    config.revenuecatWebhookSecret = originalSecret;
+  });
+
+  test('Google annual base plan product IDs map to the right plan', async () => {
+    const { config } = require('../src/config');
+    const originalSecret = config.revenuecatWebhookSecret;
+    config.revenuecatWebhookSecret = 'test-secret';
+
+    const { user } = await createTestUser();
+
+    const res = await request(app)
+      .post('/v1/webhooks/revenuecat')
+      .set('Authorization', 'Bearer test-secret')
+      .send({
+        event: {
+          id: `evt-${Date.now()}-google-annual`,
+          type: 'INITIAL_PURCHASE',
+          app_user_id: user.id,
+          product_id: 'aside_pro_yearly:annual',
+          expiration_at_ms: Date.now() + 365 * 24 * 60 * 60 * 1000,
+        },
+      });
+    expect(res.status).toBe(200);
+
+    const { rows } = await query('SELECT subscription_status, subscription_plan FROM users WHERE id = $1', [user.id]);
+    expect(rows[0].subscription_status).toBe('active');
+    expect(rows[0].subscription_plan).toBe('pro_individual');
 
     config.revenuecatWebhookSecret = originalSecret;
   });
@@ -6869,7 +6897,7 @@ describe('Subscription Endpoints', () => {
 
 // ==================== MESSAGE HISTORY GATING ====================
 describe('Message History Gating', () => {
-  test('Free user cannot see messages older than 7 days', async () => {
+  test('Free user cannot see messages older than 30 days', async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
     await createMutualFollow(userA.user.id, userB.user.id);
@@ -6881,10 +6909,10 @@ describe('Message History Gating', () => {
       .send({ user_id: userB.user.id });
     const convoId = convoRes.body.conversation.id;
 
-    // Insert an old message (10 days ago)
+    // Insert an old message (35 days ago)
     await query(
       `INSERT INTO messages (conversation_id, sender_id, body, created_at)
-       VALUES ($1, $2, 'old message', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, $2, 'old message', NOW() - INTERVAL '35 days')`,
       [convoId, userB.user.id],
     );
 
@@ -6920,7 +6948,7 @@ describe('Message History Gating', () => {
     // Insert old + new messages
     await query(
       `INSERT INTO messages (conversation_id, sender_id, body, created_at)
-       VALUES ($1, $2, 'old message', NOW() - INTERVAL '10 days')`,
+       VALUES ($1, $2, 'old message', NOW() - INTERVAL '35 days')`,
       [convoId, userB.user.id],
     );
     await query(

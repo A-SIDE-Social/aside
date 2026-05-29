@@ -15,7 +15,6 @@ class PaywallScreen extends ConsumerStatefulWidget {
 }
 
 class _PaywallScreenState extends ConsumerState<PaywallScreen> {
-  bool _yearly = true;
   bool _family = false;
 
   @override
@@ -29,14 +28,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
     if (offering == null) return null;
 
     if (_family) {
-      final id = _yearly ? 'family_annual' : 'family_monthly';
+      const id = 'family_annual';
       return offering.availablePackages
           .where((p) => p.identifier == id)
           .firstOrNull;
     } else {
-      final type = _yearly ? PackageType.annual : PackageType.monthly;
       return offering.availablePackages
-          .where((p) => p.packageType == type)
+          .where((p) => p.packageType == PackageType.annual)
           .firstOrNull;
     }
   }
@@ -110,7 +108,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Free accounts can only see the last 7 days of posts and messages. '
+                    'Free accounts can see the last 30 days of posts and messages. '
                     'Upgrade to keep everything.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: colors.textSecondary,
@@ -119,37 +117,12 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   ),
                   const SizedBox(height: 28),
 
-                  // Billing period toggle
-                  SegmentedButton<bool>(
-                    selected: {_yearly},
-                    onSelectionChanged: (v) =>
-                        setState(() => _yearly = v.first),
-                    showSelectedIcon: false,
-                    style: ButtonStyle(
-                      visualDensity: VisualDensity.compact,
-                      shape: WidgetStateProperty.all(
-                        RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                      side: WidgetStateProperty.all(
-                        BorderSide(color: colors.border, width: 0.5),
-                      ),
-                    ),
-                    segments: const [
-                      ButtonSegment(value: false, label: Text('Monthly')),
-                      ButtonSegment(value: true, label: Text('Yearly')),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-
                   // Plan cards
                   _PlanCard(
                     title: 'Pro',
                     subtitle: 'For you',
                     price: _getPriceString(sub.offerings, false),
-                    period: _yearly ? '/year' : '/month',
-                    savings: _yearly ? 'Save ~17%' : null,
+                    period: '/year',
                     features: const [
                       'Unlimited post history',
                       'Unlimited message history',
@@ -162,8 +135,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                     title: 'Pro Family',
                     subtitle: 'Up to 6 people',
                     price: _getPriceString(sub.offerings, true),
-                    period: _yearly ? '/year' : '/month',
-                    savings: _yearly ? 'Save ~17%' : null,
+                    period: '/year',
                     features: const [
                       'Everything in Pro',
                       'Share with up to 5 family members',
@@ -259,14 +231,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
 
     Package? pkg;
     if (isFamily) {
-      final id = _yearly ? 'family_annual' : 'family_monthly';
+      const id = 'family_annual';
       pkg = offering.availablePackages
           .where((p) => p.identifier == id)
           .firstOrNull;
     } else {
-      final type = _yearly ? PackageType.annual : PackageType.monthly;
       pkg = offering.availablePackages
-          .where((p) => p.packageType == type)
+          .where((p) => p.packageType == PackageType.annual)
           .firstOrNull;
     }
 
@@ -279,7 +250,6 @@ class _PlanCard extends StatelessWidget {
   final String subtitle;
   final String price;
   final String period;
-  final String? savings;
   final List<String> features;
   final bool selected;
   final VoidCallback onTap;
@@ -292,7 +262,6 @@ class _PlanCard extends StatelessWidget {
     required this.features,
     required this.selected,
     required this.onTap,
-    this.savings,
   });
 
   @override
@@ -356,24 +325,6 @@ class _PlanCard extends StatelessWidget {
                 ),
               ],
             ),
-            if (savings != null) ...[
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppColors.success.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  savings!,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.success,
-                  ),
-                ),
-              ),
-            ],
             const SizedBox(height: 12),
             ...features.map(
               (f) => Padding(

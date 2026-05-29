@@ -34,12 +34,17 @@ flutter build apk --debug \
   --dart-define TERMS_URL=http://localhost:3000/terms \
   --dart-define PRIVACY_URL=http://localhost:3000/privacy \
   --dart-define SUPPORT_EMAIL=support@example.com \
+  --dart-define SOURCE_CODE_URL=https://github.com/A-SIDE-Social/aside \
   --dart-define APP_NAME=A/SIDE
 ```
 
 Hosted A/SIDE production builds inject these values from the private
 deploy repo. Self-hosters should do the same from their own build
 pipeline.
+
+`SOURCE_CODE_URL` is used by the Settings source-code link. Keep it
+pointing at the public source for hosted builds, or your fork for
+self-hosted builds.
 
 ## Firebase And Signing
 
@@ -61,6 +66,10 @@ builds must update:
 - Android `namespace`, `applicationId`, package path, and app-link hosts.
 - Firebase app registrations for those IDs.
 - Store listings and associated domains.
+
+Android App Links also require each production host to serve a Digital
+Asset Links file at `/.well-known/assetlinks.json` with the app package
+name and Play App Signing SHA-256 certificate fingerprint.
 
 This initial public release documents that work instead of broadly
 renaming native project files.

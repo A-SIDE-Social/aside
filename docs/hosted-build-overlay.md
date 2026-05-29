@@ -52,8 +52,15 @@ Example defines:
 --dart-define TERMS_URL=https://example.com/terms
 --dart-define PRIVACY_URL=https://example.com/privacy
 --dart-define SUPPORT_EMAIL=support@example.com
+--dart-define SOURCE_CODE_URL=https://github.com/A-SIDE-Social/aside
 --dart-define APP_NAME=A/SIDE
 ```
 
 Use a disposable checkout for builds so injected private files never
 become tracked changes in a developer's public working tree.
+
+For Android App Links, the hosted web origin must also serve
+`/.well-known/assetlinks.json` with the Android application ID and the
+Play App Signing SHA-256 certificate fingerprint. The native manifest
+hosts, `APP_LINK_HOSTS`, and the web-hosted Asset Links file must all
+describe the same production domains.

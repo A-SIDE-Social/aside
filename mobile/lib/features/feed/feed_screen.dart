@@ -233,7 +233,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                         // behind the plan gate. Previously we showed the
                         // banner for every Free user at the end of their
                         // feed — even brand-new users with nothing past
-                        // the 7-day cutoff — which read as a nag.
+                        // the 30-day cutoff — which read as a nag.
                         final isFree = !AppLimits.isPaid(
                           currentUser?.subscriptionStatus,
                         );

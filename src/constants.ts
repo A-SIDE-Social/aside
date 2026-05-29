@@ -4,7 +4,7 @@
 
 export const PLANS = {
   free: {
-    feedHistoryDays: 7,
+    feedHistoryDays: 30,
   },
   paid: {
     feedHistoryDays: null as number | null, // unlimited
@@ -72,10 +72,10 @@ export const FAMILY_MAX_MEMBERS = 6; // owner + 5
 
 // Map RevenueCat product IDs to our plan types
 export const PRODUCT_TO_PLAN: Record<string, string> = {
-  aside_pro_monthly: 'pro_individual',
   aside_pro_yearly: 'pro_individual',
-  aside_pro_family_monthly: 'pro_family',
+  'aside_pro_yearly:annual': 'pro_individual',
   aside_pro_family_yearly: 'pro_family',
+  'aside_pro_family_yearly:annual': 'pro_family',
 };
 
 // Valid durations for RevenueCat promotional grants

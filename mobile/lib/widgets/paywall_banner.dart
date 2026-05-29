@@ -5,7 +5,7 @@ import '../core/config/app_colors.dart';
 
 /// Inline "older content hidden" marker shown at the top of a
 /// message list or the end of the feed when Free users hit the
-/// 7-day history boundary.
+/// 30-day history boundary.
 ///
 /// Transparent background (no card), so it blends into whatever list
 /// it sits in instead of reading as a second surface layered on the
@@ -40,7 +40,7 @@ class PaywallBanner extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(
-            'Free accounts can see the last 7 days.',
+            'Free accounts can see the last 30 days.',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colors.textSecondary,
             ),

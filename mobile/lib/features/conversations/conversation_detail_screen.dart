@@ -959,7 +959,7 @@ class _ConversationDetailScreenState
                 // regardless of whether the payload was empty. Previously
                 // the seed required `loaded.isNotEmpty`, which meant a
                 // conversation whose entire history sits behind the Free
-                // 7-day gate fell through to "No messages yet / Say
+                // 30-day gate fell through to "No messages yet / Say
                 // hello!" with no hint that older content existed. That
                 // was the iPad-cross-device bug report.
                 if (_messages.isEmpty && !_providerSeeded) {

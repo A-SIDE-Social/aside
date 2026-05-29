@@ -47,6 +47,11 @@ class Env {
         defaultValue: 'support@example.com',
       );
 
+  static String get sourceCodeUrl => const String.fromEnvironment(
+        'SOURCE_CODE_URL',
+        defaultValue: 'https://github.com/A-SIDE-Social/aside',
+      );
+
   /// RevenueCat public API key. Required for in-app subscriptions to
   /// work; the app runs free-tier-only without it. Get one at
   /// <https://www.revenuecat.com/>.

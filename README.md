@@ -86,8 +86,21 @@ flutter build apk --debug \
   --dart-define APP_LINK_HOSTS=localhost \
   --dart-define TERMS_URL=http://localhost:3000/terms \
   --dart-define PRIVACY_URL=http://localhost:3000/privacy \
-  --dart-define SUPPORT_EMAIL=support@example.com
+  --dart-define SUPPORT_EMAIL=support@example.com \
+  --dart-define SOURCE_CODE_URL=https://github.com/A-SIDE-Social/aside
 ```
+
+## Hosted Product Model
+
+Hosted A/SIDE uses annual subscriptions only. Free accounts can see the
+most recent 30 days of feed and message history.
+
+- Pro Individual: $20/year for one account.
+- Pro Family: $60/year for the owner plus up to 5 family members.
+
+Store pricing and sale availability are managed in App Store Connect and
+Google Play. RevenueCat maps the active annual store products to A/SIDE's
+`pro` entitlement.
 
 ## Firebase, RevenueCat, Email
 

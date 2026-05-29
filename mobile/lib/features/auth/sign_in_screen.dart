@@ -225,7 +225,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Just your real friends',
+                'Your private social circle',
                 style: TextStyle(
                   fontFamily: 'Iowan Old Style',
                   fontFamilyFallback: const [

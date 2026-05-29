@@ -277,6 +277,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   showDivider: true,
                 ),
                 _SettingsRow(
+                  title: 'Source Code',
+                  onTap: () {
+                    InAppBrowser.open(
+                      context,
+                      Env.sourceCodeUrl,
+                      title: 'Source Code',
+                    );
+                  },
+                  showDivider: true,
+                ),
+                _SettingsRow(
+                  title: 'Open Source Licenses',
+                  onTap: () => showLicensePage(
+                    context: context,
+                    applicationName: Env.appName,
+                  ),
+                  showDivider: true,
+                ),
+                _SettingsRow(
                   title: 'Contact Us',
                   onTap: () {
                     launchUrl(
