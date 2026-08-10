@@ -177,6 +177,65 @@ describe('POST /admin/users/:id/email — change email happy path', () => {
   });
 });
 
+describe('POST /admin/users/:id/permanent-delete', () => {
+  test('deletes the account and records the operator action', async () => {
+    const nonce = Date.now();
+    const { rows: adminRows } = await query(
+      `INSERT INTO users (username, display_name, email)
+       VALUES ($1, 'Deletion Admin', $2)
+       RETURNING id`,
+      [`u_delete_admin_${nonce}`, `delete-admin-${nonce}@test.com`],
+    );
+    const { rows: targetRows } = await query(
+      `INSERT INTO users (username, display_name, email)
+       VALUES ($1, 'Deletion Target', $2)
+       RETURNING id`,
+      [`u_delete_target_${nonce}`, `delete-target-${nonce}@test.com`],
+    );
+    const adminId = adminRows[0].id;
+    const targetId = targetRows[0].id;
+    config.adminUserIds = [adminId];
+
+    const csrf = 'a'.repeat(64);
+    const sessionCookie = signCookie(
+      'admin_session',
+      generateAccessToken(adminId),
+      config.cookieSecret,
+    );
+    const csrfCookie = signCookie('admin_csrf', csrf, config.cookieSecret);
+
+    const deletion = await request(app)
+      .post(`/admin/users/${targetId}/permanent-delete`)
+      .type('form')
+      .set('Cookie', [sessionCookie, csrfCookie])
+      .send({ confirmation: 'DELETE', csrf });
+
+    expect(deletion.status).toBe(302);
+    expect(deletion.headers.location).toBe('/admin/users?permanently_deleted=1');
+
+    const { rows: remainingUsers } = await query(
+      'SELECT 1 FROM users WHERE id = $1',
+      [targetId],
+    );
+    expect(remainingUsers).toHaveLength(0);
+
+    const { rows: auditRows } = await query(
+      `SELECT admin_user_id, target_user_id, action, details
+         FROM admin_audit
+        WHERE action = 'permanent_delete'
+        ORDER BY created_at DESC
+        LIMIT 1`,
+    );
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({
+      admin_user_id: adminId,
+      target_user_id: null,
+      action: 'permanent_delete',
+      details: { source: 'admin_dashboard' },
+    });
+  });
+});
+
 // ── Cookie helpers ────────────────────────────────────────────────
 // cookie-parser uses a custom signing scheme: `s:value.HMAC-SHA256(secret).base64`.
 // We need to mint signed cookies for the gating tests and

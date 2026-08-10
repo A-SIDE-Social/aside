@@ -35,6 +35,7 @@ router.get(
          JOIN users u ON u.id = p.user_id
          JOIN group_members gm ON gm.member_user_id = p.user_id AND gm.group_id = $2
          WHERE p.deleted_at IS NULL
+         AND u.deleted_at IS NULL
          AND (p.expires_at IS NULL OR p.expires_at > NOW())
          AND (
            p.user_id = $1
@@ -65,6 +66,7 @@ router.get(
            )
          )
          AND p.deleted_at IS NULL
+         AND u.deleted_at IS NULL
          AND (p.expires_at IS NULL OR p.expires_at > NOW())
          AND (
            NOT EXISTS (SELECT 1 FROM post_groups pg WHERE pg.post_id = p.id)
@@ -126,6 +128,7 @@ router.get(
          LEFT JOIN comments parent_c ON parent_c.id = c.reply_to_comment_id
          WHERE c.post_id = ANY($1)
            AND c.deleted_at IS NULL
+           AND u.deleted_at IS NULL
            AND (c.reply_to_comment_id IS NULL OR parent_c.deleted_at IS NULL)
          AND c.id IN (
            SELECT id FROM (

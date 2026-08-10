@@ -709,15 +709,15 @@ describe('Users', () => {
     expect(ids).not.toContain(stranger.id);
   });
 
-  test('DELETE /v1/users/me soft-deletes account', async () => {
+  test('DELETE /v1/users/me permanently deletes account', async () => {
     const { user, token } = await createTestUser();
     const res = await request(app)
       .delete('/v1/users/me')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
 
-    const { rows } = await query('SELECT deleted_at FROM users WHERE id = $1', [user.id]);
-    expect(rows[0].deleted_at).not.toBeNull();
+    const { rows } = await query('SELECT 1 FROM users WHERE id = $1', [user.id]);
+    expect(rows).toHaveLength(0);
   });
 });
 
@@ -4174,7 +4174,7 @@ describe('Conversations', () => {
     expect(res.body.dissolved).toBe(true);
   });
 
-  test('Admin: auto-promote on account soft-delete', async () => {
+  test('Admin: auto-promote on permanent account deletion', async () => {
     // Creator created group with B and C. B joined first (earlier timestamp).
     // When creator deletes account, B should inherit created_by.
     const { user: userC } = await createTestUser();

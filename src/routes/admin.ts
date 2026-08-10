@@ -23,6 +23,8 @@ import { authLimit, writeLimit } from '../middleware/rateLimit';
 import { asyncHandler } from '../helpers';
 import { generateAccessToken } from '../middleware/auth';
 import { sendOtpEmail } from '../email';
+import { permanentlyDeleteUser } from '../services/userDeletion';
+import { processMediaDeletionQueue } from '../services/mediaDeletion';
 import {
   adminOnly,
   ADMIN_COOKIE,
@@ -507,6 +509,19 @@ adminRouter.get(
             <button type="submit" class="danger">Soft delete account</button>
           </form>
         `}
+
+        <h2>Permanent deletion</h2>
+        <p class="muted small">Permanently removes the user and private
+          dependent data. Shared audit history is anonymized. This cannot be
+          restored. Type <code>DELETE</code> to confirm.</p>
+        <form method="post" action="/admin/users/${esc(u.id)}/permanent-delete">
+          <input type="hidden" name="csrf" value="${csrf}">
+          <label>Confirmation
+            <input type="text" name="confirmation" required pattern="DELETE"
+                   autocomplete="off" placeholder="DELETE">
+          </label>
+          <button type="submit" class="danger">Permanently delete account</button>
+        </form>
       `,
     }));
   }),
@@ -641,6 +656,37 @@ adminRouter.post(
   }),
 );
 
+adminRouter.post(
+  '/users/:id/permanent-delete',
+  adminOnly,
+  writeLimit,
+  express_urlencoded(),
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!verifyCsrf(req)) return res.status(403).send('CSRF check failed.');
+    if (req.body?.confirmation !== 'DELETE') {
+      return res.status(400).send('Type DELETE to confirm permanent deletion.');
+    }
+
+    const id = String(req.params.id);
+    if (id === req.user!.userId) {
+      return res.status(400).send('An admin cannot permanently delete their own account.');
+    }
+
+    const deleted = await permanentlyDeleteUser(id);
+    if (!deleted) return res.status(404).send('User not found.');
+
+    await writeAudit(req, 'permanent_delete', null, {
+      source: 'admin_dashboard',
+    });
+    try {
+      await processMediaDeletionQueue();
+    } catch (err) {
+      console.warn('Account media cleanup queued for retry:', err);
+    }
+    res.redirect('/admin/users?permanently_deleted=1');
+  }),
+);
+
 /// Toggle a user's marketing_opt_in flag from the admin user-detail
 /// page. Used to honor manual opt-out requests (someone emails you
 /// asking to be unsubscribed but doesn't click the email link) or
@@ -699,9 +745,9 @@ adminRouter.get(
     const { rows: recentBroadcasts } = await query(
       `SELECT b.id, b.template_key, b.subject, b.recipient_count,
               b.send_count, b.failure_count, b.started_at, b.completed_at,
-              u.display_name AS initiated_by_name
+              COALESCE(u.display_name, 'Deleted operator') AS initiated_by_name
          FROM broadcasts b
-         JOIN users u ON u.id = b.initiated_by_user_id
+         LEFT JOIN users u ON u.id = b.initiated_by_user_id
          ORDER BY b.started_at DESC
          LIMIT 10`,
     );
@@ -877,10 +923,11 @@ adminRouter.get(
     const { rows } = await query(
       `SELECT a.id, a.action, a.target_user_id, a.details, a.ip_address,
               a.created_at,
-              admin.email AS admin_email, admin.display_name AS admin_name,
+              admin.email AS admin_email,
+              COALESCE(admin.display_name, 'Deleted operator') AS admin_name,
               target.email AS target_email, target.display_name AS target_name
          FROM admin_audit a
-         JOIN users admin ON admin.id = a.admin_user_id
+         LEFT JOIN users admin ON admin.id = a.admin_user_id
          LEFT JOIN users target ON target.id = a.target_user_id
          ORDER BY a.created_at DESC
          LIMIT 200`,

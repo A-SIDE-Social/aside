@@ -4,12 +4,26 @@ import { config } from './config';
 import { initSocket } from './socket';
 import { query } from './db/pool';
 import { SYSTEM_USER_EMAIL } from './constants';
+import { processMediaDeletionQueue } from './services/mediaDeletion';
 
 const server = http.createServer(app);
 initSocket(server);
 
 server.listen(config.port, async () => {
   console.log(`A/SIDE API listening on port ${config.port}`);
+
+  // Retry storage cleanup left behind by account deletions. Database rows
+  // are the durable source of truth, so a temporary Spaces outage does not
+  // turn a completed account deletion into an orphaned-blob leak.
+  void processMediaDeletionQueue().catch((err) => {
+    console.warn('Could not process media deletion queue:', err);
+  });
+  const mediaCleanupTimer = setInterval(() => {
+    void processMediaDeletionQueue().catch((err) => {
+      console.warn('Could not process media deletion queue:', err);
+    });
+  }, 60 * 60 * 1000);
+  mediaCleanupTimer.unref();
 
   // Seed a reusable dev invite code so registration is easy during development.
   // The code "testinvite0000" is recreated on every startup if it doesn't

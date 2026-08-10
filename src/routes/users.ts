@@ -3,6 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, getClient } from '../db/pool';
 import { asyncHandler, isMutualFollow, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
+import { permanentlyDeleteUser } from '../services/userDeletion';
+import { processMediaDeletionQueue } from '../services/mediaDeletion';
 import { keyBundleLimit, usernameLookupLimit } from '../middleware/rateLimit';
 import { getPlanLimits, LIMITS, SYSTEM_USER_EMAIL } from '../constants';
 import { config } from '../config';
@@ -335,68 +337,23 @@ router.post(
   }),
 );
 
-// DELETE /me
+// DELETE /me - Permanently delete the current account
 router.delete(
   '/me',
   asyncHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
 
-    // Before soft-deleting, hand off admin on any group conversations
-    // this user created. Otherwise those groups would be headless (the
-    // normal leave path requires explicit transfer, but account deletion
-    // is a forced exit). Promote the oldest-joined remaining member.
-    //
-    // This runs outside a transaction for simplicity — each UPDATE is
-    // independent, and if the soft-delete fails below we still end up
-    // with a well-formed admin chain on every group.
-    const { rows: creatorships } = await query(
-      `SELECT c.id
-       FROM conversations c
-       WHERE c.conversation_type = 'group'
-         AND c.created_by = $1`,
-      [userId],
-    );
+    const deleted = await permanentlyDeleteUser(userId);
+    if (!deleted) throw new AppError(404, 'User not found');
 
-    for (const { id: convId } of creatorships) {
-      const { rows: nextAdmin } = await query(
-        `SELECT user_id FROM conversation_members
-         WHERE conversation_id = $1 AND user_id != $2
-         ORDER BY joined_at ASC
-         LIMIT 1`,
-        [convId, userId],
-      );
-      if (nextAdmin.length > 0) {
-        await query(
-          'UPDATE conversations SET created_by = $1 WHERE id = $2',
-          [nextAdmin[0].user_id, convId],
-        );
-      } else {
-        // Sole-creator-sole-member: dissolve the group. Nobody's here
-        // to inherit it, so leaving the row would orphan it (0 members,
-        // stale created_by referencing a soft-deleted user). Dissolve
-        // cleans messages first (no ON DELETE CASCADE on messages).
-        await query('DELETE FROM messages WHERE conversation_id = $1', [convId]);
-        await query('DELETE FROM conversations WHERE id = $1', [convId]);
-      }
+    // Relational deletion has committed. Object storage is intentionally
+    // processed afterward; failures leave durable queue rows for retry and
+    // must not resurrect or partially restore the account.
+    try {
+      await processMediaDeletionQueue();
+    } catch (err) {
+      console.warn('Account media cleanup queued for retry:', err);
     }
-
-    // Remove the leaving user from any group memberships so they stop
-    // receiving fanout. (Direct conversations are left alone — their
-    // counterpart still sees the history.)
-    await query(
-      `DELETE FROM conversation_members
-       WHERE user_id = $1
-         AND conversation_id IN (
-           SELECT id FROM conversations WHERE conversation_type = 'group'
-         )`,
-      [userId],
-    );
-
-    const { rows } = await query(
-      'UPDATE users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
-      [userId],
-    );
-    if (rows.length === 0) throw new AppError(404, 'User not found');
 
     res.json({ message: 'Account deleted' });
   }),
