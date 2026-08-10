@@ -45,6 +45,7 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
   bool _sending = false;
 
   Future<void> _send() async {
+    if (_sending) return;
     setState(() => _sending = true);
     try {
       final api = ref.read(apiServiceProvider);

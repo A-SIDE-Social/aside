@@ -32,14 +32,13 @@ class ConnectionsScreen extends ConsumerStatefulWidget {
 }
 
 class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
-  /// Per-user guard so a double-tap on Accept can't fire two POST /follows
-  /// calls — the second would race against the first and hit the server's
-  /// "already following" check.
-  final Set<String> _acceptingIds = {};
+  /// Per-user guard so repeated or competing Accept/Decline taps cannot send
+  /// multiple mutations for the same request.
+  final Set<String> _actingIds = {};
 
   Future<void> _acceptRequest(User user) async {
-    if (_acceptingIds.contains(user.id)) return;
-    setState(() => _acceptingIds.add(user.id));
+    if (_actingIds.contains(user.id)) return;
+    setState(() => _actingIds.add(user.id));
     try {
       final api = ref.read(apiServiceProvider);
       await api.follow(user.id);
@@ -57,24 +56,30 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _acceptingIds.remove(user.id));
+      if (mounted) setState(() => _actingIds.remove(user.id));
     }
   }
 
   Future<void> _declineRequest(User user) async {
+    if (_actingIds.contains(user.id)) return;
+    setState(() => _actingIds.add(user.id));
     try {
-      // To decline, we need to remove their follow of us.
-      // The API doesn't have a dedicated "remove follower" endpoint,
-      // so we'll just hide it locally. In practice, doing nothing
-      // is fine — they stay as a one-way follow with no access.
-      // For now, we just remove from the UI.
+      final api = ref.read(apiServiceProvider);
+      await api.declineInbound(user.id);
       ref.invalidate(_requestsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Declined request from ${user.displayName}')),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to decline: $e')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _actingIds.remove(user.id));
     }
   }
 
@@ -127,7 +132,7 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
                               SizedBox(
                                 height: 32,
                                 child: ElevatedButton(
-                                  onPressed: _acceptingIds.contains(user.id)
+                                  onPressed: _actingIds.contains(user.id)
                                       ? null
                                       : () => _acceptRequest(user),
                                   style: ElevatedButton.styleFrom(
@@ -143,7 +148,9 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
                                 height: 32,
                                 width: 32,
                                 child: IconButton(
-                                  onPressed: () => _declineRequest(user),
+                                  onPressed: _actingIds.contains(user.id)
+                                      ? null
+                                      : () => _declineRequest(user),
                                   icon: Icon(
                                     Icons.close_rounded,
                                     size: 18,
