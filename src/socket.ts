@@ -2,7 +2,7 @@ import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { config } from './config';
-import { AuthPayload } from './middleware/auth';
+import { activeUserExists, AuthPayload } from './middleware/auth';
 import { corsOrigin } from './lib/cors';
 
 let io: Server;
@@ -12,12 +12,15 @@ export function initSocket(httpServer: HttpServer): Server {
     cors: { origin: corsOrigin },
   });
 
-  io.use((socket: Socket, next) => {
+  io.use(async (socket: Socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Authentication required'));
 
     try {
       const payload = jwt.verify(token, config.jwtSecret) as AuthPayload;
+      if (!(await activeUserExists(payload.userId))) {
+        return next(new Error('Account is no longer active'));
+      }
       (socket as any).userId = payload.userId;
       next();
     } catch {

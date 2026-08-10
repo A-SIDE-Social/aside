@@ -1,6 +1,7 @@
 import request from 'supertest';
 import http from 'http';
 import crypto from 'crypto';
+import { io as createSocket } from 'socket.io-client';
 import { app } from '../src/app';
 import { pool, query } from '../src/db/pool';
 import { initSocket } from '../src/socket';
@@ -531,6 +532,45 @@ describe('Auth', () => {
     expect(refreshRes.body.access_token).toBeDefined();
   });
 
+  test('Revoked refresh token cannot mint a new access token', async () => {
+    await createTestUser({ email: 'revoked-refresh@test.com' });
+    await request(app)
+      .post('/v1/auth/request-otp')
+      .send({ email: 'revoked-refresh@test.com' });
+    const loginRes = await request(app)
+      .post('/v1/auth/verify-otp')
+      .send({ email: 'revoked-refresh@test.com', code: '123456' });
+
+    await query(
+      'UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1',
+      [loginRes.body.user.id],
+    );
+
+    const refreshRes = await request(app)
+      .post('/v1/auth/refresh')
+      .send({ refresh_token: loginRes.body.refresh_token });
+    expect(refreshRes.status).toBe(401);
+  });
+
+  test('Deleted user refresh token cannot mint a new access token', async () => {
+    await createTestUser({ email: 'deleted-refresh@test.com' });
+    await request(app)
+      .post('/v1/auth/request-otp')
+      .send({ email: 'deleted-refresh@test.com' });
+    const loginRes = await request(app)
+      .post('/v1/auth/verify-otp')
+      .send({ email: 'deleted-refresh@test.com', code: '123456' });
+
+    await query('UPDATE users SET deleted_at = NOW() WHERE id = $1', [
+      loginRes.body.user.id,
+    ]);
+
+    const refreshRes = await request(app)
+      .post('/v1/auth/refresh')
+      .send({ refresh_token: loginRes.body.refresh_token });
+    expect(refreshRes.status).toBe(401);
+  });
+
   test('Logout invalidates refresh token', async () => {
     const { user } = await createTestUser({ email: 'logout-test@test.com' });
 
@@ -554,6 +594,48 @@ describe('Auth', () => {
       .post('/v1/auth/refresh')
       .send({ refresh_token: loginRes.body.refresh_token });
     expect(refreshRes.status).toBe(401);
+  });
+});
+
+describe('Socket authentication', () => {
+  function socketUrl(): string {
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Test server is not listening on a TCP port');
+    }
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  test('active user can connect', async () => {
+    const { token } = await createTestUser();
+    const socket = createSocket(socketUrl(), {
+      auth: { token },
+      transports: ['websocket'],
+      forceNew: true,
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('connect_error', reject);
+    });
+    socket.disconnect();
+  });
+
+  test('deleted user is rejected during the handshake', async () => {
+    const { user, token } = await createTestUser();
+    await query('UPDATE users SET deleted_at = NOW() WHERE id = $1', [user.id]);
+    const socket = createSocket(socketUrl(), {
+      auth: { token },
+      transports: ['websocket'],
+      forceNew: true,
+      reconnection: false,
+    });
+
+    const message = await new Promise<string>((resolve) => {
+      socket.once('connect_error', (err) => resolve(err.message));
+    });
+    expect(message).toBe('Account is no longer active');
+    socket.disconnect();
   });
 });
 
@@ -718,6 +800,11 @@ describe('Users', () => {
 
     const { rows } = await query('SELECT deleted_at FROM users WHERE id = $1', [user.id]);
     expect(rows[0].deleted_at).not.toBeNull();
+
+    const afterDelete = await request(app)
+      .get('/v1/users/me')
+      .set('Authorization', `Bearer ${token}`);
+    expect(afterDelete.status).toBe(401);
   });
 });
 

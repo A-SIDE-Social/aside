@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
+import { query } from '../db/pool';
 
 export interface AuthPayload {
   userId: string;
@@ -14,7 +15,19 @@ declare global {
   }
 }
 
-export function authenticate(req: Request, res: Response, next: NextFunction): void {
+export async function activeUserExists(userId: string): Promise<boolean> {
+  const { rows } = await query(
+    'SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL',
+    [userId],
+  );
+  return rows.length > 0;
+}
+
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Missing or invalid authorization header' });
@@ -22,12 +35,23 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
   }
 
   const token = header.slice(7);
+  let payload: AuthPayload;
   try {
-    const payload = jwt.verify(token, config.jwtSecret) as AuthPayload;
-    req.user = payload;
-    next();
+    payload = jwt.verify(token, config.jwtSecret) as AuthPayload;
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
+    return;
+  }
+
+  try {
+    if (!(await activeUserExists(payload.userId))) {
+      res.status(401).json({ error: 'Account is no longer active' });
+      return;
+    }
+    req.user = payload;
+    next();
+  } catch (err) {
+    next(err);
   }
 }
 

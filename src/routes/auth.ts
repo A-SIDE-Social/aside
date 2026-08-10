@@ -529,7 +529,13 @@ router.post(
 
     const hashedToken = hashToken(refresh_token);
     const { rows } = await query(
-      'SELECT * FROM refresh_tokens WHERE token_hash = $1',
+      `SELECT rt.user_id
+       FROM refresh_tokens rt
+       JOIN users u ON u.id = rt.user_id
+       WHERE rt.token_hash = $1
+         AND rt.revoked_at IS NULL
+         AND rt.expires_at > NOW()
+         AND u.deleted_at IS NULL`,
       [hashedToken],
     );
     if (rows.length === 0) throw new AppError(401, 'Invalid refresh token');
@@ -538,9 +544,14 @@ router.post(
     const jwt = await import('jsonwebtoken');
     try {
       const payload = jwt.default.verify(refresh_token, config.jwtRefreshSecret) as { userId: string };
+      if (payload.userId !== rows[0].user_id) {
+        await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hashedToken]);
+        throw new AppError(401, 'Invalid refresh token');
+      }
       const accessToken = generateAccessToken(payload.userId);
       res.json({ access_token: accessToken });
-    } catch {
+    } catch (err) {
+      if (err instanceof AppError) throw err;
       // Remove invalid token
       await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hashedToken]);
       throw new AppError(401, 'Refresh token expired');
