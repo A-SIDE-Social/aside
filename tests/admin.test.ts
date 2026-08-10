@@ -63,6 +63,29 @@ describe('GET /admin/users — gating', () => {
     expect(res.status).toBe(403);
     expect(res.text).toContain('Access denied');
   });
+
+  test('redirects a deleted allowlisted admin back to login', async () => {
+    const { rows } = await query(
+      `INSERT INTO users (username, display_name, email, deleted_at)
+       VALUES ($1, 'Deleted Admin', $2, NOW())
+       RETURNING id`,
+      [`u_deleted_admin_${Date.now()}`, `deleted-admin-${Date.now()}@test.com`],
+    );
+    const adminId = rows[0].id;
+    config.adminUserIds = [adminId];
+    const cookie = signCookie(
+      'admin_session',
+      generateAccessToken(adminId),
+      config.cookieSecret,
+    );
+
+    const res = await request(app)
+      .get('/admin/users')
+      .set('Cookie', [cookie]);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/admin/login');
+  });
 });
 
 describe('POST /admin/users/:id/email — change email happy path', () => {

@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { query } from '../db/pool';
+import { getClient, query } from '../db/pool';
 import { authenticate } from '../middleware/auth';
 import { writeLimit, inviteValidateLimit } from '../middleware/rateLimit';
 import { asyncHandler, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import { LIMITS } from '../constants';
+import { logOperationalEvent } from '../lib/operationalLog';
 
 function generateInviteCode(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
@@ -118,59 +119,105 @@ router.post(
     const { code } = req.body;
     const userId = req.user!.userId;
 
-    if (!code) throw new AppError(400, 'code is required');
-
-    // Validate the invite code
-    const { rows: invites } = await query(
-      `SELECT i.id, i.created_by_user_id
-       FROM invites i
-       WHERE i.code = $1
-         AND i.status IN ('pending', 'sent')
-         AND i.expires_at > NOW()`,
-      [code],
-    );
-    if (invites.length === 0) throw new AppError(404, 'Invalid or expired invite code');
-
-    const invite = invites[0];
-
-    // Cannot redeem your own invite
-    if (invite.created_by_user_id === userId) {
-      throw new AppError(400, 'Cannot redeem your own invite');
+    if (!code) {
+      logOperationalEvent('invite.redeem', 'rejected', {
+        actor_user_id: userId,
+        reason: 'missing_code',
+        status_code: 400,
+      });
+      throw new AppError(400, 'code is required');
     }
 
-    const inviterId = invite.created_by_user_id;
+    const normalizedCode = code.toString().trim();
+    const client = await getClient();
+    let inviteId: string | undefined;
+    let inviterId: string | undefined;
+    let transactionStarted = false;
 
-    // Check if already connected (mutual follow exists)
-    const { rows: existingFollow } = await query(
-      `SELECT id FROM follows WHERE follower_id = $1 AND followee_id = $2
-       AND EXISTS (SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1)`,
-      [userId, inviterId],
-    );
-    if (existingFollow.length > 0) {
-      throw new AppError(409, 'You are already connected with this user');
+    try {
+      await client.query('BEGIN');
+      transactionStarted = true;
+
+      // Lock the candidate row until redemption completes. A concurrent
+      // redeemer waits here and then re-evaluates the status predicate after
+      // the winner commits, so exactly one caller can consume the code.
+      const { rows: invites } = await client.query(
+        `SELECT i.id, i.created_by_user_id
+         FROM invites i
+         JOIN users inviter ON inviter.id = i.created_by_user_id
+         WHERE i.code = $1
+           AND i.status IN ('pending', 'sent')
+           AND i.expires_at > NOW()
+           AND inviter.deleted_at IS NULL
+         FOR UPDATE OF i`,
+        [normalizedCode],
+      );
+      if (invites.length === 0) {
+        throw new AppError(404, 'Invalid or expired invite code');
+      }
+
+      const invite = invites[0];
+      inviteId = invite.id;
+      inviterId = invite.created_by_user_id;
+
+      if (inviterId === userId) {
+        throw new AppError(400, 'Cannot redeem your own invite');
+      }
+
+      const { rows: existingFollow } = await client.query(
+        `SELECT id FROM follows WHERE follower_id = $1 AND followee_id = $2
+         AND EXISTS (SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1)`,
+        [userId, inviterId],
+      );
+      if (existingFollow.length > 0) {
+        throw new AppError(409, 'You are already connected with this user');
+      }
+
+      const { rowCount } = await client.query(
+        `UPDATE invites
+         SET status = 'used', used_by_user_id = $1, used_at = NOW()
+         WHERE id = $2
+           AND status IN ('pending', 'sent')
+           AND expires_at > NOW()`,
+        [userId, inviteId],
+      );
+      if ((rowCount ?? 0) !== 1) {
+        throw new AppError(404, 'Invalid or expired invite code');
+      }
+
+      await client.query(
+        `INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2), ($2, $1)
+         ON CONFLICT DO NOTHING`,
+        [userId, inviterId],
+      );
+
+      await client.query(
+        `INSERT INTO notifications (user_id, type, actor_id, reference_type)
+         VALUES ($1, 'new_mutual', $2, 'follow'), ($2, 'new_mutual', $1, 'follow')`,
+        [userId, inviterId],
+      );
+
+      await client.query('COMMIT');
+      transactionStarted = false;
+      logOperationalEvent('invite.redeem', 'succeeded', {
+        actor_user_id: userId,
+        invite_id: inviteId,
+        inviter_user_id: inviterId,
+      });
+      res.json({ message: 'Connected successfully', is_mutual: true });
+    } catch (err) {
+      if (transactionStarted) await client.query('ROLLBACK');
+      logOperationalEvent('invite.redeem', 'rejected', {
+        actor_user_id: userId,
+        invite_id: inviteId,
+        inviter_user_id: inviterId,
+        reason: err instanceof AppError ? err.message : 'internal_error',
+        status_code: err instanceof AppError ? err.statusCode : 500,
+      });
+      throw err;
+    } finally {
+      client.release();
     }
-
-    // Mark invite as used
-    await query(
-      `UPDATE invites SET status = 'used', used_by_user_id = $1, used_at = NOW() WHERE id = $2`,
-      [userId, invite.id],
-    );
-
-    // Create mutual follow (auto-connect)
-    await query(
-      `INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2), ($2, $1)
-       ON CONFLICT DO NOTHING`,
-      [userId, inviterId],
-    );
-
-    // Create new_mutual notifications for both
-    await query(
-      `INSERT INTO notifications (user_id, type, actor_id, reference_type)
-       VALUES ($1, 'new_mutual', $2, 'follow'), ($2, 'new_mutual', $1, 'follow')`,
-      [userId, inviterId],
-    );
-
-    res.json({ message: 'Connected successfully', is_mutual: true });
   }),
 );
 

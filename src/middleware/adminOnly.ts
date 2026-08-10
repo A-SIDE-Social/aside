@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
-import type { AuthPayload } from './auth';
+import { activeUserExists, type AuthPayload } from './auth';
 
 /// The cookie name carrying the admin's JWT. Set on successful
 /// admin login, cleared on logout. Verified on every protected
@@ -20,11 +20,11 @@ export const ADMIN_COOKIE = 'admin_session';
 /// the server immediately revokes admin access on the next
 /// request, even if the cookie is still within its 1h expiry.
 /// Pull the env var → bounce the container → admin is locked out.
-export function adminOnly(
+export async function adminOnly(
   req: Request,
   res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   const token = req.signedCookies?.[ADMIN_COOKIE];
   if (!token) {
     res.redirect('/admin/login');
@@ -55,6 +55,17 @@ export function adminOnly(
         '<p><a href="/admin/logout">Sign out</a></p>' +
         '</body></html>',
     );
+    return;
+  }
+
+  try {
+    if (!(await activeUserExists(payload.userId))) {
+      res.clearCookie(ADMIN_COOKIE);
+      res.redirect('/admin/login');
+      return;
+    }
+  } catch (err) {
+    next(err);
     return;
   }
 
