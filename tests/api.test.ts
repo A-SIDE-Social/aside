@@ -1221,6 +1221,135 @@ describe('Invites', () => {
     expect(res.status).toBe(409);
   });
 
+  test('POST /v1/invites/redeem allows only one concurrent redeemer', async () => {
+    const { user: inviter } = await createTestUser();
+    const { user: first, token: firstToken } = await createTestUser();
+    const { user: second, token: secondToken } = await createTestUser();
+    const code = `race${Math.random().toString(36).slice(2, 10)}`;
+    await query(
+      `INSERT INTO invites (created_by_user_id, code, status, expires_at)
+       VALUES ($1, $2, 'pending', NOW() + INTERVAL '30 days')`,
+      [inviter.id, code],
+    );
+
+    const [firstRes, secondRes] = await Promise.all([
+      request(app)
+        .post('/v1/invites/redeem')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .send({ code }),
+      request(app)
+        .post('/v1/invites/redeem')
+        .set('Authorization', `Bearer ${secondToken}`)
+        .send({ code }),
+    ]);
+
+    expect([firstRes.status, secondRes.status].sort()).toEqual([200, 404]);
+    const winnerId = firstRes.status === 200 ? first.id : second.id;
+    const loserId = firstRes.status === 200 ? second.id : first.id;
+    const { rows: inviteRows } = await query(
+      'SELECT status, used_by_user_id FROM invites WHERE code = $1',
+      [code],
+    );
+    expect(inviteRows[0]).toMatchObject({
+      status: 'used',
+      used_by_user_id: winnerId,
+    });
+
+    const { rows: winnerFollows } = await query(
+      `SELECT 1 FROM follows
+       WHERE (follower_id = $1 AND followee_id = $2)
+          OR (follower_id = $2 AND followee_id = $1)`,
+      [winnerId, inviter.id],
+    );
+    expect(winnerFollows).toHaveLength(2);
+    const { rows: loserFollows } = await query(
+      'SELECT 1 FROM follows WHERE follower_id = $1 OR followee_id = $1',
+      [loserId],
+    );
+    expect(loserFollows).toHaveLength(0);
+  });
+
+  test('POST /v1/invites/redeem rolls back invite and follows when notification creation fails', async () => {
+    const { user: inviter } = await createTestUser();
+    const { user: redeemer, token } = await createTestUser();
+    const code = `rollback${Math.random().toString(36).slice(2, 8)}`;
+    await query(
+      `INSERT INTO invites (created_by_user_id, code, status, expires_at)
+       VALUES ($1, $2, 'pending', NOW() + INTERVAL '30 days')`,
+      [inviter.id, code],
+    );
+
+    await query('DROP TRIGGER IF EXISTS test_fail_invite_notification ON notifications');
+    await query('DROP FUNCTION IF EXISTS test_fail_invite_notification()');
+    await query(`
+      CREATE FUNCTION test_fail_invite_notification() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'forced notification failure';
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await query(`
+      CREATE TRIGGER test_fail_invite_notification
+      BEFORE INSERT ON notifications
+      FOR EACH ROW EXECUTE FUNCTION test_fail_invite_notification()
+    `);
+
+    try {
+      const res = await request(app)
+        .post('/v1/invites/redeem')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code });
+      expect(res.status).toBe(500);
+    } finally {
+      await query('DROP TRIGGER IF EXISTS test_fail_invite_notification ON notifications');
+      await query('DROP FUNCTION IF EXISTS test_fail_invite_notification()');
+    }
+
+    const { rows: inviteRows } = await query(
+      'SELECT status, used_by_user_id, used_at FROM invites WHERE code = $1',
+      [code],
+    );
+    expect(inviteRows[0]).toMatchObject({
+      status: 'pending',
+      used_by_user_id: null,
+      used_at: null,
+    });
+    const { rows: follows } = await query(
+      `SELECT 1 FROM follows
+       WHERE (follower_id = $1 AND followee_id = $2)
+          OR (follower_id = $2 AND followee_id = $1)`,
+      [redeemer.id, inviter.id],
+    );
+    expect(follows).toHaveLength(0);
+  });
+
+  test('POST /v1/invites/redeem logs outcome without exposing the submitted code', async () => {
+    const { token } = await createTestUser();
+    const code = 'privatecode99';
+    const info = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    try {
+      const res = await request(app)
+        .post('/v1/invites/redeem')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code });
+      expect(res.status).toBe(404);
+
+      const event = info.mock.calls
+        .map(([line]) => line)
+        .find((line) => typeof line === 'string' && line.includes('invite.redeem'));
+      expect(event).toBeDefined();
+      expect(event).not.toContain(code);
+      expect(JSON.parse(event as string)).toMatchObject({
+        event: 'invite.redeem',
+        outcome: 'rejected',
+        status_code: 404,
+      });
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   test('PATCH /v1/invites/:id marks invite as sent', async () => {
     const { user, token } = await createTestUser();
     const { rows } = await query(
