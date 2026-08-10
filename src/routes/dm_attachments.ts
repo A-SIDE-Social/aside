@@ -19,6 +19,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { asyncHandler } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import { config } from '../config';
+import { query } from '../db/pool';
 import {
   getPresignedPrivateUploadUrl,
   getPresignedDownloadUrl,
@@ -42,6 +43,11 @@ router.post(
     }
 
     const key = `dm/${uuidv4()}`;
+    await query(
+      `INSERT INTO dm_attachment_objects (object_key, uploaded_by_user_id)
+       VALUES ($1, $2)`,
+      [key, req.user!.userId],
+    );
     // Most blobs are opaque ciphertext — client hint what kind of
     // decrypted payload it is (image/jpeg, video/mp4 etc) so the
     // server can set the right Content-Type on the object. Doesn't

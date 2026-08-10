@@ -419,7 +419,7 @@ export const openApiSpec = {
       },
       delete: {
         tags: ['Users'],
-        summary: 'Soft-delete the current user account',
+        summary: 'Permanently delete the current user account',
         security: [{ BearerAuth: [] }],
         responses: {
           '200': {
