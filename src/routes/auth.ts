@@ -10,6 +10,7 @@ import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants'
 import { sendOtpEmail } from '../email';
 import { notifyNewUser } from '../notifications/discord';
 import { generateUniqueSlug, extractSlug, SLUG_REGEX } from '../lib/slugs';
+import { normalizeDisplayName } from '../lib/displayName';
 import {
   sendPush,
   getTokensForUsers,
@@ -42,10 +43,13 @@ async function resolveUser(
     return existingUsers[0];
   }
 
-  // New registration — display_name is required, invite_code is optional
-  if (!display_name) {
+  // New registration — display_name is required, invite_code is optional.
+  // Normalize it through the same path used by profile edits so a name has
+  // one consistent shape for its entire lifetime.
+  if (display_name === undefined || display_name === null) {
     throw new AppError(400, 'display_name is required for registration');
   }
+  const normalizedDisplayName = normalizeDisplayName(display_name);
 
   // Validate the invite code BEFORE we touch the users table. Earlier
   // versions ran this check AFTER the INSERT, so a typo'd or expired
@@ -138,7 +142,7 @@ async function resolveUser(
       `INSERT INTO users (email, email_hash, username, display_name, invite_slug)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [email, emailHash, autoUsername, display_name, inviteSlug],
+      [email, emailHash, autoUsername, normalizedDisplayName, inviteSlug],
     );
     const user = newUsers[0];
 

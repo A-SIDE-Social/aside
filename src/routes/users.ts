@@ -10,6 +10,8 @@ import { getPlanLimits, LIMITS, SYSTEM_USER_EMAIL } from '../constants';
 import { config } from '../config';
 import { getPresignedUploadUrl } from '../storage';
 import { SLUG_REGEX } from '../lib/slugs';
+import { normalizeDisplayName } from '../lib/displayName';
+import { writeLimit } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -47,6 +49,7 @@ router.get(
       user,
       plan_limits: {
         feed_history_days: plan.feedHistoryDays,
+        max_display_name_length: LIMITS.maxDisplayNameLength,
         max_photos_per_post: LIMITS.maxPhotosPerPost,
         max_groups: LIMITS.maxGroups,
         max_video_story_seconds: LIMITS.maxVideoStorySeconds,
@@ -93,6 +96,7 @@ router.post(
 // PATCH /me
 router.patch(
   '/me',
+  writeLimit,
   asyncHandler(async (req: any, res: any) => {
     const { display_name, bio, avatar_url } = req.body;
     const fields: string[] = [];
@@ -101,7 +105,7 @@ router.patch(
 
     if (display_name !== undefined) {
       fields.push(`display_name = $${idx++}`);
-      values.push(display_name);
+      values.push(normalizeDisplayName(display_name));
     }
     if (bio !== undefined) {
       fields.push(`bio = $${idx++}`);

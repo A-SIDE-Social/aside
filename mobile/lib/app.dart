@@ -26,6 +26,7 @@ import 'features/post/post_detail_screen.dart';
 import 'features/contacts/contact_sync_screen.dart';
 import 'features/profile/connections_screen.dart';
 import 'features/profile/profile_screen.dart';
+import 'features/settings/edit_profile_name_screen.dart';
 import 'features/settings/notification_preferences_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/subscription/paywall_screen.dart';
@@ -258,6 +259,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       //   path: '/settings',
       //   builder: (context, state) => _constrained(const SettingsScreen()),
       // ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/settings/name',
+        builder: (context, state) =>
+            _constrained(const EditProfileNameScreen()),
+      ),
       GoRoute(
         parentNavigatorKey: _rootNavigatorKey,
         path: '/settings/notifications',

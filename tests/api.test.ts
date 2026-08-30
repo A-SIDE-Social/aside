@@ -658,6 +658,7 @@ describe('Users', () => {
     expect(res.status).toBe(200);
     expect(res.body.plan_limits).toBeDefined();
     expect(res.body.plan_limits.feed_history_days).toBe(30); // free plan = 30 days
+    expect(res.body.plan_limits.max_display_name_length).toBe(50);
     expect(res.body.plan_limits.max_photos_per_post).toBe(10);
     expect(res.body.plan_limits.max_groups).toBe(10);
     expect(res.body.plan_limits.max_video_story_seconds).toBe(30);
@@ -707,6 +708,47 @@ describe('Users', () => {
     expect(res.status).toBe(200);
     expect(res.body.user.display_name).toBe('Updated Name');
     expect(res.body.user.bio).toBe('My bio');
+  });
+
+  test('PATCH /v1/users/me trims the display name', async () => {
+    const { token } = await createTestUser();
+    const res = await request(app)
+      .patch('/v1/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ display_name: '  Updated Name  ' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.display_name).toBe('Updated Name');
+  });
+
+  test.each([
+    ['', 'Name is required'],
+    ['   ', 'Name is required'],
+    ['a'.repeat(51), '50 characters or fewer'],
+    ['Line\nBreak', 'line breaks or control characters'],
+  ])(
+    'PATCH /v1/users/me rejects invalid display name %#',
+    async (displayName, message) => {
+      const { token } = await createTestUser();
+      const res = await request(app)
+        .patch('/v1/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ display_name: displayName });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain(message);
+    },
+  );
+
+  test('PATCH /v1/users/me rejects a non-string display name', async () => {
+    const { token } = await createTestUser();
+    const res = await request(app)
+      .patch('/v1/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ display_name: 42 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Name must be text');
   });
 
   test('GET /v1/users/:id returns profile', async () => {

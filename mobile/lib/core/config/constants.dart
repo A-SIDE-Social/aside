@@ -2,6 +2,9 @@
 class AppLimits {
   AppLimits._();
 
+  // Keep in sync with src/constants.ts on the backend.
+  static const int maxDisplayNameLength = 50;
+
   // ── Hard limits (same for all users) ────────────────────────
   static const int maxPhotosPerPost = 10;
   static const int maxGroups = 10;
