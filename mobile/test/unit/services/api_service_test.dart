@@ -94,6 +94,29 @@ void main() {
     });
   });
 
+  group('ApiService Users', () {
+    test('updateMe sends the changed display name', () async {
+      when(() => mockDio.patch(
+            ApiEndpoints.me,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ''),
+            data: {
+              'user': {'display_name': 'New Name'},
+            },
+            statusCode: 200,
+          ));
+
+      await apiService.updateMe(displayName: 'New Name');
+
+      final captured = verify(() => mockDio.patch(
+            ApiEndpoints.me,
+            data: captureAny(named: 'data'),
+          )).captured.single as Map<String, dynamic>;
+      expect(captured, {'display_name': 'New Name'});
+    });
+  });
+
   group('ApiService Feed', () {
     test('getFeed passes query params correctly', () async {
       when(() => mockDio.get(

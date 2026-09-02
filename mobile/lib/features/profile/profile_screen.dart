@@ -184,6 +184,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         title: Text(user.displayName),
         actions: [
           IconButton(
+            tooltip: 'Edit name',
+            icon: const Icon(Icons.edit_outlined),
+            onPressed: () => context.push('/settings/name'),
+          ),
+          IconButton(
             icon: const Icon(Icons.add_circle_outline, size: 28),
             onPressed: () => context.push('/post/new'),
           ),

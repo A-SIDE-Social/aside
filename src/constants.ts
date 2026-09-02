@@ -16,6 +16,7 @@ export const PLANS = {
 // ---------------------------------------------------------------------------
 
 export const LIMITS = {
+  maxDisplayNameLength: 50,
   maxPhotosPerPost: 10,
   maxGroups: 10,
   maxVideoStorySeconds: 30,

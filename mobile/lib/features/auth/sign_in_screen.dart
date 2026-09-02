@@ -6,6 +6,7 @@ import 'package:pin_code_fields/pin_code_fields.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_colors.dart';
+import '../../core/config/constants.dart';
 import '../../core/config/env.dart';
 import '../../core/network/api_client.dart';
 import '../../providers/providers.dart';
@@ -392,6 +393,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
           TextField(
             controller: _displayNameController,
             decoration: const InputDecoration(hintText: 'Your name'),
+            maxLength: AppLimits.maxDisplayNameLength,
             textInputAction: TextInputAction.next,
             textCapitalization: TextCapitalization.words,
           ),

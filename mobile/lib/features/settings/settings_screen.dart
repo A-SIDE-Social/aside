@@ -36,10 +36,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         children: [
           const SizedBox(height: 16),
 
-          // Account header — tap to go to own profile
+          // Account header — the visible name is editable here; the
+          // dedicated Profile tab remains the route to the full profile.
           if (user != null)
             AppCard(
-              onTap: () => context.go('/profile'),
+              onTap: () => context.push('/settings/name'),
               child: Row(
                 children: [
                   Avatar(
@@ -55,7 +56,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ),
                   ),
                   Icon(
-                    Icons.chevron_right_rounded,
+                    Icons.edit_outlined,
                     color: colors.textTertiary,
                     size: 20,
                   ),

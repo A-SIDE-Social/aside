@@ -24,7 +24,7 @@ export const openApiSpec = {
         type: 'object' as const,
         properties: {
           id: { type: 'string', format: 'uuid' },
-          display_name: { type: 'string' },
+          display_name: { type: 'string', minLength: 1, maxLength: 50 },
           avatar_url: { type: 'string', nullable: true },
           bio: { type: 'string', nullable: true },
           email: { type: 'string' },
@@ -42,6 +42,7 @@ export const openApiSpec = {
         description: 'Current plan limits for the authenticated user. feed_history_days is null for unlimited (paid/trial).',
         properties: {
           feed_history_days: { type: 'integer', nullable: true, description: 'Number of days of feed history visible, or null for unlimited' },
+          max_display_name_length: { type: 'integer' },
           max_photos_per_post: { type: 'integer' },
           max_groups: { type: 'integer' },
           max_video_story_seconds: { type: 'integer' },
@@ -290,7 +291,7 @@ export const openApiSpec = {
                   email: { type: 'string' },
                   code: { type: 'string' },
                   invite_code: { type: 'string', description: 'Optional for new registrations' },
-                  display_name: { type: 'string', description: 'Required for new registrations' },
+                  display_name: { type: 'string', minLength: 1, maxLength: 50, description: 'Required for new registrations' },
                 },
               },
             },
@@ -402,7 +403,7 @@ export const openApiSpec = {
               schema: {
                 type: 'object' as const,
                 properties: {
-                  display_name: { type: 'string' },
+                  display_name: { type: 'string', minLength: 1, maxLength: 50 },
                   bio: { type: 'string' },
                   avatar_url: { type: 'string' },
                 },
