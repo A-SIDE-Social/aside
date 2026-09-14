@@ -8,7 +8,6 @@ import { AppError } from '../middleware/errorHandler';
 import { config } from '../config';
 import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants';
 import { sendOtpEmail } from '../email';
-import { notifyNewUser } from '../notifications/discord';
 import { generateUniqueSlug, extractSlug, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
 import {
@@ -199,44 +198,6 @@ async function resolveUser(
     );
 
     await client.query('COMMIT');
-
-    // Fire-and-forget Discord notification for the operator. Runs
-    // POST-commit so we never notify about a transaction that
-    // ultimately rolled back. Inviter lookup happens here rather
-    // than folded into the existing invite-validation query so the
-    // signup hot path stays minimal — Discord can be slow / down /
-    // unconfigured and registration must succeed anyway.
-    //
-    // `void` because TypeScript's no-floating-promises is happier
-    // when we explicitly mark "I'm not awaiting this." The IIFE
-    // wraps the inviter lookup + notify as one async chunk that
-    // catches any thrown error inside.
-    void (async () => {
-      try {
-        let inviterName: string | null = null;
-        if (validatedInvite) {
-          const { rows: inviterRows } = await query(
-            `SELECT display_name FROM users WHERE id = $1`,
-            [validatedInvite.created_by_user_id],
-          );
-          inviterName = inviterRows[0]?.display_name ?? null;
-        } else if (validatedSlug) {
-          inviterName = validatedSlug.display_name;
-        }
-        await notifyNewUser({
-          userId: user.id,
-          displayName: user.display_name,
-          email: user.email,
-          inviteCode: invite_code ?? null,
-          inviterName,
-        });
-      } catch (e) {
-        // notifyNewUser already swallows network errors; this catch
-        // is belt-and-suspenders in case the inviter lookup blows
-        // up. Never propagate.
-        console.warn('Discord notify post-commit failed:', e);
-      }
-    })();
 
     // Slug-based signup: push the slug owner so the inbound-follow
     // request shows up promptly. Fire-and-forget outside the

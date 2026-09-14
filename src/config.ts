@@ -101,11 +101,6 @@ export const config = {
   supportEmail: process.env.SUPPORT_EMAIL || 'support@example.com',
   legalTermsUrl: process.env.LEGAL_TERMS_URL || `${publicAppUrl}/terms`,
   legalPrivacyUrl: process.env.LEGAL_PRIVACY_URL || `${publicAppUrl}/privacy`,
-  // Discord webhook URL for operator-side new-user notifications.
-  // Set on the prod env to enable; if unset, the notify call is a
-  // no-op (fail-quiet — registration must never depend on Discord
-  // being reachable).
-  discordNewUserWebhookUrl: process.env.DISCORD_NEW_USER_WEBHOOK_URL || '',
   // Resend API key for marketing broadcasts (separate from Postmark
   // which handles transactional OTP). Empty in dev/test; the admin
   // /admin/broadcast page surfaces an explicit "no API key" message
