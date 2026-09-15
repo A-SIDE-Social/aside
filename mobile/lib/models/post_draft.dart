@@ -29,6 +29,11 @@ class PostDraft {
   final int nextFileIndex;
   final DateTime createdAt;
 
+  /// Private lists selected for this draft's publish-time audience. Empty
+  /// means all connections. Persisting this prevents a resumed limited draft
+  /// from silently falling back to the broader default audience.
+  final List<String> audienceListIds;
+
   /// Per-image filter selections, keyed by media index.
   /// e.g. {0: 'warm_fade', 2: 'hard_mono'} means image 0 has Warm Fade,
   /// image 2 has Hard Mono, and all others have no filter.
@@ -48,6 +53,7 @@ class PostDraft {
     required this.completedMedia,
     required this.nextFileIndex,
     required this.createdAt,
+    this.audienceListIds = const [],
     this.filterIds = const {},
     this.transforms = const {},
   });
@@ -61,11 +67,13 @@ class PostDraft {
         'completed_media': completedMedia,
         'next_file_index': nextFileIndex,
         'created_at': createdAt.toIso8601String(),
+        if (audienceListIds.isNotEmpty) 'audience_list_ids': audienceListIds,
         if (filterIds.isNotEmpty)
           'filter_ids': filterIds.map((k, v) => MapEntry(k.toString(), v)),
         if (transforms.isNotEmpty)
-          'transforms':
-              transforms.map((k, v) => MapEntry(k.toString(), v.toJson())),
+          'transforms': transforms.map(
+            (k, v) => MapEntry(k.toString(), v.toJson()),
+          ),
       };
 
   factory PostDraft.fromJson(Map<String, dynamic> json) => PostDraft(
@@ -84,8 +92,13 @@ class PostDraft {
         nextFileIndex: (json['next_file_index'] as int?) ?? 0,
         createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
             DateTime.now(),
-        filterIds: (json['filter_ids'] as Map<String, dynamic>?)
-                ?.map((k, v) => MapEntry(int.parse(k), v as String)) ??
+        audienceListIds:
+            (json['audience_list_ids'] as List<dynamic>? ?? const [])
+                .map((e) => e as String)
+                .toList(),
+        filterIds: (json['filter_ids'] as Map<String, dynamic>?)?.map(
+              (k, v) => MapEntry(int.parse(k), v as String),
+            ) ??
             // Backwards compat: old single filterId → apply to index 0
             (json['filter_id'] != null ? {0: json['filter_id'] as String} : {}),
         transforms: (json['transforms'] as Map<String, dynamic>?)?.map(

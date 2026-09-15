@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { query } from '../db/pool';
+import { getClient, query } from '../db/pool';
 import { config } from '../config';
 import { writeLimit } from '../middleware/rateLimit';
 import { asyncHandler, isMutualFollow, resolvePostMedia, resolveMediaUrl, getUserSubscriptionStatus, parseBeforeCursor } from '../helpers';
@@ -9,6 +9,7 @@ import { getPresignedUploadUrl, deleteStorageObjects } from '../storage';
 import { getPlanLimits, LIMITS } from '../constants';
 import { notifyNewPost } from '../firebase';
 import { verifyPostAccess } from '../lib/postAccess';
+import { postAudiencePredicate, resolvePostAudience } from '../lib/postAudience';
 
 const router = Router();
 
@@ -80,62 +81,78 @@ router.post(
       throw new AppError(400, `Caption must be ${LIMITS.maxCaptionLength} characters or fewer`);
     }
 
-    // Create the post
-    const expiresAt = hide_after_24h ? "NOW() + INTERVAL '24 hours'" : null;
-    const { rows: posts } = await query(
-      `INSERT INTO posts (user_id, caption, expires_at) VALUES ($1, $2, ${expiresAt ? expiresAt : 'NULL'}) RETURNING *`,
-      [userId, caption || null],
-    );
-    const post = posts[0];
-
-    // Create post_media records. `thumbnail_url` is the key of a
-    // first-frame JPEG extracted client-side and uploaded alongside
-    // the video — used by the iOS widget and anywhere else we show a
-    // still for a video. Photos leave it null.
-    for (const item of (media || [])) {
-      await query(
-        `INSERT INTO post_media (post_id, media_url, media_type, width, height, position, thumbnail_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          post.id,
-          item.key,
-          item.media_type,
-          item.width || null,
-          item.height || null,
-          item.position,
-          item.thumbnail_key || null,
-        ],
+    // Audience validation and every relational insert happen in one
+    // transaction. A malformed/stale list selection can never leave behind
+    // a partially-created post that defaults to all connections.
+    const client = await getClient();
+    let post: any;
+    let postMedia: any[] = [];
+    try {
+      await client.query('BEGIN');
+      const audience = await resolvePostAudience(client, userId, group_ids);
+      const expiresAt = hide_after_24h ? "NOW() + INTERVAL '24 hours'" : 'NULL';
+      const { rows: posts } = await client.query(
+        `INSERT INTO posts (user_id, caption, expires_at, audience_type)
+         VALUES ($1, $2, ${expiresAt}, $3)
+         RETURNING *`,
+        [userId, caption || null, audience.type],
       );
-    }
+      post = posts[0];
 
-    // Create post_groups records if group_ids provided
-    if (group_ids && Array.isArray(group_ids) && group_ids.length > 0) {
-      for (const groupId of group_ids) {
-        // Verify group belongs to current user
-        const { rows: groups } = await query(
-          'SELECT id FROM groups WHERE id = $1 AND user_id = $2',
-          [groupId, userId],
-        );
-        if (groups.length === 0) throw new AppError(404, `Group ${groupId} not found`);
-
-        await query(
-          'INSERT INTO post_groups (post_id, group_id) VALUES ($1, $2)',
-          [post.id, groupId],
+      // Create post_media records. `thumbnail_url` is the key of a
+      // first-frame JPEG extracted client-side and uploaded alongside the
+      // video. Photos leave it null.
+      for (const item of (media || [])) {
+        await client.query(
+          `INSERT INTO post_media
+             (post_id, media_url, media_type, width, height, position, thumbnail_url)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            post.id,
+            item.key,
+            item.media_type,
+            item.width || null,
+            item.height || null,
+            item.position,
+            item.thumbnail_key || null,
+          ],
         );
       }
+
+      if (audience.type === 'lists') {
+        await client.query(
+          `INSERT INTO post_groups (post_id, group_id)
+           SELECT $1, unnest($2::uuid[])`,
+          [post.id, audience.listIds],
+        );
+        await client.query(
+          `INSERT INTO post_audience_members (post_id, user_id)
+           SELECT $1, unnest($2::uuid[])`,
+          [post.id, audience.memberIds],
+        );
+      }
+
+      const mediaResult = await client.query(
+        'SELECT * FROM post_media WHERE post_id = $1 ORDER BY position ASC',
+        [post.id],
+      );
+      postMedia = mediaResult.rows;
+      post.audience_member_count = audience.memberIds.length;
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
 
-    // Fetch created media
-    const { rows: postMedia } = await query(
-      'SELECT * FROM post_media WHERE post_id = $1 ORDER BY position ASC',
-      [post.id],
-    );
     post.media = postMedia;
     resolvePostMedia([post], req);
 
     res.status(201).json({ post });
 
-    // Fire-and-forget: push notification to mutual followers
+    // Fire-and-forget: notify only people allowed by the post's immutable
+    // audience snapshot. notifyNewPost performs the authoritative query.
     const { rows: posterRows } = await query(
       'SELECT display_name FROM users WHERE id = $1',
       [userId],
@@ -243,6 +260,8 @@ router.get(
     const userId = req.user!.userId;
     const { id } = req.params;
 
+    await verifyPostAccess(id, userId);
+
     const { rows: posts } = await query(
       `SELECT p.*, u.username, u.display_name, u.avatar_url
        FROM posts p
@@ -255,26 +274,6 @@ router.get(
 
     const post = posts[0];
     if (post.avatar_url) post.avatar_url = resolveMediaUrl(post.avatar_url, req);
-
-    // Verify access: must be own post or mutual follow
-    if (post.user_id !== userId) {
-      const mutual = await isMutualFollow(userId, post.user_id);
-      if (!mutual) throw new AppError(404, 'Post not found');
-
-      // Check group scoping
-      const { rows: postGroups } = await query(
-        'SELECT group_id FROM post_groups WHERE post_id = $1',
-        [id],
-      );
-      if (postGroups.length > 0) {
-        const groupIds = postGroups.map((pg: any) => pg.group_id);
-        const { rows: membership } = await query(
-          'SELECT 1 FROM group_members WHERE group_id = ANY($1) AND member_user_id = $2 LIMIT 1',
-          [groupIds, userId],
-        );
-        if (membership.length === 0) throw new AppError(404, 'Post not found');
-      }
-    }
 
     // Fetch media
     const { rows: media } = await query(
@@ -463,15 +462,7 @@ router.get(
        WHERE p.user_id = $1
          AND p.deleted_at IS NULL
          AND (p.user_id = $2 OR p.expires_at IS NULL OR p.expires_at > NOW())
-         AND (
-           p.user_id = $2
-           OR NOT EXISTS (SELECT 1 FROM post_groups pg WHERE pg.post_id = p.id)
-           OR EXISTS (
-             SELECT 1 FROM post_groups pg
-             JOIN group_members gm ON gm.group_id = pg.group_id
-             WHERE pg.post_id = p.id AND gm.member_user_id = $2
-           )
-         )
+         AND ${postAudiencePredicate('p', '$2')}
          AND ($3::timestamptz IS NULL OR p.created_at < $3)
          AND ($4::int IS NULL OR p.created_at > NOW() - make_interval(days => $4))
        ORDER BY p.created_at DESC LIMIT ${LIMITS.postsPerPage}`,

@@ -3017,6 +3017,8 @@ describe('Group-scoped posts', () => {
         group_ids: [groupId],
       });
     expect(postRes.status).toBe(201);
+    expect(postRes.body.post.audience_type).toBe('lists');
+    expect(postRes.body.post.audience_member_count).toBe(1);
 
     // Member can see it in feed
     const memberFeed = await request(app)
@@ -3035,6 +3037,215 @@ describe('Group-scoped posts', () => {
       (p: any) => p.id === postRes.body.post.id,
     );
     expect(hiddenPost).toBeUndefined();
+
+    const memberProfile = await request(app)
+      .get(`/v1/posts/by-user/${owner.id}`)
+      .set('Authorization', `Bearer ${memberToken}`);
+    expect(memberProfile.body.posts.map((p: any) => p.id)).toContain(
+      postRes.body.post.id,
+    );
+
+    const outsiderProfile = await request(app)
+      .get(`/v1/posts/by-user/${owner.id}`)
+      .set('Authorization', `Bearer ${outsiderToken}`);
+    expect(outsiderProfile.body.posts.map((p: any) => p.id)).not.toContain(
+      postRes.body.post.id,
+    );
+
+    // The same access rule protects direct content and interaction endpoints.
+    const memberDetail = await request(app)
+      .get(`/v1/posts/${postRes.body.post.id}`)
+      .set('Authorization', `Bearer ${memberToken}`);
+    expect(memberDetail.status).toBe(200);
+
+    const outsiderDetail = await request(app)
+      .get(`/v1/posts/${postRes.body.post.id}`)
+      .set('Authorization', `Bearer ${outsiderToken}`);
+    expect(outsiderDetail.status).toBe(404);
+
+    const outsiderComment = await request(app)
+      .post(`/v1/posts/${postRes.body.post.id}/comments`)
+      .set('Authorization', `Bearer ${outsiderToken}`)
+      .send({ body: 'Should not be accepted' });
+    expect(outsiderComment.status).toBe(404);
+
+    const outsiderReaction = await request(app)
+      .post(`/v1/posts/${postRes.body.post.id}/reactions/toggle`)
+      .set('Authorization', `Bearer ${outsiderToken}`)
+      .send({ emoji: '🔥' });
+    expect(outsiderReaction.status).toBe(404);
+  });
+
+  test('List edits only affect posts published after the edit', async () => {
+    const { user: owner, token: ownerToken } = await createTestUser();
+    const { user: originalMember, token: originalToken } = await createTestUser();
+    const { user: futureMember, token: futureToken } = await createTestUser();
+    await createMutualFollow(owner.id, originalMember.id);
+    await createMutualFollow(owner.id, futureMember.id);
+
+    const groupRes = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Changing list' });
+    const groupId = groupRes.body.group.id;
+    await request(app)
+      .put(`/v1/groups/${groupId}/members`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ user_ids: [originalMember.id] });
+
+    const oldPost = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ caption: 'Original audience', group_ids: [groupId] });
+    expect(oldPost.status).toBe(201);
+
+    await request(app)
+      .put(`/v1/groups/${groupId}/members`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ user_ids: [futureMember.id] });
+
+    expect(
+      (await request(app)
+        .get(`/v1/posts/${oldPost.body.post.id}`)
+        .set('Authorization', `Bearer ${originalToken}`)).status,
+    ).toBe(200);
+    expect(
+      (await request(app)
+        .get(`/v1/posts/${oldPost.body.post.id}`)
+        .set('Authorization', `Bearer ${futureToken}`)).status,
+    ).toBe(404);
+
+    const newPost = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ caption: 'Updated audience', group_ids: [groupId] });
+    expect(newPost.status).toBe(201);
+
+    expect(
+      (await request(app)
+        .get(`/v1/posts/${newPost.body.post.id}`)
+        .set('Authorization', `Bearer ${originalToken}`)).status,
+    ).toBe(404);
+    expect(
+      (await request(app)
+        .get(`/v1/posts/${newPost.body.post.id}`)
+        .set('Authorization', `Bearer ${futureToken}`)).status,
+    ).toBe(200);
+  });
+
+  test('Deleting a list preserves the audience of its existing posts', async () => {
+    const { user: owner, token: ownerToken } = await createTestUser();
+    const { user: member, token: memberToken } = await createTestUser();
+    const { user: outsider, token: outsiderToken } = await createTestUser();
+    await createMutualFollow(owner.id, member.id);
+    await createMutualFollow(owner.id, outsider.id);
+
+    const groupRes = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Temporary list' });
+    const groupId = groupRes.body.group.id;
+    await request(app)
+      .put(`/v1/groups/${groupId}/members`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ user_ids: [member.id] });
+    const postRes = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ caption: 'Stable audience', group_ids: [groupId] });
+
+    const deleteRes = await request(app)
+      .delete(`/v1/groups/${groupId}`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(deleteRes.status).toBe(200);
+
+    expect(
+      (await request(app)
+        .get(`/v1/posts/${postRes.body.post.id}`)
+        .set('Authorization', `Bearer ${memberToken}`)).status,
+    ).toBe(200);
+    expect(
+      (await request(app)
+        .get(`/v1/posts/${postRes.body.post.id}`)
+        .set('Authorization', `Bearer ${outsiderToken}`)).status,
+    ).toBe(404);
+  });
+
+  test('Invalid or empty list audiences never create a broader post', async () => {
+    const { user: owner, token: ownerToken } = await createTestUser();
+    const { token: otherToken } = await createTestUser();
+
+    const emptyGroup = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Empty' });
+    const otherGroup = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ name: 'Not yours' });
+    const before = await query(
+      'SELECT COUNT(*)::int AS count FROM posts WHERE user_id = $1',
+      [owner.id],
+    );
+
+    const emptyAudience = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ caption: 'Must not broaden', group_ids: [emptyGroup.body.group.id] });
+    expect(emptyAudience.status).toBe(400);
+
+    const foreignAudience = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ caption: 'Must not exist', group_ids: [otherGroup.body.group.id] });
+    expect(foreignAudience.status).toBe(404);
+
+    const after = await query(
+      'SELECT COUNT(*)::int AS count FROM posts WHERE user_id = $1',
+      [owner.id],
+    );
+    expect(after.rows[0].count).toBe(before.rows[0].count);
+  });
+
+  test('Group-filtered feeds do not bypass the post author audience', async () => {
+    const { user: viewer, token: viewerToken } = await createTestUser();
+    const { user: author, token: authorToken } = await createTestUser();
+    const { user: allowedMember } = await createTestUser();
+    await createMutualFollow(viewer.id, author.id);
+    await createMutualFollow(author.id, allowedMember.id);
+
+    // The viewer puts the author in a feed-filtering list.
+    const viewerList = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${viewerToken}`)
+      .send({ name: 'My feed list' });
+    await request(app)
+      .put(`/v1/groups/${viewerList.body.group.id}/members`)
+      .set('Authorization', `Bearer ${viewerToken}`)
+      .send({ user_ids: [author.id] });
+
+    // The author publishes to a different list that excludes the viewer.
+    const authorList = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ name: 'Author audience' });
+    await request(app)
+      .put(`/v1/groups/${authorList.body.group.id}/members`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ user_ids: [allowedMember.id] });
+    const limitedPost = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ caption: 'Not for viewer', group_ids: [authorList.body.group.id] });
+
+    const feed = await request(app)
+      .get('/v1/feed')
+      .query({ group_id: viewerList.body.group.id })
+      .set('Authorization', `Bearer ${viewerToken}`);
+    expect(feed.status).toBe(200);
+    expect(feed.body.posts.map((post: any) => post.id)).not.toContain(
+      limitedPost.body.post.id,
+    );
   });
 });
 
@@ -6666,6 +6877,45 @@ describe('Badge count + feed-seen (build 38)', () => {
       .post('/v1/users/me/feed-seen')
       .set('Authorization', `Bearer ${aliceTok}`);
     expect(await getUserBadgeCount(alice.id)).toBe(0);
+  });
+
+  test('Limited posts only reach audience push recipients and badge counts', async () => {
+    const {
+      getNewPostRecipientIds,
+      getUserBadgeCount,
+    } = require('../src/firebase');
+    const { user: author, token: authorToken } = await createTestUser();
+    const { user: member, token: memberToken } = await createTestUser();
+    const { user: outsider, token: outsiderToken } = await createTestUser();
+    await createMutualFollow(author.id, member.id);
+    await createMutualFollow(author.id, outsider.id);
+
+    await request(app)
+      .post('/v1/users/me/feed-seen')
+      .set('Authorization', `Bearer ${memberToken}`);
+    await request(app)
+      .post('/v1/users/me/feed-seen')
+      .set('Authorization', `Bearer ${outsiderToken}`);
+
+    const group = await request(app)
+      .post('/v1/groups')
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ name: 'Badge audience' });
+    await request(app)
+      .put(`/v1/groups/${group.body.group.id}/members`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ user_ids: [member.id] });
+    const post = await request(app)
+      .post('/v1/posts')
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ caption: 'Private update', group_ids: [group.body.group.id] });
+    expect(post.status).toBe(201);
+
+    expect(
+      (await getNewPostRecipientIds(author.id, post.body.post.id)).sort(),
+    ).toEqual([member.id]);
+    expect(await getUserBadgeCount(member.id)).toBe(1);
+    expect(await getUserBadgeCount(outsider.id)).toBe(0);
   });
 
   test('getUserBadgeCount: includes unread DMs, excludes signal_skdm rows', async () => {

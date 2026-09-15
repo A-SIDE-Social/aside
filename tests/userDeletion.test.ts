@@ -27,7 +27,7 @@ describe('User deletion policy', () => {
         ORDER BY tc.table_name, kcu.column_name`,
     );
 
-    expect(rows).toHaveLength(32);
+    expect(rows).toHaveLength(33);
     expect(rows.filter((row) => row.delete_rule === 'NO ACTION')).toEqual([]);
     expect(
       rows

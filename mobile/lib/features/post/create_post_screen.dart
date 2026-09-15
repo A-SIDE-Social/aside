@@ -70,6 +70,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   bool _isPosting = false;
   bool _isTextPost = false;
   bool _hideAfter24h = false;
+  final Set<String> _selectedAudienceListIds = {};
 
   // Upload progress + stall watchdog state
   double _uploadProgress = 0.0; // 0.0–1.0 across all files
@@ -327,12 +328,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   /// for free — no parallel-map fixup needed.
   void _reorderMedia(int oldIndex, int newIndex) {
     setState(() {
-      // ReorderableListView's contract: newIndex is the slot the item
-      // would occupy AFTER removal. Adjust when moving down.
-      var to = newIndex;
-      if (to > oldIndex) to -= 1;
       final item = _media.removeAt(oldIndex);
-      _media.insert(to, item);
+      _media.insert(newIndex, item);
     });
   }
 
@@ -375,6 +372,208 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     if (_isPosting) return false;
     if (_isTextPost) return _captionController.text.trim().isNotEmpty;
     return _media.isNotEmpty;
+  }
+
+  int _audienceMemberCount(List<GroupWithMembers> lists) {
+    final memberIds = <String>{};
+    for (final list in lists) {
+      if (_selectedAudienceListIds.contains(list.group.id)) {
+        memberIds.addAll(list.members.map((member) => member.id));
+      }
+    }
+    return memberIds.length;
+  }
+
+  String _audienceLabel(List<GroupWithMembers> lists) {
+    if (_selectedAudienceListIds.isEmpty) return 'All connections';
+    final selected = lists
+        .where((list) => _selectedAudienceListIds.contains(list.group.id))
+        .toList();
+    if (selected.isEmpty) return 'Limited audience — review selection';
+    final people = _audienceMemberCount(lists);
+    if (selected.length == 1) {
+      return '${selected.single.group.name} · '
+          '$people ${people == 1 ? 'person' : 'people'}';
+    }
+    return '${selected.length} lists · '
+        '$people ${people == 1 ? 'person' : 'people'}';
+  }
+
+  Future<void> _showAudiencePicker() async {
+    List<GroupWithMembers> lists;
+    try {
+      lists = await ref.read(groupsWithMembersProvider.future);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not load your lists')),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+
+    if (lists.isEmpty) {
+      await context.push('/groups');
+      ref.invalidate(groupsWithMembersProvider);
+      return;
+    }
+
+    final validIds = lists.map((list) => list.group.id).toSet();
+    final pending = Set<String>.from(_selectedAudienceListIds)
+      ..retainAll(validIds);
+    final picked = await showModalBottomSheet<Set<String>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(sheetContext).height * 0.72,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Choose audience',
+                          style: Theme.of(sheetContext).textTheme.titleLarge,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(
+                          sheetContext,
+                          Set<String>.from(pending),
+                        ),
+                        child: const Text('Done'),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Text(
+                    'Lists are private. People can see the post, not the '
+                    'name of the list they are in.',
+                    style: Theme.of(sheetContext).textTheme.bodySmall,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: ListView(
+                    children: [
+                      CheckboxListTile(
+                        value: pending.isEmpty,
+                        onChanged: (_) => setSheetState(pending.clear),
+                        secondary: const Icon(Icons.people_outline),
+                        title: const Text('All connections'),
+                        subtitle: const Text('Your current sharing default'),
+                      ),
+                      const Divider(height: 1),
+                      for (final list in lists)
+                        CheckboxListTile(
+                          value: pending.contains(list.group.id),
+                          onChanged: list.members.isEmpty
+                              ? null
+                              : (selected) => setSheetState(() {
+                                    if (selected == true) {
+                                      pending.add(list.group.id);
+                                    } else {
+                                      pending.remove(list.group.id);
+                                    }
+                                  }),
+                          secondary: Icon(
+                            Icons.lock_outline,
+                            color: list.members.isEmpty
+                                ? Theme.of(sheetContext).disabledColor
+                                : null,
+                          ),
+                          title: Text(list.group.name),
+                          subtitle: Text(
+                            list.members.isEmpty
+                                ? 'No connected members'
+                                : '${list.members.length} '
+                                    '${list.members.length == 1 ? 'person' : 'people'}',
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'List changes apply only to future posts.',
+                          style: Theme.of(sheetContext).textTheme.bodySmall,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          Future.microtask(() async {
+                            if (!mounted) return;
+                            await context.push('/groups');
+                            ref.invalidate(groupsWithMembersProvider);
+                          });
+                        },
+                        child: const Text('Manage lists'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (picked != null && mounted) {
+      setState(() {
+        _selectedAudienceListIds
+          ..clear()
+          ..addAll(picked);
+      });
+    }
+  }
+
+  Widget _buildAudienceSelector(AppColorTokens colors, ThemeData theme) {
+    final lists = ref.watch(groupsWithMembersProvider);
+    final subtitle = lists.when(
+      data: _audienceLabel,
+      loading: () => _selectedAudienceListIds.isEmpty
+          ? 'All connections'
+          : 'Loading selected audience…',
+      error: (_, __) => _selectedAudienceListIds.isEmpty
+          ? 'All connections'
+          : 'Limited audience — tap to review',
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      child: Material(
+        color: colors.surfaceAlt,
+        borderRadius: BorderRadius.circular(12),
+        child: ListTile(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          leading: Icon(
+            _selectedAudienceListIds.isEmpty
+                ? Icons.people_outline
+                : Icons.lock_outline,
+            color: colors.textSecondary,
+          ),
+          title: const Text('Audience'),
+          subtitle: Text(subtitle),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _isPosting ? null : _showAudiencePicker,
+        ),
+      ),
+    );
   }
 
   Future<void> _share() async {
@@ -543,6 +742,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       await api.createPost(
         caption: caption.isNotEmpty ? caption : null,
         media: mediaPayload,
+        groupIds: _selectedAudienceListIds.isEmpty
+            ? null
+            : _selectedAudienceListIds.toList(),
         hideAfter24h: _hideAfter24h,
       );
 
@@ -569,9 +771,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isPosting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to share: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to share: $e')));
       }
     } finally {
       if (mounted && _isPosting) setState(() => _isPosting = false);
@@ -640,14 +842,15 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       completedMedia: completed.map((m) => m.completed!).toList(),
       nextFileIndex: completed.length,
       createdAt: DateTime.now(),
+      audienceListIds: _selectedAudienceListIds.toList(),
       filterIds: filterIds,
       transforms: transforms,
     );
     await ref.read(draftProvider.notifier).saveDraft(draft);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Saved as draft')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Saved as draft')));
     context.pop();
   }
 
@@ -704,10 +907,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               padding: EdgeInsets.all(16),
               child: Text(
                 'Resume draft',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
               ),
             ),
             for (final d in drafts)
@@ -743,18 +943,23 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       _resumingDraftId = draft.id;
       _captionController.text = draft.caption;
       _isTextPost = draft.isTextPost;
+      _selectedAudienceListIds
+        ..clear()
+        ..addAll(draft.audienceListIds);
       _media.clear();
       for (var i = 0; i < draft.localFilePaths.length; i++) {
         final filterId = draft.filterIds[i];
-        _media.add(_ComposerMedia(
-          file: XFile(draft.localFilePaths[i]),
-          isVideo: i < draft.videoFlags.length ? draft.videoFlags[i] : false,
-          filter: filterId != null ? FilmFilters.byId(filterId) : null,
-          transform: draft.transforms[i],
-          completed: i < draft.completedMedia.length
-              ? Map<String, dynamic>.from(draft.completedMedia[i])
-              : null,
-        ));
+        _media.add(
+          _ComposerMedia(
+            file: XFile(draft.localFilePaths[i]),
+            isVideo: i < draft.videoFlags.length ? draft.videoFlags[i] : false,
+            filter: filterId != null ? FilmFilters.byId(filterId) : null,
+            transform: draft.transforms[i],
+            completed: i < draft.completedMedia.length
+                ? Map<String, dynamic>.from(draft.completedMedia[i])
+                : null,
+          ),
+        );
       }
       _uploadTotalFiles = _media.length;
       _uploadingFileIndex = _completedCount;
@@ -784,10 +989,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         actions: [
           if (_isPosting && _uploadTotalFiles > 0)
             Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 8,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -799,8 +1001,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                       child: LinearProgressIndicator(
                         value: _uploadProgress,
                         minHeight: 4,
-                        backgroundColor:
-                            colors.textPrimary.withValues(alpha: 0.15),
+                        backgroundColor: colors.textPrimary.withValues(
+                          alpha: 0.15,
+                        ),
                         valueColor: AlwaysStoppedAnimation<Color>(
                           colors.textPrimary,
                         ),
@@ -811,10 +1014,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                   Text(
                     'Uploading ${_uploadingFileIndex + 1} of '
                     '$_uploadTotalFiles…',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: colors.textTertiary,
-                    ),
+                    style: TextStyle(fontSize: 10, color: colors.textTertiary),
                   ),
                 ],
               ),
@@ -893,20 +1093,29 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 Center(
                   child: TextButton.icon(
                     onPressed: _showMediaSourcePicker,
-                    icon: Icon(Icons.add_photo_alternate_outlined,
-                        color: colors.textTertiary),
-                    label: Text('Add photos instead',
-                        style: TextStyle(color: colors.textTertiary)),
+                    icon: Icon(
+                      Icons.add_photo_alternate_outlined,
+                      color: colors.textTertiary,
+                    ),
+                    label: Text(
+                      'Add photos instead',
+                      style: TextStyle(color: colors.textTertiary),
+                    ),
                   ),
                 ),
                 // Auto-hide toggle for text posts
                 Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
-                      Icon(Icons.timer_outlined,
-                          size: 20, color: colors.textSecondary),
+                      Icon(
+                        Icons.timer_outlined,
+                        size: 20,
+                        color: colors.textSecondary,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -931,10 +1140,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                   decoration: BoxDecoration(
                     color: colors.surfaceAlt,
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: colors.border,
-                      width: 0.5,
-                    ),
+                    border: Border.all(color: colors.border, width: 0.5),
                   ),
                   child: Column(
                     children: [
@@ -959,7 +1165,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                           // Reorder is disabled mid-upload — the share/upload
                           // path indexes into _media by position and the
                           // stall-resume path assumes ordering is stable.
-                          onReorder: _isPosting ? (_, __) {} : _reorderMedia,
+                          onReorderItem:
+                              _isPosting ? (_, __) {} : _reorderMedia,
                           itemCount: _media.length,
                           itemBuilder: (context, index) {
                             final item = _media[index];
@@ -1007,12 +1214,13 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                                                 // them is visually fine.
                                                 child: ClipRect(
                                                   child: Transform.scale(
-                                                    scale: _transformFor(index)
-                                                        .scale,
+                                                    scale: _transformFor(
+                                                      index,
+                                                    ).scale,
                                                     child: Transform.rotate(
-                                                      angle:
-                                                          _transformFor(index)
-                                                              .rotation,
+                                                      angle: _transformFor(
+                                                        index,
+                                                      ).rotation,
                                                       child: Image.file(
                                                         File(item.file.path),
                                                         width: 150,
@@ -1096,8 +1304,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                                 child: Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Icon(Icons.add,
-                                        color: colors.textTertiary, size: 18),
+                                    Icon(
+                                      Icons.add,
+                                      color: colors.textTertiary,
+                                      size: 18,
+                                    ),
                                     const SizedBox(width: 6),
                                     Text(
                                       'Add',
@@ -1129,26 +1340,30 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 // Driven off the first photo in the strip — its filter is
                 // the "shared" selection users see highlighted.
                 if (_media.any((m) => !m.isVideo))
-                  Builder(builder: (_) {
-                    final firstPhotoIdx = _media.indexWhere((m) => !m.isVideo);
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: FilterPicker(
-                        imagePath: _media[firstPhotoIdx].file.path,
-                        selectedFilter: _filterFor(firstPhotoIdx),
-                        onFilterChanged: (f) {
-                          setState(() {
-                            // Apply filter to ALL photos
-                            for (var i = 0; i < _media.length; i++) {
-                              if (!_media[i].isVideo) {
-                                _media[i].filter = f.isNone ? null : f;
+                  Builder(
+                    builder: (_) {
+                      final firstPhotoIdx = _media.indexWhere(
+                        (m) => !m.isVideo,
+                      );
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: FilterPicker(
+                          imagePath: _media[firstPhotoIdx].file.path,
+                          selectedFilter: _filterFor(firstPhotoIdx),
+                          onFilterChanged: (f) {
+                            setState(() {
+                              // Apply filter to ALL photos
+                              for (var i = 0; i < _media.length; i++) {
+                                if (!_media[i].isVideo) {
+                                  _media[i].filter = f.isNone ? null : f;
+                                }
                               }
-                            }
-                          });
-                        },
-                      ),
-                    );
-                  }),
+                            });
+                          },
+                        ),
+                      );
+                    },
+                  ),
 
                 // Caption
                 Padding(
@@ -1174,12 +1389,17 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
                 // Auto-hide toggle
                 Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
-                      Icon(Icons.timer_outlined,
-                          size: 20, color: colors.textSecondary),
+                      Icon(
+                        Icons.timer_outlined,
+                        size: 20,
+                        color: colors.textSecondary,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -1196,12 +1416,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                     ],
                   ),
                 ),
-
-                // NOTE: Group scoping is disabled for now. The backend still supports
-                // group_ids on post creation, but we're gathering feedback on whether
-                // to filter on the send side, receive side, or both before exposing
-                // this in the UI. See groups_screen.dart for group management.
               ],
+              if (_isTextPost || hasMedia)
+                _buildAudienceSelector(colors, theme),
             ],
           ),
         ),

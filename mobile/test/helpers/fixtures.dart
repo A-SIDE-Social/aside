@@ -81,6 +81,7 @@ Map<String, dynamic> postJson({
   int? likeCount,
   bool? isLiked,
   String? expiresAt,
+  String? audienceType,
   List<Map<String, dynamic>>? reactions,
 }) =>
     {
@@ -98,6 +99,7 @@ Map<String, dynamic> postJson({
       'like_count': likeCount ?? 0,
       'is_liked': isLiked ?? false,
       'expires_at': expiresAt,
+      'audience_type': audienceType ?? 'all_connections',
       'reactions': reactions,
     };
 

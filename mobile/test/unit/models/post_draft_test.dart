@@ -4,6 +4,7 @@ import 'package:aside/models/post_draft.dart';
 
 void main() {
   PostDraft makeDraft({
+    List<String>? audienceListIds,
     Map<int, String>? filterIds,
     Map<int, MediaTransform>? transforms,
   }) =>
@@ -16,9 +17,33 @@ void main() {
         completedMedia: [],
         nextFileIndex: 0,
         createdAt: DateTime(2025, 1, 1),
+        audienceListIds: audienceListIds ?? const [],
         filterIds: filterIds ?? {},
         transforms: transforms ?? {},
       );
+
+  group('PostDraft audience persistence', () {
+    test('selected private lists survive encode/decode', () {
+      final draft = makeDraft(audienceListIds: ['family', 'close-friends']);
+
+      final decoded = PostDraft.decode(draft.encode());
+
+      expect(decoded.audienceListIds, ['family', 'close-friends']);
+    });
+
+    test('older drafts default to all connections', () {
+      final restored = PostDraft.fromJson({
+        'id': 'old-draft',
+        'caption': 'Before audience controls',
+        'local_file_paths': <String>[],
+        'video_flags': <bool>[],
+        'completed_media': <Map<String, dynamic>>[],
+        'created_at': '2025-01-01T00:00:00.000',
+      });
+
+      expect(restored.audienceListIds, isEmpty);
+    });
+  });
 
   group('PostDraft per-image filter persistence', () {
     test('empty filterIds round-trips correctly', () {

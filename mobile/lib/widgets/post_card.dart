@@ -186,6 +186,17 @@ class _PostCardState extends State<PostCard>
                   ),
                 ),
                 const SizedBox(width: 8),
+                if (widget.isOwn && post.hasLimitedAudience) ...[
+                  Tooltip(
+                    message: 'Limited audience',
+                    child: Icon(
+                      Icons.lock_outline,
+                      size: 15,
+                      color: colors.textTertiary,
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                ],
                 Text(
                   _timeAgo(post.createdAt),
                   style: theme.textTheme.bodySmall,

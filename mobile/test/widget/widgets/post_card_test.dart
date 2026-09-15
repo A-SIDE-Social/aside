@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
 
 import 'package:aside/models/post.dart';
+import 'package:aside/widgets/post_card.dart';
 import '../../helpers/fixtures.dart';
 
 void main() {
@@ -71,6 +73,18 @@ void main() {
       ));
       expect(post.media, isEmpty);
       expect(post.caption, 'Just text');
+    });
+
+    testWidgets('own limited post shows an audience lock', (tester) async {
+      final post = Post.fromJson(
+        postJson(caption: 'Private note', media: [], audienceType: 'lists'),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: PostCard(post: post, isOwn: true))),
+      );
+
+      expect(find.byTooltip('Limited audience'), findsOneWidget);
     });
   });
 
