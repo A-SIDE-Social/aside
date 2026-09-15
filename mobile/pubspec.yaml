@@ -47,7 +47,7 @@ dependencies:
   socket_io_client: ^3.0.2
 
   # Subscriptions
-  purchases_flutter: ^10.0.1
+  purchases_flutter: ^10.12.0
 
   # Utils
   intl: ^0.20.2
@@ -84,6 +84,10 @@ dev_dependencies:
   fake_async: ^1.3.2
 
 flutter:
+  # Some bundled plugins still use CocoaPods. Keep dependency resolution on
+  # that single, tested path until all of them support Swift Package Manager.
+  config:
+    enable-swift-package-manager: false
   uses-material-design: true
 
   assets:
