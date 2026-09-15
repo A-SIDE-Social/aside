@@ -182,6 +182,16 @@ void main() {
       expect(json.containsKey('user_id'), isTrue);
     });
 
+    test('parses limited audience and defaults older payloads safely', () {
+      final limited = Post.fromJson(postJson(audienceType: 'lists'));
+      expect(limited.hasLimitedAudience, isTrue);
+
+      final legacyJson = postJson()..remove('audience_type');
+      final legacy = Post.fromJson(legacyJson);
+      expect(legacy.audienceType, 'all_connections');
+      expect(legacy.hasLimitedAudience, isFalse);
+    });
+
     test('fromJson parses post with video media', () {
       final json = postJson(
         caption: 'Video post',

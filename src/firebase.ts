@@ -123,6 +123,15 @@ export async function getUserBadgeCount(userId: string): Promise<number> {
          )
            AND p.created_at > COALESCE(u.last_feed_seen_at, u.created_at)
            AND p.deleted_at IS NULL
+           AND (
+             p.audience_type = 'all_connections'
+             OR EXISTS (
+               SELECT 1
+                 FROM post_audience_members pam
+                WHERE pam.post_id = p.id
+                  AND pam.user_id = u.id
+             )
+           )
        ) +
        (
          SELECT COALESCE(SUM(unread), 0)::int
@@ -413,7 +422,39 @@ export function buildNewPostBody(
 }
 
 /**
- * Send push notification for a new post to all mutual followers.
+ * Resolve the mutual followers allowed to receive a new-post push.
+ * Exported so the privacy-critical query can be integration tested without
+ * sending to Firebase.
+ */
+export async function getNewPostRecipientIds(
+  posterId: string,
+  postId: string,
+): Promise<string[]> {
+  // The audience snapshot is authoritative here. This query must stay in
+  // lockstep with feed/detail access so a notification never leaks a
+  // limited post's caption or media URL to a non-recipient.
+  const { rows: followers } = await query(
+    `SELECT f1.followee_id AS user_id
+       FROM follows f1
+       JOIN follows f2 ON f2.follower_id = f1.followee_id AND f2.followee_id = f1.follower_id
+       JOIN posts p ON p.id = $2 AND p.user_id = $1
+       WHERE f1.follower_id = $1
+         AND (
+           p.audience_type = 'all_connections'
+           OR EXISTS (
+             SELECT 1
+               FROM post_audience_members pam
+              WHERE pam.post_id = p.id
+                AND pam.user_id = f1.followee_id
+           )
+         )`,
+    [posterId, postId],
+  );
+  return followers.map((f: any) => f.user_id);
+}
+
+/**
+ * Send a new-post push only to mutual followers in the post's audience.
  */
 export async function notifyNewPost(
   posterId: string,
@@ -424,16 +465,8 @@ export async function notifyNewPost(
   imageUrl?: string,
 ): Promise<void> {
   try {
-    // Find all mutual followers
-    const { rows: followers } = await query(
-      `SELECT f1.followee_id AS user_id
-       FROM follows f1
-       JOIN follows f2 ON f2.follower_id = f1.followee_id AND f2.followee_id = f1.follower_id
-       WHERE f1.follower_id = $1`,
-      [posterId],
-    );
+    let recipientIds = await getNewPostRecipientIds(posterId, postId);
 
-    let recipientIds = followers.map((f: any) => f.user_id);
     if (recipientIds.length === 0) return;
 
     // Filter by notification preferences

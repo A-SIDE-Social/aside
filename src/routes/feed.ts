@@ -3,6 +3,7 @@ import { query } from '../db/pool';
 import { asyncHandler, resolvePostMedia, resolveMediaUrl, getUserSubscriptionStatus, parseBeforeCursor } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import { getPlanLimits, LIMITS } from '../constants';
+import { postAudiencePredicate } from '../lib/postAudience';
 
 const router = Router();
 
@@ -37,6 +38,7 @@ router.get(
          WHERE p.deleted_at IS NULL
          AND u.deleted_at IS NULL
          AND (p.expires_at IS NULL OR p.expires_at > NOW())
+         AND ${postAudiencePredicate('p', '$1')}
          AND (
            p.user_id = $1
            OR p.user_id IN (
@@ -68,14 +70,7 @@ router.get(
          AND p.deleted_at IS NULL
          AND u.deleted_at IS NULL
          AND (p.expires_at IS NULL OR p.expires_at > NOW())
-         AND (
-           NOT EXISTS (SELECT 1 FROM post_groups pg WHERE pg.post_id = p.id)
-           OR EXISTS (
-             SELECT 1 FROM post_groups pg
-             JOIN group_members gm ON gm.group_id = pg.group_id
-             WHERE pg.post_id = p.id AND gm.member_user_id = $1
-           )
-         )
+         AND ${postAudiencePredicate('p', '$1')}
          AND ($2::timestamptz IS NULL OR p.created_at < $2)
          AND ($3::int IS NULL OR p.created_at > NOW() - make_interval(days => $3))
          AND ($4::boolean IS NOT TRUE OR p.user_id != $1)
@@ -251,14 +246,7 @@ router.get(
                  WHERE f1.follower_id = $1
                )
              )
-             AND (
-               NOT EXISTS (SELECT 1 FROM post_groups pg WHERE pg.post_id = p.id)
-               OR EXISTS (
-                 SELECT 1 FROM post_groups pg
-                 JOIN group_members gm ON gm.group_id = pg.group_id
-                 WHERE pg.post_id = p.id AND gm.member_user_id = $1
-               )
-             )
+             AND ${postAudiencePredicate('p', '$1')}
          ) AS has_older`,
         [userId, feedHistoryDays],
       );

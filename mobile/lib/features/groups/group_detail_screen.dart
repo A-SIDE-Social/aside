@@ -117,7 +117,8 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
         ),
         title: const Text('Delete List'),
         content: const Text(
-          'Are you sure you want to delete this list? Members will not be unfollowed.',
+          'Delete this list? Members will not be disconnected, and posts '
+          'already shared with it will keep their original audience.',
         ),
         actions: [
           TextButton(
@@ -126,10 +127,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(
-              'Delete',
-              style: TextStyle(color: AppColors.error),
-            ),
+            child: Text('Delete', style: TextStyle(color: AppColors.error)),
           ),
         ],
       ),
@@ -142,9 +140,9 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
         if (mounted) context.pop();
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to delete list: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Failed to delete list: $e')));
         }
       }
     }
@@ -162,9 +160,9 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
           .toList();
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to load follows')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Failed to load follows')));
       }
       return;
     }
@@ -203,7 +201,9 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
                     ),
                     Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 24, vertical: 8),
+                        horizontal: 24,
+                        vertical: 8,
+                      ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -224,8 +224,9 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content:
-                                          Text('Failed to update members: $e'),
+                                      content: Text(
+                                        'Failed to update members: $e',
+                                      ),
                                     ),
                                   );
                                 }
@@ -234,6 +235,19 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
                             child: const Text('Done'),
                           ),
                         ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Changes apply to future posts. Past posts keep '
+                          'their original audience.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.textSecondary,
+                          ),
+                        ),
                       ),
                     ),
                     const Divider(),
@@ -247,13 +261,15 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
                             )
                           : ListView.builder(
                               controller: scrollController,
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
                               itemCount: mutualFollows.length,
                               itemBuilder: (ctx, index) {
                                 final user = mutualFollows[index];
-                                final isSelected =
-                                    selectedIds.contains(user.id);
+                                final isSelected = selectedIds.contains(
+                                  user.id,
+                                );
 
                                 return CheckboxListTile(
                                   value: isSelected,
@@ -304,8 +320,11 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
               onPressed: _showEditDialog,
             ),
             IconButton(
-              icon: Icon(Icons.delete_outline_rounded,
-                  size: 20, color: AppColors.error),
+              icon: Icon(
+                Icons.delete_outline_rounded,
+                size: 20,
+                color: AppColors.error,
+              ),
               onPressed: _deleteGroup,
             ),
           ],

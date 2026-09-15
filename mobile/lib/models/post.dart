@@ -101,6 +101,12 @@ class Post {
   final bool isLiked;
   final DateTime? expiresAt;
 
+  /// The publish-time visibility mode returned by the API. Older API payloads
+  /// omit this field and retain the original all-connections behavior.
+  final String audienceType;
+
+  bool get hasLimitedAudience => audienceType == 'lists';
+
   /// Per-emoji reaction summary returned by the feed + post-detail
   /// enrichment. Empty when nobody has reacted yet (the strip widget
   /// renders no chips in that case — only the "+" affordance shows).
@@ -121,6 +127,7 @@ class Post {
     this.likeCount = 0,
     this.isLiked = false,
     this.expiresAt,
+    this.audienceType = 'all_connections',
     this.reactions = const [],
   });
 
@@ -152,6 +159,7 @@ class Post {
       expiresAt: json['expires_at'] != null
           ? DateTime.parse(json['expires_at'] as String)
           : null,
+      audienceType: json['audience_type'] as String? ?? 'all_connections',
       reactions: (json['reactions'] as List<dynamic>?)
               ?.map((e) => PostReaction.fromJson(e as Map<String, dynamic>))
               .toList() ??
@@ -173,6 +181,7 @@ class Post {
       'like_count': likeCount,
       'is_liked': isLiked,
       'expires_at': expiresAt?.toIso8601String(),
+      'audience_type': audienceType,
       'reactions': reactions.map((r) => r.toJson()).toList(),
     };
   }
@@ -202,6 +211,7 @@ class Post {
     int? likeCount,
     bool? isLiked,
     DateTime? expiresAt,
+    String? audienceType,
     List<PostReaction>? reactions,
   }) {
     return Post(
@@ -219,6 +229,7 @@ class Post {
       likeCount: likeCount ?? this.likeCount,
       isLiked: isLiked ?? this.isLiked,
       expiresAt: expiresAt ?? this.expiresAt,
+      audienceType: audienceType ?? this.audienceType,
       reactions: reactions ?? this.reactions,
     );
   }

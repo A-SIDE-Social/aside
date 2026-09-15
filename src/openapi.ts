@@ -74,6 +74,15 @@ export const openApiSpec = {
           id: { type: 'string', format: 'uuid' },
           user_id: { type: 'string', format: 'uuid' },
           caption: { type: 'string', nullable: true },
+          audience_type: {
+            type: 'string',
+            enum: ['all_connections', 'lists'],
+            description: 'Whether the post is visible to all mutual connections or a publish-time list snapshot',
+          },
+          audience_member_count: {
+            type: 'integer',
+            description: 'Number of snapshotted recipients (create response only)',
+          },
           display_name: { type: 'string' },
           avatar_url: { type: 'string', nullable: true },
           media: { type: 'array', items: { $ref: '#/components/schemas/PostMedia' } },
@@ -820,7 +829,11 @@ export const openApiSpec = {
                 properties: {
                   caption: { type: 'string', maxLength: 2200 },
                   media: { type: 'array', items: { $ref: '#/components/schemas/MediaInput' }, minItems: 1, maxItems: 5 },
-                  group_ids: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Scope post visibility to these groups' },
+                  group_ids: {
+                    type: 'array',
+                    items: { type: 'string', format: 'uuid' },
+                    description: 'Private lists whose current connected members become the immutable post audience',
+                  },
                 },
               },
             },

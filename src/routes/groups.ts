@@ -119,23 +119,9 @@ router.delete(
     );
     if (existing.length === 0) throw new AppError(404, 'Group not found');
 
-    // Remove post_groups references for posts that are ONLY scoped to this group
-    // (those posts become visible to all mutuals)
-    await query(
-      `DELETE FROM post_groups
-       WHERE post_id IN (
-         SELECT pg.post_id FROM post_groups pg
-         WHERE pg.post_id NOT IN (
-           SELECT pg2.post_id FROM post_groups pg2 WHERE pg2.group_id != $1
-         )
-       ) AND group_id = $1`,
-      [id],
-    );
-
-    // Delete remaining post_groups references for this group
-    await query('DELETE FROM post_groups WHERE group_id = $1', [id]);
-
-    // Delete the group (cascades to group_members)
+    // Delete the list and its editable membership. post_groups labels cascade,
+    // but immutable post_audience_members snapshots remain, so deleting a list
+    // can never broaden the audience of an older post.
     await query('DELETE FROM groups WHERE id = $1', [id]);
 
     res.json({ message: 'Group deleted' });
