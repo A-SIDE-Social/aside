@@ -1,3 +1,5 @@
+import 'dart:io';
+import '../models/partner_offer.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -35,8 +37,21 @@ class RevenueCatService {
 
   /// Purchase a package (triggers platform payment sheet).
   static Future<PurchaseResult> purchasePackage(Package package) async {
+    if (Platform.isAndroid) {
+      final option =
+          annualBasePlan(package.storeProduct.subscriptionOptions ?? []);
+      if (option == null) {
+        throw StateError('The annual plan is unavailable. Please try again.');
+      }
+      return await purchaseOption(option);
+    }
     return await Purchases.purchase(PurchaseParams.package(package));
   }
+
+  static Future<PurchaseResult> purchaseOption(SubscriptionOption option) =>
+      Purchases.purchase(PurchaseParams.subscriptionOption(option));
+
+  static Future<void> syncPurchases() => Purchases.syncPurchases();
 
   /// Get current customer info (entitlements, subscription status).
   static Future<CustomerInfo> getCustomerInfo() async {
