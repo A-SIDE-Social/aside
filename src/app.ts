@@ -7,6 +7,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { router } from './routes';
 import { adminRouter } from './routes/admin';
 import { unsubscribeRouter } from './routes/unsubscribe';
+import { newsletterRouter } from './routes/newsletter';
 import { serveOpenApiDocs } from './openapi';
 import { corsOrigin } from './lib/cors';
 
@@ -40,6 +41,7 @@ app.use('/admin', adminRouter);
 // of marketing broadcast emails. Token-signed (HMAC) so anyone
 // with the link can act on it without an active session.
 app.use('/unsubscribe', unsubscribeRouter);
+app.use('/newsletter', newsletterRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
