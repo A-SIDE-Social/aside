@@ -6,7 +6,9 @@ import { confirmSignup, escapeHtml, normalizeEmail, requestSignup, validToken } 
 export const newsletterRouter = Router();
 newsletterRouter.use(urlencoded({ extended: false, limit: '4kb' }));
 newsletterRouter.use((_req, res, next) => {
-  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow',
+  // Keep tokens out of cross-origin referrers while allowing the browser to
+  // supply Origin on the same-origin confirmation form POST.
+  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin', 'X-Robots-Tag': 'noindex, nofollow',
     'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" });
   next();
 });

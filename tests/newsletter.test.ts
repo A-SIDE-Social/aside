@@ -76,7 +76,7 @@ test('stores only a token hash; email scanner GET cannot activate a subscriber',
   expect(calls()[0].headers.Authorization).toBe('Bearer test-send-key');
   const response = await request(app).get(`/newsletter/confirm?token=${token}`);
   expect(response.status).toBe(200);
-  expect(response.headers['referrer-policy']).toBe('no-referrer');
+  expect(response.headers['referrer-policy']).toBe('same-origin');
   expect(response.headers['cache-control']).toBe('no-store');
   expect(mockedFetch).toHaveBeenCalledTimes(1);
   expect((await query('SELECT confirmed_at FROM newsletter_signups')).rows[0].confirmed_at).toBeNull();
