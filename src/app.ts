@@ -10,10 +10,12 @@ import { unsubscribeRouter } from './routes/unsubscribe';
 import { newsletterRouter } from './routes/newsletter';
 import { serveOpenApiDocs } from './openapi';
 import { corsOrigin } from './lib/cors';
+import { measureHttp } from './performance';
 
 export const app = express();
 
 app.set('trust proxy', 1);
+app.use(measureHttp);
 app.use(cors({ origin: corsOrigin, credentials: true }));
 // Cookie parser used only by /admin (the API auth uses Bearer
 // headers). Mounted globally so the admin router can read signed

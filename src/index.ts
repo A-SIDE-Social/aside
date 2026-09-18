@@ -2,14 +2,16 @@ import http from 'http';
 import { app } from './app';
 import { config } from './config';
 import { initSocket } from './socket';
-import { query } from './db/pool';
+import { pool, query } from './db/pool';
 import { SYSTEM_USER_EMAIL } from './constants';
 import { processMediaDeletionQueue } from './services/mediaDeletion';
 import { cleanupPendingSignups } from './newsletter/service';
 import { newsletterConfig } from './newsletter/config';
+import { startPerformanceServer } from './performance';
 
 const server = http.createServer(app);
 initSocket(server);
+startPerformanceServer(pool);
 
 server.listen(config.port, async () => {
   console.log(`A/SIDE API listening on port ${config.port}`);
