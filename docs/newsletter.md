@@ -19,7 +19,7 @@ button before the API adds them to the Resend segment and topic.
    NEWSLETTER_RESEND_API_KEY=<secret>
    NEWSLETTER_SEGMENT_ID=<segment UUID>
    NEWSLETTER_TOPIC_ID=<topic UUID>
-   NEWSLETTER_API_URL=https://api.a-side.social
+   NEWSLETTER_API_URL=https://api.shopseen.com
    PUBLIC_APP_URL=https://a-side.social
    NEWSLETTER_ALLOWED_ORIGINS=https://a-side.social,https://www.a-side.social
    NEWSLETTER_FROM_EMAIL=Adeel at A/SIDE <notes@a-side.social>
@@ -37,6 +37,8 @@ button before the API adds them to the Resend segment and topic.
 6. Deploy the website `/notes` form only after that end-to-end check succeeds.
 
 The website submits a normal HTML form to `/newsletter/subscribe` on the API.
+The hosted app currently uses `api.shopseen.com`; it is the existing A/SIDE
+API hostname, not an additional service. Verify the active host before deployment.
 It needs no Resend credentials and no JavaScript for signup. Both website origins
 must be allowed; confirmation POSTs also allow the API's own origin.
 
