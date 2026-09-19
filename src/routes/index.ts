@@ -18,10 +18,12 @@ import contactsRouter from './contacts';
 import webhooksRouter from './webhooks';
 import subscriptionsRouter from './subscriptions';
 import reactionsRouter from './reactions';
+import partnerOffersRouter from './partnerOffers';
 
 export const router = Router();
 
 // Public routes (no auth)
+router.use('/partner-offers', partnerOffersRouter);
 router.use('/auth', authRouter);
 router.use('/invites', invitesRouter); // has its own auth per-route (validate is public)
 router.use('/webhooks', webhooksRouter); // RevenueCat server-to-server, auth via shared secret

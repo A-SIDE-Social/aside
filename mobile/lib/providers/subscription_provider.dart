@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 
@@ -83,9 +84,12 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
   Future<void> loadOfferings() async {
     try {
       final offerings = await RevenueCatService.getOfferings();
+      if (!ref.mounted) return;
       state = state.copyWith(offerings: offerings);
     } catch (e) {
-      state = state.copyWith(error: 'Failed to load offerings: $e');
+      if (ref.mounted) {
+        state = state.copyWith(error: 'Failed to load offerings: $e');
+      }
     }
   }
 
@@ -95,6 +99,7 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     try {
       final api = ref.read(apiServiceProvider);
       final data = await api.getSubscriptionStatus();
+      if (!ref.mounted) return;
 
       FamilyInfo? family;
       if (data['family'] != null) {
@@ -124,28 +129,79 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
             );
       }
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: '$e');
+      if (ref.mounted) state = state.copyWith(isLoading: false, error: '$e');
     }
   }
 
-  /// Purchase a subscription package.
-  Future<bool> purchase(Package package) async {
+  /// Wait for the authoritative webhook update, without assuming it arrives in two seconds.
+  Future<bool> waitForStoreUpdate({String? expectedPlan}) async {
+    for (var attempt = 0; attempt < 6; attempt++) {
+      if (attempt > 0) await Future<void>.delayed(Duration(seconds: attempt));
+      if (!ref.mounted) return false;
+      await refreshStatus();
+      if (!ref.mounted) return false;
+      if (state.error == null &&
+          (state.subscriptionStatus == 'active' ||
+              state.subscriptionStatus == 'trial') &&
+          (expectedPlan == null || state.subscriptionPlan == expectedPlan)) {
+        return true;
+      }
+    }
+    state = state.copyWith(
+        isLoading: false,
+        error:
+            'Your store purchase is still being checked. Please refresh or restore purchases in a moment.');
+    return false;
+  }
+
+  Future<bool> _completePurchase(Future<PurchaseResult> Function() purchase,
+      {String? expectedPlan}) async {
     state = state.copyWith(isLoading: true, error: null);
     try {
-      await RevenueCatService.purchasePackage(package);
-      // After purchase, refresh from backend (webhook will have fired)
-      await Future.delayed(const Duration(seconds: 2));
-      await refreshStatus();
-      return true;
-    } on PurchasesErrorCode catch (e) {
-      if (e == PurchasesErrorCode.purchaseCancelledError) {
-        state = state.copyWith(isLoading: false);
-        return false;
-      }
-      state = state.copyWith(isLoading: false, error: 'Purchase failed: $e');
+      await purchase();
+      return await waitForStoreUpdate(expectedPlan: expectedPlan);
+    } on PlatformException catch (e) {
+      if (!ref.mounted) return false;
+      final cancelled = PurchasesErrorHelper.getErrorCode(e) ==
+          PurchasesErrorCode.purchaseCancelledError;
+      state = state.copyWith(
+          isLoading: false,
+          error: cancelled
+              ? null
+              : 'The store could not complete the purchase. Please try again.');
       return false;
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: 'Purchase failed: $e');
+      if (ref.mounted) {
+        state = state.copyWith(
+            isLoading: false,
+            error: 'Purchase could not be completed. Please try again.');
+      }
+      return false;
+    }
+  }
+
+  Future<bool> purchase(Package package) =>
+      _completePurchase(() => RevenueCatService.purchasePackage(package),
+          expectedPlan: package.identifier == 'family_annual'
+              ? 'pro_family'
+              : 'pro_individual');
+
+  Future<bool> purchasePartnerOption(SubscriptionOption option, String plan) =>
+      _completePurchase(() => RevenueCatService.purchaseOption(option),
+          expectedPlan: plan);
+
+  Future<bool> syncStorePurchases({String? expectedPlan}) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      await RevenueCatService.syncPurchases();
+      return await waitForStoreUpdate(expectedPlan: expectedPlan);
+    } catch (e) {
+      if (ref.mounted) {
+        state = state.copyWith(
+            isLoading: false,
+            error:
+                'Could not refresh purchases. Please try Restore Purchases.');
+      }
       return false;
     }
   }
@@ -155,10 +211,12 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     state = state.copyWith(isLoading: true, error: null);
     try {
       await RevenueCatService.restorePurchases();
-      await Future.delayed(const Duration(seconds: 2));
-      await refreshStatus();
+      await waitForStoreUpdate();
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: 'Restore failed: $e');
+      if (ref.mounted) {
+        state = state.copyWith(
+            isLoading: false, error: 'Restore failed. Please try again.');
+      }
     }
   }
 

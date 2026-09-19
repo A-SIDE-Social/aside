@@ -19,7 +19,7 @@ const missed = new Counter({ name: 'aside_metrics_recording_errors_total', help:
 // become labels. Never use baseUrl (it may include IDs), params or original URLs.
 const prefixes = ['/v1/auth', '/v1/users', '/v1/follows', '/v1/invites', '/v1/invite-link', '/v1/feed', '/v1/posts',
   '/v1/stories', '/v1/conversations', '/v1/lists', '/v1/groups', '/v1/devices', '/v1/dm-attachments',
-  '/v1/contacts', '/v1/subscriptions', '/v1/webhooks', '/newsletter', '/admin', '/unsubscribe'];
+  '/v1/contacts', '/v1/subscriptions', '/v1/webhooks', '/v1/partner-offers', '/newsletter', '/admin', '/unsubscribe'];
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 export function routeLabel(req: Request, prefix: string): string {
   const template: unknown = req.route?.path;

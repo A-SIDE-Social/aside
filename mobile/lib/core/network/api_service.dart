@@ -183,6 +183,19 @@ class ApiService {
   // Subscriptions
   // ---------------------------------------------------------------------------
 
+  Future<Map<String, dynamic>> resolvePartnerOffer({
+    required String code,
+    required String platform,
+    required String country,
+  }) async {
+    final response = await _dio.post('/v1/partner-offers/resolve', data: {
+      'code': code.trim(),
+      'platform': platform,
+      'country': country,
+    });
+    return Map<String, dynamic>.from(response.data['offer'] as Map);
+  }
+
   Future<Map<String, dynamic>> getSubscriptionStatus() async {
     final response = await _dio.get(ApiEndpoints.subscriptionStatus);
     return Map<String, dynamic>.from(response.data['subscription'] as Map);
