@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import 'core/config/app_theme.dart';
 import 'core/platform/deep_link.dart';
+import 'core/platform/pending_deep_link_listener.dart';
 import 'core/platform/screenshot_service.dart';
 import 'core/platform/universal_link_service.dart';
 import 'widgets/screenshot_warning.dart';
@@ -13,6 +14,7 @@ import 'features/auth/onboarding_contacts_screen.dart';
 import 'features/auth/sign_in_screen.dart';
 import 'features/auth/splash_screen.dart';
 import 'features/connections/send_request_screen.dart';
+import 'features/connections/add_friend_screen.dart';
 import 'features/conversations/conversation_detail_screen.dart';
 import 'features/conversations/conversations_screen.dart';
 import 'features/conversations/group_composer_screen.dart';
@@ -160,7 +162,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       }
 
       if (status == AuthStatus.authenticated && isOnSignIn) {
-        return '/';
+        return authState.isNewRegistration ? '/onboarding/contacts' : '/';
       }
 
       // Allow onboarding screens for authenticated users
@@ -299,6 +301,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/connections',
         builder: (context, state) => _constrained(const ConnectionsScreen()),
       ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/connections/add',
+        builder: (context, state) => _constrained(const AddFriendScreen()),
+      ),
       // Personal-invite-link send-request screen. Reached when an
       // already-authenticated user taps a Universal Link / App Link
       // of the form `<configured-app-url>/<slug>` — the bridge in
@@ -310,7 +317,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootNavigatorKey,
         path: '/u/:slug',
         builder: (context, state) => _constrained(
-          SendRequestScreen(slug: state.pathParameters['slug']!),
+          SendRequestScreen(
+            slug: state.pathParameters['slug']!,
+            legacy: state.uri.queryParameters['legacy'] == '1',
+          ),
         ),
       ),
       GoRoute(
@@ -390,14 +400,6 @@ class _AsideAppState extends ConsumerState<AsideApp>
   DateTime? _lastFeedRefresh;
   static const _feedRefreshInterval = Duration(minutes: 5);
 
-  /// Tracks whether the cold-start pendingDeepLink drain has run. The
-  /// drain only needs to fire once per app launch — the warm-resume
-  /// `ref.listen` below covers every change after that. Without this
-  /// flag the drain re-evaluates on every AsideApp rebuild, scheduling
-  /// redundant post-frame callbacks (mostly harmless thanks to the
-  /// inner null-check, but also a needless allocation pattern).
-  bool _drainedColdStart = false;
-
   /// Stream subscription for the screenshot detector. Cancelled in
   /// dispose() so we don't leak a long-lived subscription past the
   /// app's lifetime.
@@ -446,6 +448,7 @@ class _AsideAppState extends ConsumerState<AsideApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _screenshotSub?.cancel();
+    unawaited(_universalLinkService?.dispose());
     _screenshotWarningHandle?.cancel();
     super.dispose();
   }
@@ -529,62 +532,18 @@ class _AsideAppState extends ConsumerState<AsideApp>
 
     final router = ref.watch(routerProvider);
 
-    // Notification taps stash a route in pendingDeepLinkProvider; consume it
-    // here and route on the next frame. Listening from AsideApp (rather than
-    // inside a screen) means we catch taps regardless of which tab is active.
-    //
-    // Use `router.push` rather than `router.go`. `go` REPLACES the stack —
-    // the deep-link target becomes the only entry, so the user has nothing
-    // to back out to and the AppBar shows no back button. `push` layers
-    // the target on top of whatever's currently mounted (or the
-    // initialLocation `/` on cold-start) so the AppBar's back arrow pops
-    // cleanly back to the feed / wherever they were.
-    ref.listen<String?>(pendingDeepLinkProvider, (_, next) {
-      if (next == null) return;
-      debugPrint('[deep_link] warm tap → push $next');
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        router.push(next);
-        ref.read(pendingDeepLinkProvider.notifier).set(null);
-      });
-    });
-
-    // Cold-start race: `PushNotificationService.initialize()` awaits
-    // `getInitialMessage()` inside `AuthNotifier.initialize()`, which
-    // can resolve before (or while) this widget first builds with
-    // `authStatus == authenticated`. `ref.listen` above does NOT replay
-    // the provider's current value — it only fires on *future* changes.
-    // So if the tap that cold-started the app already stashed a route,
-    // the listener above misses it and we land on `/` instead of the
-    // DM. Drain the pending value on the first build only. `ref.read`
-    // keeps this off the dependency graph so it doesn't cause rebuild
-    // loops; the `_drainedColdStart` flag dedupes if AsideApp rebuilds
-    // before the post-frame callback fires.
-    if (!_drainedColdStart) {
-      _drainedColdStart = true;
-      final pendingOnMount = ref.read(pendingDeepLinkProvider);
-      if (pendingOnMount != null) {
-        debugPrint('[deep_link] cold-start drain → push $pendingOnMount');
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          // Re-check — the listener above may have consumed it in between.
-          final current = ref.read(pendingDeepLinkProvider);
-          if (current == null) return;
-          // Same `push` over `go` reasoning as above — the cold-start path
-          // also needs a navigable back stack, otherwise the user lands on
-          // /connections (or /post/abc, etc.) with no way back to the feed.
-          router.push(current);
-          ref.read(pendingDeepLinkProvider.notifier).set(null);
-        });
-      }
-    }
-
-    return GestureDetector(
-      onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
-      child: MaterialApp.router(
-        routerConfig: router,
-        themeMode: themeMode,
-        theme: AppTheme.lightTheme,
-        darkTheme: AppTheme.darkTheme,
-        debugShowCheckedModeBanner: false,
+    return PendingDeepLinkListener(
+      router: router,
+      authenticated: authStatus == AuthStatus.authenticated,
+      child: GestureDetector(
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: MaterialApp.router(
+          routerConfig: router,
+          themeMode: themeMode,
+          theme: AppTheme.lightTheme,
+          darkTheme: AppTheme.darkTheme,
+          debugShowCheckedModeBanner: false,
+        ),
       ),
     );
   }

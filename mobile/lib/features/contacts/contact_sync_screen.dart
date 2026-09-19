@@ -23,6 +23,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   List<_ContactMatch> _matches = [];
 
   Future<void> _syncContacts() async {
+    if (_syncing) return;
     setState(() {
       _syncing = true;
       _error = null;
@@ -30,10 +31,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
     try {
       final hashes = await ContactSyncService.getHashedContacts();
+      if (!mounted) return;
       if (hashes == null) {
         setState(() {
           _syncing = false;
-          _error = 'Contacts permission is required to find friends.';
+          _error =
+              'Contacts access wasn’t allowed. Use an invite link or code instead.';
         });
         return;
       }
@@ -49,6 +52,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
       final api = ref.read(apiServiceProvider);
       final data = await api.syncContacts(hashes);
+      if (!mounted) return;
       final list = (data as List<dynamic>?) ?? [];
 
       setState(() {
@@ -63,6 +67,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         }).toList();
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _syncing = false;
         _error = 'Failed to sync contacts. Please try again.';
@@ -70,10 +75,16 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     }
   }
 
+  final Set<String> _connecting = {};
+
   Future<void> _connect(String userId, int index) async {
+    if (!_connecting.add(userId)) return;
+    setState(() {});
     try {
       final api = ref.read(apiServiceProvider);
       final result = await api.follow(userId);
+      if (!mounted) return;
+      ref.invalidate(feedNotifierProvider);
       final isMutual =
           (result as Map<String, dynamic>)['is_mutual'] as bool? ?? false;
 
@@ -95,9 +106,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to connect: $e')),
+          const SnackBar(content: Text('Could not connect. Please try again.')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _connecting.remove(userId));
     }
   }
 
@@ -117,16 +130,21 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   }
 
   Widget _buildPrompt(ThemeData theme, AppColorTokens colors) {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(28),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
             Icons.contacts_rounded,
             size: 56,
             color: colors.textTertiary,
           ),
+          const SizedBox(height: 20),
+          OutlinedButton(
+            onPressed: () => context.push('/connections/add'),
+            child: const Text('Use an invite link or code'),
+          ),
+          const Text('Contacts are optional.'),
           const SizedBox(height: 20),
           Text(
             'Find friends on ${Env.appName}',
@@ -230,7 +248,9 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
                       child: const Text('Requested'),
                     )
                   : ElevatedButton(
-                      onPressed: () => _connect(match.user.id, index),
+                      onPressed: _connecting.contains(match.user.id)
+                          ? null
+                          : () => _connect(match.user.id, index),
                       style: ElevatedButton.styleFrom(
                         minimumSize: const Size(0, 32),
                         padding: const EdgeInsets.symmetric(horizontal: 12),

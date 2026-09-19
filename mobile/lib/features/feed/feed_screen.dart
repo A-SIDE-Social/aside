@@ -206,12 +206,14 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             feedState.when(
               data: (posts) {
                 if (posts.isEmpty) {
-                  return const SliverFillRemaining(
+                  return SliverFillRemaining(
                     child: EmptyState(
                       icon: Icons.photo_library_outlined,
                       title: 'No posts yet',
                       subtitle:
-                          'Posts from people you follow will appear here.',
+                          'Posts from your friends will appear here.',
+                      actionLabel: 'Add friends',
+                      onAction: () => context.push('/connections'),
                     ),
                   );
                 }

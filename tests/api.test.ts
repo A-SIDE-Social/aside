@@ -4655,6 +4655,14 @@ describe('Conversations', () => {
       .send({ member_ids: [userB.id, userC.id], name: 'Auto promote' });
     const gid = group.body.conversation.id;
 
+    // PostgreSQL NOW() is constant throughout createGroup's transaction.
+    // Give B the earlier timestamp this test requires instead of relying
+    // on insertion order when every member has the same joined_at.
+    await query(
+      "UPDATE conversation_members SET joined_at = NOW() - INTERVAL '1 day' WHERE conversation_id = $1 AND user_id = $2",
+      [gid, userB.id],
+    );
+
     // Delete creator's account.
     const del = await request(app)
       .delete('/v1/users/me')
@@ -7472,5 +7480,96 @@ describe('Message History Gating', () => {
     expect(res.status).toBe(200);
     expect(res.body.messages.length).toBe(2);
     expect(res.body.has_older_messages).toBe(false);
+  });
+});
+
+// Mary: two existing family members must connect without contact sync.
+describe('Invite journey regression — no contacts required', () => {
+  test('link → request → recipient accepts → both appear in Friends', async () => {
+    const alice = await createTestUser();
+    const bob = await createTestUser();
+    const link = await request(app).get('/v1/invite-link').auth(alice.token, { type: 'bearer' });
+    const preview = await request(app).get(`/v1/users/by-slug/${link.body.slug}`).auth(bob.token, { type: 'bearer' });
+    expect(preview.body.user.id).toBe(alice.user.id);
+    const send = await request(app).post('/v1/invite-link/request').auth(bob.token, { type: 'bearer' })
+      .send({ url: link.body.url.toUpperCase() });
+    expect(send.status).toBe(201);
+    expect(send.body.status).toBe('requested');
+    const inbound = await request(app).get('/v1/follows/inbound').auth(alice.token, { type: 'bearer' });
+    expect(inbound.body.users.map((u: any) => u.id)).toContain(bob.user.id);
+    const accept = await request(app).post('/v1/follows').auth(alice.token, { type: 'bearer' }).send({ user_id: bob.user.id });
+    expect(accept.body.is_mutual).toBe(true);
+    for (const [person, friend] of [[alice, bob], [bob, alice]]) {
+      const friends = await request(app).get('/v1/follows/mutual').auth(person.token, { type: 'bearer' });
+      expect(friends.body.users.map((u: any) => u.id)).toContain(friend.user.id);
+    }
+    const retry = await request(app).post('/v1/invite-link/request').auth(bob.token, { type: 'bearer' }).send({ slug: link.body.slug });
+    expect(retry.body.status).toBe('already_mutual');
+    const { rows } = await query(`SELECT * FROM notifications WHERE type = 'new_mutual' AND user_id = ANY($1::uuid[])`, [[alice.user.id, bob.user.id]]);
+    expect(rows).toHaveLength(2);
+  });
+
+  test('simultaneous opposite requests create one mutual notification per person', async () => {
+    const alice = await createTestUser();
+    const bob = await createTestUser();
+    const responses = await Promise.all([
+      request(app).post('/v1/follows').auth(alice.token, { type: 'bearer' }).send({ user_id: bob.user.id }),
+      request(app).post('/v1/follows').auth(bob.token, { type: 'bearer' }).send({ user_id: alice.user.id }),
+    ]);
+    expect(responses.map(r => r.status)).toEqual([201, 201]);
+    const { rows } = await query(`SELECT * FROM notifications WHERE type = 'new_mutual' AND user_id = ANY($1::uuid[])`, [[alice.user.id, bob.user.id]]);
+    expect(rows).toHaveLength(2);
+  });
+
+  test.each(['link', 'accept'])('%s rolls back its follow when durable notification fails, then retries cleanly', async mode => {
+    const alice = await createTestUser();
+    const bob = await createTestUser();
+    const link = await request(app).get('/v1/invite-link').auth(alice.token, { type: 'bearer' });
+    if (mode === 'accept') await query('INSERT INTO follows (follower_id, followee_id) VALUES ($1,$2)', [alice.user.id, bob.user.id]);
+    await query(`CREATE FUNCTION reject_journey_notification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test notification failure'; END; $$`);
+    await query(`CREATE TRIGGER reject_journey_notification BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION reject_journey_notification()`);
+    const send = () => mode === 'link'
+      ? request(app).post('/v1/invite-link/request').auth(bob.token, { type: 'bearer' }).send({ slug: link.body.slug })
+      : request(app).post('/v1/follows').auth(bob.token, { type: 'bearer' }).send({ user_id: alice.user.id });
+    try {
+      expect((await send()).status).toBe(500);
+      const { rows } = await query('SELECT * FROM follows WHERE follower_id=$1 AND followee_id=$2', [bob.user.id, alice.user.id]);
+      expect(rows).toHaveLength(0);
+    } finally {
+      await query('DROP TRIGGER reject_journey_notification ON notifications');
+      await query('DROP FUNCTION reject_journey_notification()');
+    }
+    expect((await send()).status).toBe(201);
+  });
+
+  test('parallel first reads return one stable invite link', async () => {
+    const alice = await createTestUser();
+    const links = await Promise.all(Array.from({ length: 5 }, () => request(app).get('/v1/invite-link').auth(alice.token, { type: 'bearer' })));
+    expect(links.every(r => r.status === 200)).toBe(true);
+    expect(new Set(links.map(r => r.body.slug)).size).toBe(1);
+  });
+
+  test('legacy /join URL works at signup and produces mutual connection notifications', async () => {
+    const inviter = await createTestUser();
+    const code = 'Ab12cd34ef56';
+    await query(`INSERT INTO invites (created_by_user_id, code, status, expires_at) VALUES ($1,$2,'sent',NOW()+INTERVAL '1 day')`, [inviter.user.id, code]);
+    const email = 'legacy-url-regression@test.com';
+    await request(app).post('/v1/auth/request-otp').send({ email });
+    const res = await request(app).post('/v1/auth/verify-otp').send({ email, code: '123456', display_name: 'New friend', invite_code: `http://localhost:3000/join/${code}` });
+    expect(res.status).toBe(200);
+    const { rows } = await query(`SELECT * FROM notifications WHERE type='new_mutual' AND user_id=$1 AND actor_id=$2`, [inviter.user.id, res.body.user.id]);
+    expect(rows).toHaveLength(1);
+  });
+
+  test('deleted inviter is rejected by both legacy preview and signup without partial account', async () => {
+    const inviter = await createTestUser();
+    const code = 'dead1234abcd';
+    await query(`INSERT INTO invites (created_by_user_id, code, expires_at) VALUES ($1,$2,NOW()+INTERVAL '1 day')`, [inviter.user.id, code]);
+    await query('UPDATE users SET deleted_at=NOW() WHERE id=$1', [inviter.user.id]);
+    expect((await request(app).get(`/v1/invites/validate/${code}`)).body.valid).toBe(false);
+    const email = 'deleted-inviter-signup@test.com';
+    await request(app).post('/v1/auth/request-otp').send({ email });
+    expect((await request(app).post('/v1/auth/verify-otp').send({ email, code: '123456', display_name: 'New friend', invite_code: code })).status).toBe(400);
+    expect((await query('SELECT id FROM users WHERE email=$1', [email])).rows).toHaveLength(0);
   });
 });

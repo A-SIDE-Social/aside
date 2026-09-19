@@ -94,17 +94,12 @@ router.delete(
     const userId = req.user!.userId;
     const { id } = req.params;
 
-    // Verify ownership and redeemable status (pending or sent)
-    const { rows: existing } = await query(
-      `SELECT id FROM invites WHERE id = $1 AND created_by_user_id = $2 AND status IN ('pending', 'sent')`,
+    const { rowCount } = await query(
+      `UPDATE invites SET status = 'revoked'
+       WHERE id = $1 AND created_by_user_id = $2 AND status IN ('pending', 'sent')`,
       [id, userId],
     );
-    if (existing.length === 0) throw new AppError(404, 'Pending invite not found');
-
-    await query(
-      `UPDATE invites SET status = 'revoked' WHERE id = $1`,
-      [id],
-    );
+    if (!rowCount) throw new AppError(404, 'Pending invite not found');
 
     res.json({ message: 'Invite revoked' });
   }),
@@ -234,8 +229,9 @@ router.get(
        JOIN users u ON u.id = i.created_by_user_id
        WHERE i.code = $1
          AND i.status IN ('pending', 'sent')
-         AND i.expires_at > NOW()`,
-      [code],
+         AND i.expires_at > NOW()
+         AND u.deleted_at IS NULL`,
+      [code.toString().trim()],
     );
 
     if (rows.length === 0) {
