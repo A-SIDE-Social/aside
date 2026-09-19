@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { config } from './config';
 import { activeUserExists, AuthPayload } from './middleware/auth';
 import { corsOrigin } from './lib/cors';
+import { performanceEnabled, socketConnections } from './performance';
 
 let io: Server;
 
@@ -29,10 +30,13 @@ export function initSocket(httpServer: HttpServer): Server {
   });
 
   io.on('connection', (socket: Socket) => {
+    const measured = performanceEnabled();
+    if (measured) socketConnections.inc();
     const userId = (socket as any).userId as string;
     socket.join(`user:${userId}`);
 
     socket.on('disconnect', () => {
+      if (measured) socketConnections.dec();
       socket.leave(`user:${userId}`);
     });
   });
