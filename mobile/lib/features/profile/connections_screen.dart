@@ -44,6 +44,7 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
       await api.follow(user.id);
       ref.invalidate(_requestsProvider);
       ref.invalidate(_connectionsProvider);
+      ref.invalidate(feedNotifierProvider);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Connected with ${user.displayName}')),
@@ -91,14 +92,30 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
     final requestsAsync = ref.watch(_requestsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Friends')),
+      appBar: AppBar(title: const Text('Friends'), actions: [
+        IconButton(
+            tooltip: 'Refresh friends',
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              ref.invalidate(_requestsProvider);
+              ref.invalidate(_connectionsProvider);
+            }),
+      ]),
       body: RefreshIndicator(
         onRefresh: () async {
           ref.invalidate(_connectionsProvider);
           ref.invalidate(_requestsProvider);
         },
         child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           children: [
+            ListTile(
+              leading: const Icon(Icons.person_add_outlined),
+              title: const Text('Add friend'),
+              subtitle: const Text('Enter an invite link or code'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => context.push('/connections/add'),
+            ),
             // ── Requests section ──
             requestsAsync.when(
               data: (requests) {
@@ -167,7 +184,13 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
                 );
               },
               loading: () => const SizedBox.shrink(),
-              error: (_, __) => const SizedBox.shrink(),
+              error: (_, __) => ListTile(
+                title: const Text('Could not load friend requests'),
+                trailing: TextButton(
+                  onPressed: () => ref.invalidate(_requestsProvider),
+                  child: const Text('Retry'),
+                ),
+              ),
             ),
 
             // ── Friends section ──

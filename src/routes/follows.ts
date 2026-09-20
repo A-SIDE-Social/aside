@@ -4,12 +4,7 @@ import { query } from '../db/pool';
 import { writeLimit } from '../middleware/rateLimit';
 import { asyncHandler, isMutualFollow, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
-import {
-  sendPush,
-  getTokensForUsers,
-  filterByPushThrottle,
-  stampPushSent,
-} from '../firebase';
+import { createConnection, pushConnection } from '../lib/connections';
 import { SYSTEM_USER_EMAIL } from '../constants';
 
 const router = Router();
@@ -23,110 +18,9 @@ router.post(
     if (!user_id) throw new AppError(400, 'user_id is required');
     if (user_id === req.user!.userId) throw new AppError(400, 'Cannot follow yourself');
 
-    // Verify target user exists
-    const { rows: targetUsers } = await query(
-      'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL',
-      [user_id],
-    );
-    if (targetUsers.length === 0) throw new AppError(404, 'User not found');
-
-    // Idempotent create: ON CONFLICT DO NOTHING + fallback SELECT means a
-    // duplicate accept (e.g. double-tap, retry after a flaky network) is a
-    // no-op success instead of a 409. The client doesn't care whether the
-    // row was newly created or already existed — only the end state matters.
-    const { rows: inserted } = await query(
-      `INSERT INTO follows (follower_id, followee_id)
-       VALUES ($1, $2)
-       ON CONFLICT (follower_id, followee_id) DO NOTHING
-       RETURNING *`,
-      [req.user!.userId, user_id],
-    );
-    const isNew = inserted.length > 0;
-    let follows = inserted;
-    if (!isNew) {
-      const { rows: existing } = await query(
-        'SELECT * FROM follows WHERE follower_id = $1 AND followee_id = $2',
-        [req.user!.userId, user_id],
-      );
-      follows = existing;
-    }
-
-    // Check if mutual (reverse follow exists)
-    const { rows: reverseFollow } = await query(
-      'SELECT id FROM follows WHERE follower_id = $1 AND followee_id = $2',
-      [user_id, req.user!.userId],
-    );
-    const is_mutual = reverseFollow.length > 0;
-
-    // Only emit notifications / pushes on a *new* follow. A duplicate accept
-    // from a retry/double-tap must not re-notify the other side.
-    if (!isNew) {
-      res.status(200).json({ follow: follows[0], is_mutual });
-      return;
-    }
-
-    // Get follower's display name for notifications
-    const { rows: followerInfo } = await query(
-      'SELECT display_name FROM users WHERE id = $1',
-      [req.user!.userId],
-    );
-    const followerName = followerInfo[0]?.display_name || 'Someone';
-
-    if (is_mutual) {
-      // Mutual was just established — notify both users
-      await query(
-        `INSERT INTO notifications (user_id, type, actor_id, reference_type)
-         VALUES ($1, 'new_mutual', $2, 'follow'), ($2, 'new_mutual', $1, 'follow')`,
-        [req.user!.userId, user_id],
-      );
-
-      // Push to the other user (check connections preference + throttle)
-      const { rows: prefRows } = await query(
-        'SELECT COALESCE((SELECT connections FROM notification_preferences WHERE user_id = $1), true) AS enabled',
-        [user_id],
-      );
-      if (prefRows[0].enabled) {
-        const allowed = await filterByPushThrottle([user_id]);
-        if (allowed.length > 0) {
-          const tokens = await getTokensForUsers([user_id]);
-          if (tokens.length > 0) {
-            await sendPush(tokens, 'New Connection', `You and ${followerName} are now connected`, {
-              type: 'new_mutual',
-              user_id: req.user!.userId,
-            });
-            await stampPushSent([user_id]);
-          }
-        }
-      }
-    } else {
-      // One-way follow — send inbound_follow notification to the followee
-      await query(
-        `INSERT INTO notifications (user_id, type, actor_id, reference_type)
-         VALUES ($1, 'inbound_follow', $2, 'follow')`,
-        [user_id, req.user!.userId],
-      );
-
-      // Push notification for the connection request (check connections preference + throttle)
-      const { rows: prefRows } = await query(
-        'SELECT COALESCE((SELECT connections FROM notification_preferences WHERE user_id = $1), true) AS enabled',
-        [user_id],
-      );
-      if (prefRows[0].enabled) {
-        const allowed = await filterByPushThrottle([user_id]);
-        if (allowed.length > 0) {
-          const tokens = await getTokensForUsers([user_id]);
-          if (tokens.length > 0) {
-            await sendPush(tokens, 'Connection Request', `${followerName} wants to connect with you`, {
-              type: 'inbound_follow',
-              user_id: req.user!.userId,
-            });
-            await stampPushSent([user_id]);
-          }
-        }
-      }
-    }
-
-    res.status(201).json({ follow: follows[0], is_mutual });
+    const result = await createConnection(req.user!.userId, { userId: user_id });
+    await pushConnection(result);
+    res.status(result.isNew ? 201 : 200).json({ follow: result.follow, is_mutual: result.isMutual });
   }),
 );
 

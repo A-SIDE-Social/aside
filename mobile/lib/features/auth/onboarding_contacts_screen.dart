@@ -29,6 +29,7 @@ class _OnboardingContactsScreenState
   void _goHome() => context.go('/');
 
   Future<void> _syncContacts() async {
+    if (_syncing) return;
     setState(() {
       _syncing = true;
       _error = null;
@@ -36,10 +37,12 @@ class _OnboardingContactsScreenState
 
     try {
       final hashes = await ContactSyncService.getHashedContacts();
+      if (!mounted) return;
       if (hashes == null) {
         setState(() {
           _syncing = false;
-          _error = 'Contacts permission is required to find friends.';
+          _error =
+              'Contacts access wasn’t allowed. Use an invite link or code instead.';
         });
         return;
       }
@@ -55,6 +58,7 @@ class _OnboardingContactsScreenState
 
       final api = ref.read(apiServiceProvider);
       final data = await api.syncContacts(hashes);
+      if (!mounted) return;
       final list = (data as List<dynamic>?) ?? [];
 
       setState(() {
@@ -69,6 +73,7 @@ class _OnboardingContactsScreenState
         }).toList();
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _syncing = false;
         _error = 'Something went wrong. You can try again from Settings later.';
@@ -76,10 +81,16 @@ class _OnboardingContactsScreenState
     }
   }
 
+  final Set<String> _connecting = {};
+
   Future<void> _connect(String userId, int index) async {
+    if (!_connecting.add(userId)) return;
+    setState(() {});
     try {
       final api = ref.read(apiServiceProvider);
       final result = await api.follow(userId);
+      if (!mounted) return;
+      ref.invalidate(feedNotifierProvider);
       final isMutual =
           (result as Map<String, dynamic>)['is_mutual'] as bool? ?? false;
 
@@ -90,7 +101,15 @@ class _OnboardingContactsScreenState
           requested: !isMutual,
         );
       });
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not connect. Please try again.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _connecting.remove(userId));
+    }
   }
 
   @override
@@ -113,9 +132,9 @@ class _OnboardingContactsScreenState
   }
 
   Widget _buildPrompt(ThemeData theme, AppColorTokens colors) {
-    return Column(
+    return ListView(
       children: [
-        const Spacer(flex: 1),
+        const SizedBox(height: 24),
         Icon(
           Icons.people_rounded,
           size: 64,
@@ -165,7 +184,15 @@ class _OnboardingContactsScreenState
             textAlign: TextAlign.center,
           ),
         ],
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
+        OutlinedButton.icon(
+          onPressed: () => context.push('/connections/add'),
+          icon: const Icon(Icons.person_add_outlined),
+          label: const Text('Use an invite link or code'),
+        ),
+        const SizedBox(height: 8),
+        const Text('Contacts are optional.', textAlign: TextAlign.center),
+        const SizedBox(height: 16),
         ElevatedButton.icon(
           onPressed: _syncContacts,
           icon: const Icon(Icons.cloud_upload_outlined, size: 20),
@@ -182,7 +209,7 @@ class _OnboardingContactsScreenState
             style: TextStyle(color: colors.textTertiary),
           ),
         ),
-        const Spacer(flex: 2),
+        const SizedBox(height: 24),
       ],
     );
   }
@@ -279,7 +306,9 @@ class _OnboardingContactsScreenState
                               child: const Text('Requested'),
                             )
                           : ElevatedButton(
-                              onPressed: () => _connect(match.user.id, index),
+                              onPressed: _connecting.contains(match.user.id)
+                                  ? null
+                                  : () => _connect(match.user.id, index),
                               style: ElevatedButton.styleFrom(
                                 minimumSize: const Size(0, 32),
                                 padding:

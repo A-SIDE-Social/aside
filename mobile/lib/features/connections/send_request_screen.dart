@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/config/app_colors.dart';
+import '../../core/network/api_client.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
 
@@ -14,9 +15,28 @@ import '../../widgets/widgets.dart';
 /// Family-keyed on the slug so multiple in-app deep-link taps in the
 /// same session don't share state.
 final _userBySlugProvider = FutureProvider.autoDispose
-    .family<Map<String, dynamic>, String>((ref, slug) async {
+    .family<Map<String, dynamic>, (String, bool)>((ref, input) async {
   final api = ref.watch(apiServiceProvider);
-  return api.getUserBySlug(slug);
+  final (code, legacy) = input;
+  if (!legacy) {
+    try {
+      return await api.getUserBySlug(code.toLowerCase());
+    } on DioException catch (e) {
+      // Only a definitive missing slug permits legacy-code fallback.
+      // Offline/401/500 errors must remain retryable lookup failures.
+      if (e.response?.statusCode != 404) rethrow;
+    }
+  }
+  final result = await api.validateInvite(code) as Map<String, dynamic>;
+  if (result['valid'] != true) {
+    throw DioException(
+      requestOptions: RequestOptions(path: '/invites/validate'),
+      response: Response(
+          requestOptions: RequestOptions(path: '/invites/validate'),
+          statusCode: 404),
+    );
+  }
+  return {...result['inviter'] as Map<String, dynamic>, 'legacy': true};
 });
 
 /// "Send request to [Name]?" confirmation screen, shown when an
@@ -34,8 +54,9 @@ final _userBySlugProvider = FutureProvider.autoDispose
 /// Universal Link tap; we want to make it obvious the link is stale.
 class SendRequestScreen extends ConsumerStatefulWidget {
   final String slug;
+  final bool legacy;
 
-  const SendRequestScreen({super.key, required this.slug});
+  const SendRequestScreen({super.key, required this.slug, this.legacy = false});
 
   @override
   ConsumerState<SendRequestScreen> createState() => _SendRequestScreenState();
@@ -44,16 +65,20 @@ class SendRequestScreen extends ConsumerStatefulWidget {
 class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
   bool _sending = false;
 
-  Future<void> _send() async {
+  Future<void> _send(bool legacy) async {
     if (_sending) return;
     setState(() => _sending = true);
     try {
       final api = ref.read(apiServiceProvider);
-      final result = await api.requestFromSlug(widget.slug);
+      final result = legacy
+          ? await api.redeemInvite(widget.slug) as Map<String, dynamic>
+          : await api.requestFromSlug(widget.slug.toLowerCase());
       if (!mounted) return;
-      final status = result['status'] as String?;
+      final status = legacy ? 'connected' : result['status'] as String?;
+      ref.invalidate(feedNotifierProvider);
       final message = switch (status) {
-        'requested' => 'Connection request sent.',
+        'requested' => 'Request sent. Your friend can accept it in Friends.',
+        'connected' => 'You’re now connected.',
         'already_following' => 'Request already pending.',
         'already_mutual' => 'You\'re already connected.',
         'self' => 'That\'s your own invite link.',
@@ -70,8 +95,11 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _sending = false);
+      final message = e is DioException
+          ? ApiException.fromDioException(e).message
+          : 'Please try again.';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send request: $e')),
+        SnackBar(content: Text('Failed to send request: $message')),
       );
     }
   }
@@ -80,7 +108,8 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     final theme = Theme.of(context);
-    final userAsync = ref.watch(_userBySlugProvider(widget.slug));
+    final userAsync =
+        ref.watch(_userBySlugProvider((widget.slug, widget.legacy)));
 
     return Scaffold(
       appBar: AppBar(
@@ -124,6 +153,12 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
                     ),
                   ],
                   const SizedBox(height: 24),
+                  if (!isNotFound)
+                    ElevatedButton(
+                      onPressed: () => ref.invalidate(
+                          _userBySlugProvider((widget.slug, widget.legacy))),
+                      child: const Text('Retry'),
+                    ),
                   TextButton(
                     onPressed: () => context.go('/'),
                     child: const Text('Close'),
@@ -137,11 +172,12 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
           final displayName =
               (user['display_name'] as String?) ?? 'this person';
           final avatarUrl = user['avatar_url'] as String?;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
+          final legacy = user['legacy'] == true;
+          return SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
             child: Column(
               children: [
-                const Spacer(),
+                const SizedBox(height: 24),
                 Avatar(
                   imageUrl: avatarUrl,
                   displayName: displayName,
@@ -155,17 +191,19 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Send a connection request? They\'ll need to accept before you can see each other\'s posts.',
+                  legacy
+                      ? 'Use this invite to connect? You’ll be able to see each other’s posts.'
+                      : 'Send a connection request? They’ll need to accept in Friends before you can see each other’s posts.',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: colors.textSecondary,
                   ),
                   textAlign: TextAlign.center,
                 ),
-                const Spacer(),
+                const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _sending ? null : _send,
+                    onPressed: _sending ? null : () => _send(legacy),
                     style: ElevatedButton.styleFrom(
                       minimumSize: const Size(0, 48),
                     ),
@@ -178,7 +216,7 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
                               color: colors.surface,
                             ),
                           )
-                        : const Text('Send Request'),
+                        : Text(legacy ? 'Connect' : 'Send Request'),
                   ),
                 ),
                 const SizedBox(height: 12),

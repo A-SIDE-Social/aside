@@ -8,7 +8,7 @@ import { AppError } from '../middleware/errorHandler';
 import { config } from '../config';
 import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants';
 import { sendOtpEmail } from '../email';
-import { generateUniqueSlug, extractSlug, SLUG_REGEX } from '../lib/slugs';
+import { generateUniqueSlug, extractSlug, extractLegacyCode, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
 import {
   sendPush,
@@ -69,11 +69,10 @@ async function resolveUser(
   //
   // Disambiguation: we look up by slug FIRST (covers shapes 2 and 3
   // and lower-case 1's), then fall back to legacy code lookup. The
-  // slug regex is a strict subset that excludes uppercase characters,
-  // so a hex-only legacy code COULD match both — the slug lookup
+  // personal slug and legacy alphabets overlap, so the slug lookup
   // settles ambiguity by hitting the DB.
   let validatedInvite: any = null;
-  let validatedSlug: { user_id: string; display_name: string } | null = null;
+  let validatedSlug: { user_id: string; display_name: string; slug: string } | null = null;
   if (invite_code) {
     const trimmed = invite_code.toString().trim();
     const maybeSlug = extractSlug(trimmed, config.inviteLinkAllowedHosts);
@@ -89,6 +88,7 @@ async function resolveUser(
       if (slugUsers.length > 0) {
         validatedSlug = {
           user_id: slugUsers[0].id,
+          slug: maybeSlug,
           display_name: slugUsers[0].display_name,
         };
       }
@@ -99,9 +99,12 @@ async function resolveUser(
       // The friend-add path in src/routes/invites.ts:redeem has always
       // accepted both; this path was the odd one out, which silently
       // broke every shared code for new signups.
+      const legacyCode = extractLegacyCode(trimmed, config.inviteLinkAllowedHosts);
       const { rows: invites } = await query(
-        `SELECT * FROM invites WHERE code = $1 AND status IN ('pending', 'sent') AND expires_at > NOW()`,
-        [trimmed],
+        `SELECT i.* FROM invites i JOIN users u ON u.id = i.created_by_user_id
+         WHERE i.code = $1 AND i.status IN ('pending', 'sent')
+           AND i.expires_at > NOW() AND u.deleted_at IS NULL`,
+        [legacyCode],
       );
       if (invites.length === 0) {
         throw new AppError(400, 'Invalid or already used invite code');
@@ -146,6 +149,12 @@ async function resolveUser(
     const user = newUsers[0];
 
     if (validatedSlug) {
+      const { rows: stillValid } = await client.query(
+        `SELECT id FROM users WHERE id = $1 AND invite_slug = $2
+         AND deleted_at IS NULL FOR SHARE`,
+        [validatedSlug.user_id, validatedSlug.slug],
+      );
+      if (!stillValid.length) throw new AppError(400, 'Invite link is no longer valid');
       // Personal-invite-link signup. Create a ONE-WAY follow from the
       // new user to the slug owner — owner must approve via inbound-
       // follows UI to make it mutual. Fires the same `inbound_follow`
@@ -163,6 +172,11 @@ async function resolveUser(
         [validatedSlug.user_id, user.id],
       );
     } else if (validatedInvite) {
+      const { rows: inviter } = await client.query(
+        'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE',
+        [validatedInvite.created_by_user_id],
+      );
+      if (!inviter.length) throw new AppError(400, 'Invalid or already used invite code');
       // Mark invite as used. Re-check status under the transaction so
       // two concurrent signups can't both consume the same code.
       // Mirrors the validation predicate above — accept either
@@ -172,7 +186,7 @@ async function resolveUser(
       const { rowCount } = await client.query(
         `UPDATE invites
             SET status = 'used', used_by_user_id = $1, used_at = NOW()
-          WHERE id = $2 AND status IN ('pending', 'sent')`,
+          WHERE id = $2 AND status IN ('pending', 'sent') AND expires_at > NOW()`,
         [user.id, validatedInvite.id],
       );
       if ((rowCount ?? 0) === 0) {
@@ -183,6 +197,12 @@ async function resolveUser(
       await client.query(
         `INSERT INTO follows (follower_id, followee_id)
          VALUES ($1, $2), ($2, $1)`,
+        [user.id, validatedInvite.created_by_user_id],
+      );
+
+      await client.query(
+        `INSERT INTO notifications (user_id, type, actor_id, reference_type)
+         VALUES ($1, 'new_mutual', $2, 'follow'), ($2, 'new_mutual', $1, 'follow')`,
         [user.id, validatedInvite.created_by_user_id],
       );
 
