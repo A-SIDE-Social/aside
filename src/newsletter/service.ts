@@ -2,20 +2,12 @@ import { createHash, randomBytes } from 'crypto';
 import { getClient, query } from '../db/pool';
 import { NewsletterConfig } from './config';
 import { activateSubscriber, resendRequest } from './resend';
+export { normalizeEmail } from '../lib/emailAddress';
 
 export const CONSENT_VERSION = 'notes-2026-09-18';
 export const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 export const validToken = (token: unknown): token is string => typeof token === 'string' && /^[a-f0-9]{64}$/.test(token);
 export const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-
-export function normalizeEmail(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const email = value.trim().toLowerCase();
-  if (email.length > 254 || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) return null;
-  const local = email.slice(0, email.indexOf('@'));
-  if (local.length > 64 || local.startsWith('.') || local.endsWith('.') || local.includes('..')) return null;
-  return email;
-}
 
 export async function cleanupPendingSignups(): Promise<void> {
   await query("DELETE FROM newsletter_signups WHERE confirmed_at IS NULL AND requested_at < now() - interval '7 days'");

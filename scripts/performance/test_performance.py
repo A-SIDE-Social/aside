@@ -14,6 +14,68 @@ def sample(at, count=0, start=1, busy=False):
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_failure_details_and_stages_are_bounded_and_private(self):
+        def counter(labels, value=2):
+            return {'labels': labels, 'value': value}
+        labels = {'method': 'POST', 'route': '/v1/auth/request-otp', 'status': '503', 'reason': 'email_auth_failure'}
+        stage = {'stage': 'otp_delivery', 'outcome': 'error'}
+        payload = {'started_at': 1, 'metrics': [
+            {'name': 'aside_http_failures_total', 'values': [counter(labels),
+                counter(dict(labels, email='private@example.com')), counter(dict(labels, reason='private@example.com')),
+                counter(dict(labels, status='secret')), counter(dict(labels, method='UNBOUNDED'))]},
+            {'name': 'aside_operation_stage_seconds', 'values': [
+                dict(counter(stage), metricName='aside_operation_stage_seconds_count'),
+                dict(counter(dict(stage, le='0.25')), metricName='aside_operation_stage_seconds_bucket'),
+                dict(counter(dict(stage, le='+Inf')), metricName='aside_operation_stage_seconds_bucket'),
+                dict(counter(dict(stage, stage='private@example.com')), metricName='aside_operation_stage_seconds_count'),
+                dict(counter(dict(stage, body='secret')), metricName='aside_operation_stage_seconds_count')]},
+        ]}
+        result = p.compact(payload)
+        self.assertEqual(result['failures'], {json.dumps(list(labels.values()), separators=(',', ':')): 2})
+        stage_key = json.dumps(['aside_operation_stage_seconds', '', 'otp_delivery', 'error'], separators=(',', ':'))
+        self.assertEqual(result['hist'], {stage_key: {'n': 2, 'b': {'0.25': 2, '+Inf': 2}}})
+        self.assertNotIn('private', json.dumps(result))
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_new_details_do_not_double_count_requests_and_old_history_remains_readable(self):
+        records = [sample(1000), sample(1060, 2), sample(1120, 4)]
+        failure_key = json.dumps(['POST', '/v1/auth/request-otp', '503', 'email_provider_unavailable'])
+        stage_key = json.dumps(['aside_operation_stage_seconds', '', 'otp_delivery', 'error'])
+        http_error = json.dumps(['aside_http_duration_seconds', 'POST', '/v1/auth/request-otp', 'server_error'])
+        for index, row in enumerate(records[1:]):
+            row['api']['failures'] = {failure_key: index + 1}
+            row['api']['hist'][stage_key] = {'n': index + 1, 'b': {'0.25': index + 1, '+Inf': index + 1}}
+            row['api']['hist'][http_error] = {'n': index + 1, 'b': {'0.25': index + 1, '+Inf': index + 1}}
+        report = p.summarize(records, 1120, 1)
+        self.assertEqual(report['requests_excluding_health'], 6)
+        self.assertEqual(report['server_errors_or_aborts'], 2)
+        self.assertEqual(report['http_failure_detail_coverage_pct'], 1.7)
+        self.assertEqual(report['http_failure_details'], [{'route': 'POST /v1/auth/request-otp', 'status': '503',
+            'reason': 'email_provider_unavailable', 'requests': 1}])
+        self.assertEqual(report['operation_stages'], [{'stage': 'otp_delivery', 'outcome': 'error', 'observations': 2, 'p95_ms': 237.5}])
+        self.assertEqual(report['http_error_routes'], [{'route': 'POST /v1/auth/request-otp', 'outcome': 'server_error', 'requests': 2}])
+        old_report = p.summarize([sample(1000), sample(1060, 2)], 1060, 1)
+        self.assertIsNone(old_report['http_failure_details'])
+        self.assertEqual(old_report['http_failure_detail_coverage_pct'], 0)
+
+    def test_failure_counter_resets_gaps_and_restarts_are_excluded(self):
+        key = json.dumps(['POST', 'unmatched', '401', 'auth_failure'])
+        records = [sample(1000), sample(1060), sample(1120, start=2), sample(1180, start=2),
+                   sample(1240, start=2), sample(1900, start=2)]
+        for row, count in zip(records, [5, 7, 10, 11, 0, 100]):
+            row['api']['failures'] = {key: count}
+        report = p.summarize(records, 1900, 1)
+        self.assertEqual(report['http_failure_details'][0]['requests'], 3)
+
+    def test_route_tail_counts_show_the_size_of_a_small_sample(self):
+        records = [sample(1000), sample(1060, 22)]
+        records[0]['api']['hist'][KEY]['b'] = {bound: 0 for bound in ('0.25', '1', '2.5', '5', '+Inf')}
+        records[1]['api']['hist'][KEY]['b'] = {'0.25': 20, '1': 20, '2.5': 20, '5': 22, '+Inf': 22}
+        route = p.summarize(records, 1060, 1)['slowest_routes_min_10_requests'][0]
+        self.assertEqual(route['over_1s'], 2)
+        self.assertEqual(route['over_2_5s'], 2)
+        self.assertEqual(route['p95_ms'], 3625)
+
     def test_combined_histograms_are_not_averaged_percentiles(self):
         self.assertAlmostEqual(p.quantile({'0.1': 90, '1': 100, '+Inf': 100}, .95), .55)
         self.assertIsNone(p.quantile({'1': 0, '+Inf': 0}, .95))

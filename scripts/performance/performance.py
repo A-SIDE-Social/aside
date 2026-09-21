@@ -13,7 +13,15 @@ import statistics
 import subprocess
 import time
 
-HISTOGRAMS = {'aside_http_duration_seconds', 'aside_db_pool_wait_seconds', 'aside_db_query_seconds'}
+HISTOGRAMS = {'aside_http_duration_seconds', 'aside_db_pool_wait_seconds', 'aside_db_query_seconds', 'aside_operation_stage_seconds'}
+STAGES = {'otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout'}
+FAILURE_REASONS = {'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
+                   'request_aborted', 'auth_failure', 'forbidden', 'route_not_found', 'not_found',
+                   'method_not_allowed', 'rate_limited', 'client_error', 'internal_error',
+                   'email_not_configured', 'email_auth_failure', 'email_recipient_rejected',
+                   'email_request_rejected', 'email_rate_limited', 'email_provider_unavailable'}
+METHODS = {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'OTHER'}
+FAILURE_STATUSES = {str(n) for n in range(400, 600)} | {'aborted'}
 GAUGES = {'process_resident_memory_bytes', 'nodejs_eventloop_lag_p99_seconds',
           'aside_db_pool_total', 'aside_db_pool_idle', 'aside_db_pool_waiting',
           'aside_websocket_connections', 'aside_metrics_recording_errors_total'}
@@ -26,9 +34,22 @@ def finite(value):
 
 def compact(payload):
     """Discard library metadata and all unapproved metric families/labels."""
-    hist, gauges = {}, {}
+    hist, gauges, failures = {}, {}, None
     for family in payload['metrics']:
         name = family['name']
+        if name == 'aside_http_failures_total':
+            failures = {}
+            for sample in family['values']:
+                labels = sample.get('labels', {})
+                if set(labels) != {'method', 'route', 'status', 'reason'} or not finite(sample['value']) or sample['value'] < 0:
+                    continue
+                status = labels['status']
+                if (labels['method'] not in METHODS or labels['reason'] not in FAILURE_REASONS
+                        or not isinstance(status, str)
+                        or status not in FAILURE_STATUSES):
+                    continue
+                key = json.dumps([labels[k] for k in ('method', 'route', 'status', 'reason')], separators=(',', ':'))
+                failures[key] = sample['value']
         if name in GAUGES:
             values = [v['value'] for v in family['values'] if not v.get('labels') and finite(v['value'])]
             if values:
@@ -38,16 +59,23 @@ def compact(payload):
         for sample in family['values']:
             labels = sample.get('labels', {})
             allowed = {'outcome', 'le'} | ({'method', 'route'} if name == 'aside_http_duration_seconds' else set())
+            if name == 'aside_operation_stage_seconds':
+                allowed |= {'stage'}
+                if labels.get('stage') not in STAGES or labels.get('outcome') not in {'ok', 'error'}:
+                    continue
             if set(labels) - allowed or not finite(sample['value']):
                 continue
-            key = json.dumps([name, labels.get('method', ''), labels.get('route', ''), labels['outcome']], separators=(',', ':'))
+            key = json.dumps([name, labels.get('method', ''), labels.get('stage', labels.get('route', '')), labels['outcome']], separators=(',', ':'))
             item = hist.setdefault(key, {'b': {}, 'n': 0})
             metric = sample['metricName']
             if metric.endswith('_bucket'):
                 item['b'][str(labels['le'])] = sample['value']
             elif metric.endswith('_count'):
                 item['n'] = sample['value']
-    return {'start': payload['started_at'], 'hist': hist, 'gauges': gauges}
+    result = {'start': payload['started_at'], 'hist': hist, 'gauges': gauges}
+    if failures is not None:
+        result['failures'] = failures
+    return result
 
 
 def host_snapshot():
@@ -121,6 +149,8 @@ def summarize(samples, now, hours):
     previous = None
     host_values = {k: [] for k in ('cpu_pct', 'memory_pct', 'disk_pct', 'available_mb', 'swap_used_mb')}
     peaks, totals, combined, routes = {}, {}, {}, {}
+    error_routes, failure_details, stages = {}, {}, {}
+    failure_covered = 0
     covered, host_covered, points, restarts, unavailable = 0, 0, 0, 0, 0
     streak = {'cpu': 0, 'memory': 0}
     sustained = {'cpu': False, 'memory': False}
@@ -162,6 +192,14 @@ def summarize(samples, now, hours):
                 restarts += 1
             else:
                 covered += elapsed
+                if 'failures' in api and 'failures' in prev_api:
+                    failure_covered += elapsed
+                    for key, current in api['failures'].items():
+                        delta = current - prev_api['failures'].get(key, 0)
+                        if delta > 0:
+                            method, route, status, reason = json.loads(key)
+                            if route != '/health':
+                                failure_details[key] = failure_details.get(key, 0) + delta
                 for key, current in api['hist'].items():
                     old = prev_api['hist'].get(key, {'n': 0, 'b': {}})
                     delta = current['n'] - old['n']
@@ -173,6 +211,13 @@ def summarize(samples, now, hours):
                         continue
                     totals[(name, outcome)] = totals.get((name, outcome), 0) + delta
                     combine(combined.setdefault((name, outcome), {}), buckets)
+                    if name == 'aside_http_duration_seconds' and outcome != 'ok' and delta > 0:
+                        error_key = (method + ' ' + route, outcome)
+                        error_routes[error_key] = error_routes.get(error_key, 0) + delta
+                    if name == 'aside_operation_stage_seconds':
+                        entry = stages.setdefault((route, outcome), {'n': 0, 'b': {}})
+                        entry['n'] += delta
+                        combine(entry['b'], buckets)
                     if name == 'aside_http_duration_seconds' and outcome == 'ok':
                         entry = routes.setdefault(method + ' ' + route, {'n': 0, 'b': {}})
                         entry['n'] += delta
@@ -201,14 +246,30 @@ def summarize(samples, now, hours):
             verdict = 'investigate'
         if pressure and slow:
             verdict = 'consider_resize_after_bottleneck_check'
-    top = [{'route': route, 'requests': value['n'], 'p95_ms': round(quantile(value['b'], .95) * 1000, 2)}
+    top = [{'route': route, 'requests': value['n'], 'p95_ms': round(quantile(value['b'], .95) * 1000, 2),
+            'over_1s': value['n'] - value['b']['1'] if '1' in value['b'] else None,
+            'over_2_5s': value['n'] - value['b']['2.5'] if '2.5' in value['b'] else None}
            for route, value in routes.items() if value['n'] >= 10]
     top.sort(key=lambda row: row['p95_ms'], reverse=True)
+    errors = [{'route': route, 'outcome': outcome, 'requests': count}
+              for (route, outcome), count in sorted(error_routes.items(),
+                  key=lambda item: (item[0][1] == 'client_error', -item[1], item[0]))]
+    details = []
+    for key, count in sorted(failure_details.items(), key=lambda item: (-item[1], item[0])):
+        method, route, status, reason = json.loads(key)
+        details.append({'route': method + ' ' + route, 'status': status, 'reason': reason, 'requests': count})
+    stage_rows = [{'stage': stage, 'outcome': outcome, 'observations': value['n'],
+                   'p95_ms': round(quantile(value['b'], .95) * 1000, 2)}
+                  for (stage, outcome), value in sorted(stages.items()) if value['n'] > 0]
     return {'verdict': verdict, 'window_hours': hours, 'samples': points,
             'api_coverage_pct': round(coverage * 100, 1), 'host_coverage_pct': round(host_covered / (hours * 36), 1),
             'latest_sample_age_seconds': round(age) if age is not None else None,
             'unavailable_api_samples': unavailable, 'observed_restarts': restarts,
             'requests_excluding_health': requests, 'server_errors_or_aborts': failures,
+            'http_error_routes': errors[:20],
+            'http_failure_detail_coverage_pct': round(failure_covered / (hours * 36), 1),
+            'http_failure_details': details[:20] if failure_covered else None,
+            'operation_stages': stage_rows,
             'client_errors': totals.get((http, 'client_error'), 0), 'successful_request_latency': latency_http,
             'query_helper_latency_including_pool': latency('aside_db_query_seconds'),
             'query_helper_errors': totals.get(('aside_db_query_seconds', 'error'), 0),

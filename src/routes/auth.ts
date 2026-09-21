@@ -10,6 +10,7 @@ import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants'
 import { sendOtpEmail } from '../email';
 import { generateUniqueSlug, extractSlug, extractLegacyCode, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
+import { normalizeEmail } from '../lib/emailAddress';
 import {
   sendPush,
   getTokensForUsers,
@@ -355,10 +356,8 @@ router.post(
   '/request-otp',
   authLimit,
   asyncHandler(async (req: any, res: any) => {
-    const { email } = req.body;
-    if (!email) throw new AppError(400, 'Email is required');
-
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = normalizeEmail(req.body?.email);
+    if (!normalizedEmail) throw new AppError(400, 'A valid email address is required', 'validation_failure');
 
     // Rate limit: max 1 OTP per 30 seconds per email
     const { rows: recent } = await query(
@@ -444,10 +443,11 @@ router.post(
   '/verify-otp',
   authLimit,
   asyncHandler(async (req: any, res: any) => {
-    const { email, code, invite_code, display_name } = req.body;
-    if (!email || !code) throw new AppError(400, 'Email and code are required');
-
-    const normalizedEmail = email.trim().toLowerCase();
+    const { email, code, invite_code, display_name } = req.body ?? {};
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail || typeof code !== 'string' || !code || code.length > 128) {
+      throw new AppError(400, 'A valid email address and code are required', 'validation_failure');
+    }
 
     // Look up the OTP
     const { rows: otps } = await query(

@@ -32,6 +32,30 @@ not backfill missed samples. It records missing API observations explicitly.
 - HTTP labels contain the method and declared route template only. Unknown
   paths collapse to `unmatched`. No actual URLs, IDs, query strings, request
   bodies, emails, tokens, SQL statements, or message content are collected.
+- `unmatched` also includes requests rejected by middleware before Express
+  matches a route, including authentication and body parsing failures. It does
+  not by itself establish that a URL was invalid or a request was a probe.
+  `http_error_routes` separates client errors, server errors and aborts using
+  existing history. New `http_failure_details` adds status and fixed reasons
+  such as `auth_failure`, `malformed_body`, `route_not_found` and email delivery
+  failures. A matched route returning 404 is `not_found`, not `route_not_found`.
+  Error messages and provider response contents never become metric labels.
+- Failure details require both the updated API and collector. The historical
+  HTTP histogram format is unchanged. `http_failure_detail_coverage_pct` gives
+  the portion of the requested window with the new counters; details are null
+  when unavailable, rather than implying there were no failures. Older
+  collectors ignore the new families and continue collecting existing metrics.
+- `operation_stages` times OTP provider delivery and message sends. The message
+  `prehandler` stage includes body transfer/parsing, authentication and rate
+  limits; it is recorded only for requests that reach the send handler. The
+  `handler` stage includes all handler work; `persist` and `fanout` are nested
+  parts of that time, so do not add their percentiles together. Fanout includes
+  socket emission and notification rows but excludes the existing asynchronous
+  push-provider delivery. Stage labels are a fixed allowlist with no SQL,
+  recipient IDs or message contents. An empty list may mean the updated
+  instrumentation is absent or no matching operations occurred.
+- Slow-route rows also show the number of successful requests over one second
+  and 2.5 seconds. Check these counts alongside p95 when traffic is sparse.
 - Query-helper latency includes acquiring the pool connection. Separately,
   pool-wait timing covers explicit `getClient()` calls used for transactions.
   Individual statements inside those transactions are not timed. The pool's
@@ -60,6 +84,15 @@ not backfill missed samples. It records missing API observations explicitly.
 The collector requires Linux `/proc` and Docker; the reporter and fixture tests
 also run on macOS. Production runs Node 24; the maintained Prometheus client
 supports Node 22/24/26+. No database migrations are required.
+
+OTP delivery uses a ten-second Postmark SDK timeout with no automatic resend
+on failure. A timeout can occur after the provider accepted the message; it
+does not prove that no email was delivered. Production without a Postmark
+token returns an explicit unavailable response instead of logging a code and
+claiming success. Provider authentication, request rejection, inactive
+recipient, rate limiting and availability failures are recorded as separate
+bounded categories. They do not establish the cause of older unclassified
+errors. See [Postmark's status and error-code reference](https://postmarkapp.com/developer/api/overview).
 
 ## Disable
 

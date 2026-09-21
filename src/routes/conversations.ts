@@ -7,6 +7,7 @@ import { AppError } from '../middleware/errorHandler';
 import { getPlanLimits } from '../constants';
 import { getIO } from '../socket';
 import { notifyNewDM } from '../firebase';
+import { measureStage, measureMessageHandler } from '../performance';
 
 const router = Router();
 
@@ -638,7 +639,7 @@ router.get(
 router.post(
   '/:id/messages',
   writeLimit,
-  asyncHandler(async (req: any, res: any) => {
+  asyncHandler(measureMessageHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
     const { id } = req.params;
     const {
@@ -771,7 +772,7 @@ router.post(
       envelopeType = 'legacy_plaintext';
     }
 
-    const { rows: messages } = await query(
+    const { rows: messages } = await measureStage('message_persist', () => query(
       `INSERT INTO messages (
          conversation_id, sender_id, body, media_url,
          ciphertext, envelope_type, protocol_version, recipient_id
@@ -786,7 +787,7 @@ router.post(
         protocolVersion,
         targetedRecipientId,
       ],
-    );
+    ));
     const message = messages[0];
     // Wire-format: serialize bytea as base64 so clients get a
     // JSON-friendly payload. Null stays null.
@@ -833,37 +834,39 @@ router.post(
     const senderName = message.sender_display_name || 'Someone';
     const groupName = conv.conversation_type === 'group' ? conv.name : null;
 
-    for (const row of fanoutTargets) {
-      const recipientId: string = row.user_id;
+    await measureStage('message_fanout', async () => {
+      for (const row of fanoutTargets) {
+        const recipientId: string = row.user_id;
 
-      // Socket push — each recipient listens on their own user room.
-      io.to('user:' + recipientId).emit('new_message', message);
+        // Socket push — each recipient listens on their own user room.
+        io.to('user:' + recipientId).emit('new_message', message);
 
-      // SKDM control rows are invisible to the UI; no notification
-      // row and no push. They're cryptographic plumbing, not a
-      // user-visible "someone sent you something" event.
-      if (envelopeType === 'signal_skdm') continue;
+        // SKDM control rows are invisible to the UI; no notification
+        // row and no push. They're cryptographic plumbing, not a
+        // user-visible "someone sent you something" event.
+        if (envelopeType === 'signal_skdm') continue;
 
-      // In-app notification row (one per recipient).
-      await query(
-        `INSERT INTO notifications (user_id, type, actor_id, reference_id, reference_type)
-         VALUES ($1, 'dm', $2, $3, 'conversation')`,
-        [recipientId, userId, id],
-      );
+        // In-app notification row (one per recipient).
+        await query(
+          `INSERT INTO notifications (user_id, type, actor_id, reference_id, reference_type)
+           VALUES ($1, 'dm', $2, $3, 'conversation')`,
+          [recipientId, userId, id],
+        );
 
-      // Fire-and-forget push. For groups, include the group name in
-      // the preview so recipients know which thread lit up. For
-      // E2EE conversations, notifyNewDM swaps in a generic body —
-      // server never sees plaintext anyway, and broadcasting it in
-      // the push payload would defeat E2EE.
-      notifyNewDM(recipientId, senderName, body || null, id, groupName, {
-        isE2ee,
-        messageId: message.id,
-      }).catch(() => {});
-    }
+        // Fire-and-forget push. For groups, include the group name in
+        // the preview so recipients know which thread lit up. For
+        // E2EE conversations, notifyNewDM swaps in a generic body —
+        // server never sees plaintext anyway, and broadcasting it in
+        // the push payload would defeat E2EE.
+        notifyNewDM(recipientId, senderName, body || null, id, groupName, {
+          isE2ee,
+          messageId: message.id,
+        }).catch(() => {});
+      }
+    });
 
     res.status(201).json({ message });
-  }),
+  })),
 );
 
 // POST /:id/upload-url - Get presigned upload URL for conversation media.
