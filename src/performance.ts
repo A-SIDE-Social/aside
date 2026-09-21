@@ -1,6 +1,7 @@
 import { createServer } from 'http';
-import { Request, RequestHandler } from 'express';
+import { Request, Response, RequestHandler } from 'express';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from '@prometheus-io/client';
+import { defaultFailureReason, failureReasons } from './lib/failureReason';
 
 export const performanceEnabled = () => process.env.PERFORMANCE_METRICS === '1';
 export const performanceRegistry = new Registry();
@@ -14,6 +15,13 @@ const queryDuration = new Histogram({ name: 'aside_db_query_seconds', help: 'Que
   labelNames: ['outcome'] as const, buckets, registers: [performanceRegistry] });
 export const socketConnections = new Gauge({ name: 'aside_websocket_connections', help: 'Authenticated Socket.IO connections', registers: [performanceRegistry] });
 const missed = new Counter({ name: 'aside_metrics_recording_errors_total', help: 'Metric recording failures', registers: [performanceRegistry] });
+const httpFailures = new Counter({ name: 'aside_http_failures_total', help: 'HTTP failures by bounded status and reason',
+  labelNames: ['method', 'route', 'status', 'reason'] as const, registers: [performanceRegistry] });
+const stageDuration = new Histogram({ name: 'aside_operation_stage_seconds', help: 'Duration of fixed application stages',
+  labelNames: ['stage', 'outcome'] as const, buckets, registers: [performanceRegistry] });
+export const performanceStages = ['otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout'] as const;
+type PerformanceStage = typeof performanceStages[number];
+const requestStarts = new WeakMap<Request, bigint>();
 
 // Only these literal mount prefixes and Express's declared route templates can
 // become labels. Never use baseUrl (it may include IDs), params or original URLs.
@@ -33,20 +41,61 @@ export const measureHttp: RequestHandler = (req, res, next) => {
   const pathname = req.originalUrl.split('?')[0];
   const prefix = prefixes.find(p => pathname === p || pathname.startsWith(p + '/')) || (pathname.startsWith('/v1/') ? '/v1' : '');
   const start = process.hrtime.bigint();
+  requestStarts.set(req, start);
   let recorded = false;
   const record = (aborted: boolean) => {
     if (recorded) return;
     recorded = true;
     try {
-      httpDuration.observe({ method: methods.has(req.method) ? req.method : 'OTHER', route: routeLabel(req, prefix),
+      const method = methods.has(req.method) ? req.method : 'OTHER';
+      const route = routeLabel(req, prefix);
+      httpDuration.observe({ method, route,
         outcome: aborted ? 'aborted' : res.statusCode >= 500 ? 'server_error' : res.statusCode >= 400 ? 'client_error' : 'ok' },
       Number(process.hrtime.bigint() - start) / 1e9);
+      if (aborted || res.statusCode >= 400) {
+        const explicitReason = res.locals.failureReason;
+        const reason = aborted ? 'request_aborted' : failureReasons.includes(explicitReason)
+          ? explicitReason : defaultFailureReason(res.statusCode, route !== 'unmatched');
+        httpFailures.inc({ method, route, status: aborted ? 'aborted' : String(res.statusCode), reason });
+      }
     } catch { missed.inc(); }
   };
   res.once('finish', () => record(false));
   res.once('close', () => record(!res.writableFinished));
   next();
 };
+
+function recordStage(stage: PerformanceStage, start: bigint, ok: boolean) {
+  try { stageDuration.observe({ stage, outcome: ok ? 'ok' : 'error' }, Number(process.hrtime.bigint() - start) / 1e9); }
+  catch { missed.inc(); }
+}
+
+// Includes body transfer/parsing, authentication and rate-limit middleware.
+// It is recorded only once a send reaches its handler, with no request values.
+export function recordMessagePrehandler(req: Request) {
+  const start = requestStarts.get(req);
+  if (start !== undefined) {
+    requestStarts.delete(req);
+    recordStage('message_prehandler', start, true);
+  }
+}
+
+export function measureMessageHandler(handler: (req: Request, res: Response) => Promise<void>) {
+  return (req: Request, res: Response) => {
+    recordMessagePrehandler(req);
+    return measureStage('message_handler', () => handler(req, res));
+  };
+}
+
+export async function measureStage<T>(stage: PerformanceStage, work: () => Promise<T>): Promise<T> {
+  if (!performanceEnabled()) return work();
+  const start = process.hrtime.bigint();
+  try {
+    const result = await work();
+    recordStage(stage, start, true);
+    return result;
+  } catch (error) { recordStage(stage, start, false); throw error; }
+}
 
 export function measureDb(kind: 'pool' | 'query') {
   if (!performanceEnabled()) return (_ok: boolean) => {};
