@@ -94,6 +94,13 @@ recipient, rate limiting and availability failures are recorded as separate
 bounded categories. They do not establish the cause of older unclassified
 errors. See [Postmark's status and error-code reference](https://postmarkapp.com/developer/api/overview).
 
+Mobile and admin code requests share a short transaction that serializes
+issuance per email address. The database connection is released before email
+delivery. A confirmed provider rejection expires only that request's code;
+its row remains to enforce the 30-second cooldown. An uncertain transport or
+server failure preserves the code until its usual expiry. An older request's
+failure cannot invalidate a newer code. No schema migration is needed.
+
 ## Disable
 
 Stop and disable `aside-performance.timer`; set `PERFORMANCE_METRICS=0` and
