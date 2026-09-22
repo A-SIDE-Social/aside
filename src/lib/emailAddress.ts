@@ -5,5 +5,6 @@ export function normalizeEmail(value: unknown): string | null {
   if (email.length > 254 || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) return null;
   const local = email.slice(0, email.indexOf('@'));
   if (local.length > 64 || local.startsWith('.') || local.endsWith('.') || local.includes('..')) return null;
+  if (email.slice(email.indexOf('@') + 1).split('.').some(label => label.length > 63)) return null;
   return email;
 }

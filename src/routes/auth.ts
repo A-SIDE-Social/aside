@@ -7,7 +7,7 @@ import { asyncHandler, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import { config } from '../config';
 import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants';
-import { sendOtpEmail } from '../email';
+import { requestEmailOtp } from '../services/emailOtp';
 import { generateUniqueSlug, extractSlug, extractLegacyCode, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
 import { normalizeEmail } from '../lib/emailAddress';
@@ -359,80 +359,7 @@ router.post(
     const normalizedEmail = normalizeEmail(req.body?.email);
     if (!normalizedEmail) throw new AppError(400, 'A valid email address is required', 'validation_failure');
 
-    // Rate limit: max 1 OTP per 30 seconds per email
-    const { rows: recent } = await query(
-      `SELECT 1 FROM email_otps WHERE email = $1 AND created_at > NOW() - INTERVAL '30 seconds'`,
-      [normalizedEmail],
-    );
-    if (recent.length > 0) {
-      throw new AppError(429, 'Please wait before requesting another code');
-    }
-
-    // Generate OTP.
-    //
-    // DEV_OTP is an email-scoped backdoor used to let App Store
-    // reviewers (and devs) sign in without a real email round-trip.
-    // Scoping rules:
-    //
-    //   - In development/test NODE_ENV: applies to every email.
-    //     Matches historical behavior for local work.
-    //   - In production NODE_ENV: applies ONLY to emails in
-    //     DEV_OTP_ALLOWED_EMAILS. If the allowlist is empty in prod,
-    //     DEV_OTP is ignored — we NEVER turn it on globally for
-    //     real TestFlight testers, who must get a genuine random OTP
-    //     via Postmark.
-    //
-    // This guardrail exists because leaving DEV_OTP globally on in
-    // prod is equivalent to letting anyone log in as any email they
-    // know — a full authentication bypass masquerading as a testing
-    // convenience.
-    const isDevEnv =
-      config.nodeEnv === 'development' || config.nodeEnv === 'test';
-    // In dev/test: DEV_OTP applies to every email, but only when it
-    // is explicitly configured. Without DEV_OTP, dev/test requests
-    // still generate a random code and send/log through sendOtpEmail.
-    //
-    // In production: DEV_OTP applies ONLY to emails explicitly listed
-    // in DEV_OTP_ALLOWED_EMAILS (typically App Store reviewers). Any
-    // other email gets a genuine random OTP via Postmark. If DEV_OTP
-    // is unset in prod, the allowlist is ignored and no backdoor
-    // exists.
-    const emailAllowedForDevOtp = !!config.devOtp &&
-      (isDevEnv || config.devOtpAllowedEmails.includes(normalizedEmail));
-    const code = emailAllowedForDevOtp
-      ? config.devOtp
-      : crypto.randomInt(100000, 999999).toString();
-
-    // Hash and store
-    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-
-    // Delete any previous OTPs for this email
-    await query('DELETE FROM email_otps WHERE email = $1', [normalizedEmail]);
-
-    // Insert new OTP with 10-minute expiry
-    await query(
-      `INSERT INTO email_otps (email, code_hash, expires_at)
-       VALUES ($1, $2, NOW() + INTERVAL '10 minutes')`,
-      [normalizedEmail, codeHash],
-    );
-
-    // Send the OTP email via Postmark.
-    //
-    // Skip delivery entirely for allowlisted dev-OTP emails (reviewers,
-    // internal testers). Those addresses already know the code from
-    // review notes, don't need the email, and attempting to actually
-    // deliver to them can fail — @apple.com in particular is subject
-    // to aggressive spam filtering and can cause Postmark to return
-    // errors that bubble up as a 500 on the mobile side, which has
-    // historically gotten App Review submissions rejected for showing
-    // an error on the email-entry screen.
-    //
-    // For everyone else we still call Postmark and let errors
-    // propagate — a real user who doesn't get their OTP email needs
-    // to know something went wrong so they can retry.
-    if (!emailAllowedForDevOtp) {
-      await sendOtpEmail(normalizedEmail, code);
-    }
+    await requestEmailOtp(normalizedEmail);
 
     res.json({ message: 'OTP sent' });
   }),

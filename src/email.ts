@@ -3,17 +3,30 @@ import { AppError } from './middleware/errorHandler';
 import { FailureReason } from './lib/failureReason';
 import { measureStage } from './performance';
 
-function deliveryError(error: unknown): AppError {
+export class OtpDeliveryError extends AppError {
+  constructor(status: number, message: string, reason: FailureReason, public readonly definitelyRejected: boolean) {
+    super(status, message, reason);
+  }
+}
+
+function deliveryError(error: unknown): OtpDeliveryError {
   // The Postmark SDK exposes numeric code/statusCode. Its message and the
   // inactive-recipient error's recipients array can contain private addresses.
-  const provider = error as { code?: unknown; statusCode?: unknown } | null;
+  const provider = error as { code?: unknown; statusCode?: unknown; message?: unknown } | null;
   let reason: FailureReason = 'email_provider_unavailable';
   if (provider?.statusCode === 401) reason = 'email_auth_failure';
   else if (provider?.statusCode === 429) reason = 'email_rate_limited';
   else if (provider?.statusCode === 422 && provider?.code === 406) {
-    return new AppError(422, 'Unable to deliver a code to this email address. Try another address or contact support.', 'email_recipient_rejected');
+    return new OtpDeliveryError(422, 'Unable to deliver a code to this email address. Try another address or contact support.', 'email_recipient_rejected', true);
+  } else if (provider?.statusCode === 422 && provider?.code === 300 &&
+      typeof provider.message === 'string' && /^Error parsing ['"]To['"]:/i.test(provider.message)) {
+    // Code 300 also covers sender/configuration failures. Only this explicit
+    // recipient parsing failure is actionable by the person entering an email.
+    return new OtpDeliveryError(422, 'Please check your email address and try again.', 'email_recipient_rejected', true);
   } else if (provider?.statusCode === 422) reason = 'email_request_rejected';
-  return new AppError(503, 'Unable to send a login code right now. Please try again shortly.', reason);
+  const status = provider?.statusCode;
+  const definitelyRejected = typeof status === 'number' && status >= 400 && status < 500 && status !== 408;
+  return new OtpDeliveryError(503, 'Unable to send a login code right now. Please try again shortly.', reason, definitelyRejected);
 }
 
 /**
@@ -31,7 +44,7 @@ export async function sendOtpEmail(email: string, code: string): Promise<void> {
 
   if (!config.postmarkApiToken) {
     console.warn('[OTP] Email delivery unavailable', { reason: 'email_not_configured' });
-    throw new AppError(503, 'Unable to send a login code right now. Please try again shortly.', 'email_not_configured');
+    throw new OtpDeliveryError(503, 'Unable to send a login code right now. Please try again shortly.', 'email_not_configured', true);
   }
 
   await measureStage('otp_delivery', async () => {

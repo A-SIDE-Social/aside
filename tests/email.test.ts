@@ -91,3 +91,25 @@ test('development still uses the local OTP flow without making a provider reques
     expect(log).toHaveBeenCalledTimes(1);
   } finally { log.mockRestore(); }
 });
+
+test('recipient parsing failures are actionable without disclosing the provider message', async () => {
+  mockSendEmail.mockRejectedValue(Object.assign(new Error("Error parsing 'To': Illegal email address 'private@example.com'"), {
+    statusCode: 422, code: 300,
+  }));
+  const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await expect(sendOtpEmail('private@example.com', '987654')).rejects.toMatchObject({
+      statusCode: 422, reason: 'email_recipient_rejected', definitelyRejected: true,
+      message: 'Please check your email address and try again.',
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('private@example.com');
+  } finally { warning.mockRestore(); }
+});
+
+test.each([0, 408, 500, 503])('status %i does not establish that Postmark rejected the message', async (statusCode) => {
+  mockSendEmail.mockRejectedValue({ statusCode, code: 0 });
+  const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await expect(sendOtpEmail('private@example.com', '987654')).rejects.toMatchObject({ definitelyRejected: false });
+  } finally { warning.mockRestore(); }
+});
