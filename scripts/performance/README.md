@@ -40,11 +40,19 @@ not backfill missed samples. It records missing API observations explicitly.
   such as `auth_failure`, `malformed_body`, `route_not_found` and email delivery
   failures. A matched route returning 404 is `not_found`, not `route_not_found`.
   Error messages and provider response contents never become metric labels.
+- `http_failure_contexts` classifies failures using fixed, bounded values only:
+  endpoint family, an allowlisted A/SIDE client platform, authorization-header
+  presence, and request-versus-response abort phase. It never stores raw paths,
+  user agents, header values, tokens, IDs, or request bodies. `unknown` platform
+  includes older app builds that predate the fixed platform header and does not
+  by itself prove automated traffic.
 - Failure details require both the updated API and collector. The historical
   HTTP histogram format is unchanged. `http_failure_detail_coverage_pct` gives
   the portion of the requested window with the new counters; details are null
   when unavailable, rather than implying there were no failures. Older
   collectors ignore the new families and continue collecting existing metrics.
+  Context rows have their own `http_failure_context_coverage_pct` because their
+  deployment can begin later than reason-level failure details.
 - `operation_stages` times OTP provider delivery and message sends. The message
   `prehandler` stage includes body transfer/parsing, authentication and rate
   limits; it is recorded only for requests that reach the send handler. The

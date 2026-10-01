@@ -17,6 +17,12 @@ export const socketConnections = new Gauge({ name: 'aside_websocket_connections'
 const missed = new Counter({ name: 'aside_metrics_recording_errors_total', help: 'Metric recording failures', registers: [performanceRegistry] });
 const httpFailures = new Counter({ name: 'aside_http_failures_total', help: 'HTTP failures by bounded status and reason',
   labelNames: ['method', 'route', 'status', 'reason'] as const, registers: [performanceRegistry] });
+const httpFailureContexts = new Counter({
+  name: 'aside_http_failure_contexts_total',
+  help: 'HTTP failures by bounded request context; never includes raw paths, headers, or identifiers',
+  labelNames: ['method', 'path_class', 'client_platform', 'auth_present', 'abort_phase', 'status', 'reason'] as const,
+  registers: [performanceRegistry],
+});
 const stageDuration = new Histogram({ name: 'aside_operation_stage_seconds', help: 'Duration of fixed application stages',
   labelNames: ['stage', 'outcome'] as const, buckets, registers: [performanceRegistry] });
 export const performanceStages = ['otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout'] as const;
@@ -29,6 +35,51 @@ const prefixes = ['/v1/auth', '/v1/users', '/v1/follows', '/v1/invites', '/v1/in
   '/v1/stories', '/v1/conversations', '/v1/lists', '/v1/groups', '/v1/devices', '/v1/dm-attachments',
   '/v1/contacts', '/v1/subscriptions', '/v1/webhooks', '/v1/partner-offers', '/newsletter', '/admin', '/unsubscribe'];
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+export const failurePathClasses = [
+  'auth', 'users', 'follows', 'invites', 'invite_link', 'feed', 'posts', 'comments', 'stories',
+  'conversations', 'lists', 'groups_legacy', 'devices', 'dm_attachments', 'contacts', 'subscriptions',
+  'webhooks', 'partner_offers', 'newsletter', 'admin', 'unsubscribe', 'health', 'docs', 'well_known',
+  'api_other', 'root', 'other',
+] as const;
+type FailurePathClass = typeof failurePathClasses[number];
+const pathClassPrefixes: ReadonlyArray<readonly [string, FailurePathClass]> = [
+  ['/v1/auth', 'auth'], ['/v1/users', 'users'], ['/v1/follows', 'follows'], ['/v1/invites', 'invites'],
+  ['/v1/invite-link', 'invite_link'], ['/v1/feed', 'feed'], ['/v1/posts', 'posts'], ['/v1/comments', 'comments'],
+  ['/v1/stories', 'stories'], ['/v1/conversations', 'conversations'], ['/v1/lists', 'lists'],
+  ['/v1/groups', 'groups_legacy'], ['/v1/devices', 'devices'], ['/v1/dm-attachments', 'dm_attachments'],
+  ['/v1/contacts', 'contacts'], ['/v1/subscriptions', 'subscriptions'], ['/v1/webhooks', 'webhooks'],
+  ['/v1/partner-offers', 'partner_offers'], ['/newsletter', 'newsletter'], ['/admin', 'admin'],
+  ['/unsubscribe', 'unsubscribe'],
+];
+export const failureClientPlatforms = ['ios', 'android', 'web', 'other', 'unknown'] as const;
+type FailureClientPlatform = typeof failureClientPlatforms[number];
+
+function boundedPathClass(pathname: string): FailurePathClass {
+  const match = pathClassPrefixes.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + '/'));
+  if (match) return match[1];
+  if (pathname === '/health') return 'health';
+  if (pathname === '/openapi.json' || pathname === '/docs' || pathname.startsWith('/docs/')) return 'docs';
+  if (pathname.startsWith('/.well-known/')) return 'well_known';
+  if (pathname === '/v1' || pathname.startsWith('/v1/')) return 'api_other';
+  if (pathname === '/') return 'root';
+  return 'other';
+}
+
+function boundedClientPlatform(req: Request): FailureClientPlatform {
+  const value = req.headers['x-a-side-client-platform'];
+  return typeof value === 'string' && failureClientPlatforms.includes(value as FailureClientPlatform) && value !== 'unknown'
+    ? value as FailureClientPlatform : 'unknown';
+}
+
+export function failureContext(req: Request, aborted: boolean) {
+  const pathname = req.originalUrl.split('?')[0];
+  return {
+    path_class: boundedPathClass(pathname),
+    client_platform: boundedClientPlatform(req),
+    auth_present: typeof req.headers.authorization === 'string' && req.headers.authorization.length > 0 ? 'yes' : 'no',
+    abort_phase: aborted ? (req.complete ? 'response' : 'request') : 'not_aborted',
+  } as const;
+}
 export function routeLabel(req: Request, prefix: string): string {
   const template: unknown = req.route?.path;
   if (typeof template !== 'string') return 'unmatched';
@@ -57,6 +108,8 @@ export const measureHttp: RequestHandler = (req, res, next) => {
         const reason = aborted ? 'request_aborted' : failureReasons.includes(explicitReason)
           ? explicitReason : defaultFailureReason(res.statusCode, route !== 'unmatched');
         httpFailures.inc({ method, route, status: aborted ? 'aborted' : String(res.statusCode), reason });
+        httpFailureContexts.inc({ method, ...failureContext(req, aborted),
+          status: aborted ? 'aborted' : String(res.statusCode), reason });
       }
     } catch { missed.inc(); }
   };
