@@ -1,11 +1,21 @@
 import 'dart:ui' show VoidCallback;
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kDebugMode, kIsWeb;
 
 import '../config/env.dart';
 import '../storage/secure_storage.dart';
 import 'api_endpoints.dart';
+
+String get asideClientPlatform {
+  if (kIsWeb) return 'web';
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => 'ios',
+    TargetPlatform.android => 'android',
+    _ => 'other',
+  };
+}
 
 /// Wraps [DioException] with user-friendly messages.
 class ApiException implements Exception {
@@ -100,6 +110,7 @@ class ApiClient {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        'X-A-Side-Client-Platform': asideClientPlatform,
       },
     );
 
@@ -179,6 +190,7 @@ class _AuthInterceptor extends Interceptor {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'X-A-Side-Client-Platform': asideClientPlatform,
         },
       )).post(
         ApiEndpoints.refreshToken,

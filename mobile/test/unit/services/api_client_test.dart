@@ -80,6 +80,10 @@ void main() {
       final client = ApiClient(secureStorage: mockStorage);
       expect(client.dio, isNotNull);
       expect(client.dio.options.connectTimeout, const Duration(seconds: 30));
+      expect(
+        ['ios', 'android', 'web', 'other'],
+        contains(client.dio.options.headers['X-A-Side-Client-Platform']),
+      );
     });
 
     test('accepts optional Dio instance', () {

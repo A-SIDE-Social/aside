@@ -75,8 +75,32 @@ test('distinguishes rejection before route matching from an unknown route', asyn
   }
 });
 
+test('records only bounded failure context for client attribution', async () => {
+  const app = express().use(measureHttp);
+  app.use('/v1/devices', (_req, res) => res.status(401).end());
+  await request(app).post('/v1/devices/token?private=secret')
+    .set('Authorization', 'Bearer private-token')
+    .set('X-A-Side-Client-Platform', 'android');
+  await request(app).post('/private-path').set('X-A-Side-Client-Platform', 'private-client');
+  const contexts = await performanceRegistry.getSingleMetric('aside_http_failure_contexts_total')!.get();
+  expect(contexts.values).toEqual(expect.arrayContaining([
+    expect.objectContaining({ value: 1, labels: {
+      method: 'POST', path_class: 'devices', client_platform: 'android', auth_present: 'yes',
+      abort_phase: 'not_aborted', status: '401', reason: 'auth_failure',
+    } }),
+    expect.objectContaining({ value: 1, labels: {
+      method: 'POST', path_class: 'other', client_platform: 'unknown', auth_present: 'no',
+      abort_phase: 'not_aborted', status: '404', reason: 'route_not_found',
+    } }),
+  ]));
+  const serialized = JSON.stringify(contexts);
+  for (const privateValue of ['private-path', 'private-client', 'private-token', 'private=secret']) {
+    expect(serialized).not.toContain(privateValue);
+  }
+});
+
 test('records an aborted response once even if finish follows close', async () => {
-  const req = { originalUrl: '/unknown-id?token=secret', method: 'CUSTOM' };
+  const req = { originalUrl: '/unknown-id?token=secret', method: 'CUSTOM', headers: {}, complete: false };
   const res = Object.assign(new EventEmitter(), { statusCode: 200, writableFinished: false, locals: {} });
   measureHttp(req as any, res as any, () => {});
   res.emit('close');
@@ -84,6 +108,11 @@ test('records an aborted response once even if finish follows close', async () =
   const failures = await performanceRegistry.getSingleMetric('aside_http_failures_total')!.get();
   expect(failures.values).toEqual([expect.objectContaining({ value: 1,
     labels: { method: 'OTHER', route: 'unmatched', status: 'aborted', reason: 'request_aborted' } })]);
+  const contexts = await performanceRegistry.getSingleMetric('aside_http_failure_contexts_total')!.get();
+  expect(contexts.values).toEqual([expect.objectContaining({ value: 1, labels: {
+    method: 'OTHER', path_class: 'other', client_platform: 'unknown', auth_present: 'no',
+    abort_phase: 'request', status: 'aborted', reason: 'request_aborted',
+  } })]);
 });
 
 test('separates time before the message handler from handler work without changing results', async () => {

@@ -18,11 +18,17 @@ class PerformanceTests(unittest.TestCase):
         def counter(labels, value=2):
             return {'labels': labels, 'value': value}
         labels = {'method': 'POST', 'route': '/v1/auth/request-otp', 'status': '503', 'reason': 'email_auth_failure'}
+        context = {'method': 'POST', 'path_class': 'auth', 'client_platform': 'ios', 'auth_present': 'no',
+                   'abort_phase': 'not_aborted', 'status': '503', 'reason': 'email_auth_failure'}
         stage = {'stage': 'otp_delivery', 'outcome': 'error'}
         payload = {'started_at': 1, 'metrics': [
             {'name': 'aside_http_failures_total', 'values': [counter(labels),
                 counter(dict(labels, email='private@example.com')), counter(dict(labels, reason='private@example.com')),
                 counter(dict(labels, status='secret')), counter(dict(labels, method='UNBOUNDED'))]},
+            {'name': 'aside_http_failure_contexts_total', 'values': [counter(context),
+                counter(dict(context, raw_path='/private')), counter(dict(context, path_class='private')),
+                counter(dict(context, client_platform='private')), counter(dict(context, auth_present='private')),
+                counter(dict(context, abort_phase='private'))]},
             {'name': 'aside_operation_stage_seconds', 'values': [
                 dict(counter(stage), metricName='aside_operation_stage_seconds_count'),
                 dict(counter(dict(stage, le='0.25')), metricName='aside_operation_stage_seconds_bucket'),
@@ -32,6 +38,7 @@ class PerformanceTests(unittest.TestCase):
         ]}
         result = p.compact(payload)
         self.assertEqual(result['failures'], {json.dumps(list(labels.values()), separators=(',', ':')): 2})
+        self.assertEqual(result['contexts'], {json.dumps(list(context.values()), separators=(',', ':')): 2})
         stage_key = json.dumps(['aside_operation_stage_seconds', '', 'otp_delivery', 'error'], separators=(',', ':'))
         self.assertEqual(result['hist'], {stage_key: {'n': 2, 'b': {'0.25': 2, '+Inf': 2}}})
         self.assertNotIn('private', json.dumps(result))
@@ -40,10 +47,12 @@ class PerformanceTests(unittest.TestCase):
     def test_new_details_do_not_double_count_requests_and_old_history_remains_readable(self):
         records = [sample(1000), sample(1060, 2), sample(1120, 4)]
         failure_key = json.dumps(['POST', '/v1/auth/request-otp', '503', 'email_provider_unavailable'])
+        context_key = json.dumps(['POST', 'auth', 'ios', 'no', 'not_aborted', '503', 'email_provider_unavailable'])
         stage_key = json.dumps(['aside_operation_stage_seconds', '', 'otp_delivery', 'error'])
         http_error = json.dumps(['aside_http_duration_seconds', 'POST', '/v1/auth/request-otp', 'server_error'])
         for index, row in enumerate(records[1:]):
             row['api']['failures'] = {failure_key: index + 1}
+            row['api']['contexts'] = {context_key: index + 1}
             row['api']['hist'][stage_key] = {'n': index + 1, 'b': {'0.25': index + 1, '+Inf': index + 1}}
             row['api']['hist'][http_error] = {'n': index + 1, 'b': {'0.25': index + 1, '+Inf': index + 1}}
         report = p.summarize(records, 1120, 1)
@@ -52,11 +61,17 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(report['http_failure_detail_coverage_pct'], 1.7)
         self.assertEqual(report['http_failure_details'], [{'route': 'POST /v1/auth/request-otp', 'status': '503',
             'reason': 'email_provider_unavailable', 'requests': 1}])
+        self.assertEqual(report['http_failure_context_coverage_pct'], 1.7)
+        self.assertEqual(report['http_failure_contexts'], [{'method': 'POST', 'path_class': 'auth',
+            'client_platform': 'ios', 'auth_present': 'no', 'abort_phase': 'not_aborted', 'status': '503',
+            'reason': 'email_provider_unavailable', 'requests': 1}])
         self.assertEqual(report['operation_stages'], [{'stage': 'otp_delivery', 'outcome': 'error', 'observations': 2, 'p95_ms': 237.5}])
         self.assertEqual(report['http_error_routes'], [{'route': 'POST /v1/auth/request-otp', 'outcome': 'server_error', 'requests': 2}])
         old_report = p.summarize([sample(1000), sample(1060, 2)], 1060, 1)
         self.assertIsNone(old_report['http_failure_details'])
         self.assertEqual(old_report['http_failure_detail_coverage_pct'], 0)
+        self.assertIsNone(old_report['http_failure_contexts'])
+        self.assertEqual(old_report['http_failure_context_coverage_pct'], 0)
 
     def test_failure_counter_resets_gaps_and_restarts_are_excluded(self):
         key = json.dumps(['POST', 'unmatched', '401', 'auth_failure'])
