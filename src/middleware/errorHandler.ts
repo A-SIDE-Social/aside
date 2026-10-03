@@ -36,6 +36,7 @@ export function errorHandler(err: Error, _req: Request, res: Response, next: Nex
   if (knownBodyError && bodyError.status === knownBodyError[0]) {
     const [status, reason, message] = knownBodyError;
     res.locals.failureReason = reason;
+    res.locals.failureStage = 'body';
     res.status(status).json({ error: message });
     return;
   }

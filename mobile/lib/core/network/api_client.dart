@@ -111,6 +111,8 @@ class ApiClient {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
         'X-A-Side-Client-Platform': asideClientPlatform,
+        'X-A-Side-Client-Generation': '2',
+        'X-A-Side-Request-Attempt': 'initial',
       },
     );
 
@@ -191,6 +193,8 @@ class _AuthInterceptor extends Interceptor {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
           'X-A-Side-Client-Platform': asideClientPlatform,
+          'X-A-Side-Client-Generation': '2',
+          'X-A-Side-Request-Attempt': 'initial',
         },
       )).post(
         ApiEndpoints.refreshToken,
@@ -217,6 +221,7 @@ class _AuthInterceptor extends Interceptor {
       // Retry the original request with the new token.
       final options = err.requestOptions;
       options.headers['Authorization'] = 'Bearer $newAuthToken';
+      options.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
       final retryResponse = await _dio.fetch(options);
       handler.resolve(retryResponse);
 
@@ -236,6 +241,7 @@ class _AuthInterceptor extends Interceptor {
     _pendingRequests.clear();
     for (final p in pending) {
       p.options.headers['Authorization'] = 'Bearer $newToken';
+      p.options.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
       _dio.fetch(p.options).then(
             (response) => p.handler.resolve(response),
             onError: (e) => p.handler.next(e is DioException
