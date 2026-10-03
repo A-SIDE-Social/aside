@@ -84,6 +84,8 @@ void main() {
         ['ios', 'android', 'web', 'other'],
         contains(client.dio.options.headers['X-A-Side-Client-Platform']),
       );
+      expect(client.dio.options.headers['X-A-Side-Client-Generation'], '2');
+      expect(client.dio.options.headers['X-A-Side-Request-Attempt'], 'initial');
     });
 
     test('accepts optional Dio instance', () {

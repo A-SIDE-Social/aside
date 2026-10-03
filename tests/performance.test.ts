@@ -3,6 +3,7 @@ import request from 'supertest';
 import { Histogram } from '@prometheus-io/client';
 import { measureHttp, measureMessageHandler, measureStage, performanceRegistry, startPerformanceServer } from '../src/performance';
 import { AppError, errorHandler } from '../src/middleware/errorHandler';
+import { authenticate } from '../src/middleware/auth';
 import { EventEmitter } from 'events';
 
 beforeEach(() => { process.env.PERFORMANCE_METRICS = '1'; performanceRegistry.resetMetrics(); });
@@ -77,15 +78,18 @@ test('distinguishes rejection before route matching from an unknown route', asyn
 
 test('records only bounded failure context for client attribution', async () => {
   const app = express().use(measureHttp);
-  app.use('/v1/devices', (_req, res) => res.status(401).end());
+  const devices = express.Router().post('/token', (_req, res) => res.json({ ok: true }));
+  app.use('/v1/devices', authenticate, devices);
   await request(app).post('/v1/devices/token?private=secret')
-    .set('Authorization', 'Bearer private-token')
-    .set('X-A-Side-Client-Platform', 'android');
+    .set('Content-Type', 'application/json')
+    .set('X-A-Side-Client-Platform', 'android')
+    .set('X-A-Side-Client-Generation', '2')
+    .set('X-A-Side-Request-Attempt', 'initial');
   await request(app).post('/private-path').set('X-A-Side-Client-Platform', 'private-client');
   const contexts = await performanceRegistry.getSingleMetric('aside_http_failure_contexts_total')!.get();
   expect(contexts.values).toEqual(expect.arrayContaining([
     expect.objectContaining({ value: 1, labels: {
-      method: 'POST', path_class: 'devices', client_platform: 'android', auth_present: 'yes',
+      method: 'POST', path_class: 'devices', client_platform: 'android', auth_present: 'no',
       abort_phase: 'not_aborted', status: '401', reason: 'auth_failure',
     } }),
     expect.objectContaining({ value: 1, labels: {
@@ -93,10 +97,39 @@ test('records only bounded failure context for client attribution', async () => 
       abort_phase: 'not_aborted', status: '404', reason: 'route_not_found',
     } }),
   ]));
+  const investigations = await performanceRegistry.getSingleMetric('aside_http_failure_investigations_total')!.get();
+  expect(investigations.values).toEqual(expect.arrayContaining([
+    expect.objectContaining({ value: 1, labels: {
+      method: 'POST', path_class: 'devices', endpoint: 'devices_token', route_state: 'declared_method',
+      client_platform: 'android', client_generation: 'context_v2', request_attempt: 'initial',
+      auth_kind: 'missing', auth_result: 'missing_or_malformed', body_kind: 'json', failure_stage: 'auth',
+      abort_phase: 'not_aborted', status: '401', reason: 'auth_failure',
+    } }),
+    expect.objectContaining({ value: 1, labels: {
+      method: 'POST', path_class: 'other', endpoint: 'other', route_state: 'unknown_path',
+      client_platform: 'unknown', client_generation: 'absent', request_attempt: 'unknown',
+      auth_kind: 'missing', auth_result: 'not_checked', body_kind: 'untyped', failure_stage: 'routing',
+      abort_phase: 'not_aborted', status: '404', reason: 'route_not_found',
+    } }),
+  ]));
   const serialized = JSON.stringify(contexts);
+  const investigationSerialized = JSON.stringify(investigations);
   for (const privateValue of ['private-path', 'private-client', 'private-token', 'private=secret']) {
     expect(serialized).not.toContain(privateValue);
+    expect(investigationSerialized).not.toContain(privateValue);
   }
+});
+
+test('classifies a known path with the wrong method without storing the path', async () => {
+  const app = express().use(measureHttp);
+  await request(app).get('/v1/devices/keys/upload?token=private');
+  const investigations = await performanceRegistry.getSingleMetric('aside_http_failure_investigations_total')!.get();
+  expect(investigations.values).toEqual([expect.objectContaining({ value: 1, labels: expect.objectContaining({
+    method: 'GET', path_class: 'devices', endpoint: 'devices_keys_upload', route_state: 'method_mismatch',
+    failure_stage: 'routing', status: '404', reason: 'route_not_found',
+  }) })]);
+  expect(JSON.stringify(investigations)).not.toContain('private');
+  expect(JSON.stringify(investigations)).not.toContain('/v1/devices/keys/upload');
 });
 
 test('records an aborted response once even if finish follows close', async () => {
@@ -113,6 +146,10 @@ test('records an aborted response once even if finish follows close', async () =
     method: 'OTHER', path_class: 'other', client_platform: 'unknown', auth_present: 'no',
     abort_phase: 'request', status: 'aborted', reason: 'request_aborted',
   } })]);
+  const investigations = await performanceRegistry.getSingleMetric('aside_http_failure_investigations_total')!.get();
+  expect(investigations.values).toEqual([expect.objectContaining({ value: 1, labels: expect.objectContaining({
+    endpoint: 'other', route_state: 'unknown_path', failure_stage: 'aborted_request', abort_phase: 'request',
+  }) })]);
 });
 
 test('separates time before the message handler from handler work without changing results', async () => {

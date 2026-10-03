@@ -23,6 +23,16 @@ const httpFailureContexts = new Counter({
   labelNames: ['method', 'path_class', 'client_platform', 'auth_present', 'abort_phase', 'status', 'reason'] as const,
   registers: [performanceRegistry],
 });
+const httpFailureInvestigations = new Counter({
+  name: 'aside_http_failure_investigations_total',
+  help: 'HTTP failures by privacy-bounded routing, client, auth, body, and lifecycle evidence',
+  labelNames: [
+    'method', 'path_class', 'endpoint', 'route_state', 'client_platform', 'client_generation',
+    'request_attempt', 'auth_kind', 'auth_result', 'body_kind', 'failure_stage', 'abort_phase',
+    'status', 'reason',
+  ] as const,
+  registers: [performanceRegistry],
+});
 const stageDuration = new Histogram({ name: 'aside_operation_stage_seconds', help: 'Duration of fixed application stages',
   labelNames: ['stage', 'outcome'] as const, buckets, registers: [performanceRegistry] });
 export const performanceStages = ['otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout'] as const;
@@ -53,6 +63,42 @@ const pathClassPrefixes: ReadonlyArray<readonly [string, FailurePathClass]> = [
 ];
 export const failureClientPlatforms = ['ios', 'android', 'web', 'other', 'unknown'] as const;
 type FailureClientPlatform = typeof failureClientPlatforms[number];
+export const failureEndpoints = [
+  'auth_request_otp', 'auth_verify_otp', 'auth_refresh', 'auth_session', 'auth_other',
+  'users_me', 'users_feed_seen', 'users_member', 'users_other', 'feed_root', 'feed_other',
+  'devices_token', 'devices_keys_upload', 'devices_keys_replenish', 'devices_keys_rotate_signed',
+  'devices_revoke', 'devices_other', 'root', 'well_known', 'family_other', 'other',
+] as const;
+type FailureEndpoint = typeof failureEndpoints[number];
+export const failureRouteStates = ['matched', 'declared_method', 'method_mismatch', 'unknown_path'] as const;
+type FailureRouteState = typeof failureRouteStates[number];
+const failureClientGenerations = ['context_v2', 'platform_only', 'absent', 'invalid'] as const;
+const failureRequestAttempts = ['initial', 'auth_retry', 'unknown', 'invalid'] as const;
+const failureAuthKinds = ['missing', 'bearer', 'other'] as const;
+export const failureAuthResults = [
+  'not_checked', 'missing_or_malformed', 'invalid_or_expired', 'inactive_account', 'accepted',
+] as const;
+export type FailureAuthResult = typeof failureAuthResults[number];
+const failureBodyKinds = ['none', 'json', 'form', 'multipart', 'binary', 'untyped', 'other'] as const;
+export const failureStages = ['routing', 'body', 'auth', 'handler', 'pre_route', 'aborted_request', 'aborted_response'] as const;
+export type FailureStage = typeof failureStages[number];
+
+type EndpointRule = readonly [RegExp, FailureEndpoint, readonly string[]];
+const endpointRules: readonly EndpointRule[] = [
+  [/^\/v1\/auth\/request-otp\/?$/, 'auth_request_otp', ['POST']],
+  [/^\/v1\/auth\/verify-otp\/?$/, 'auth_verify_otp', ['POST']],
+  [/^\/v1\/auth\/refresh\/?$/, 'auth_refresh', ['POST']],
+  [/^\/v1\/auth\/session\/?$/, 'auth_session', ['DELETE']],
+  [/^\/v1\/users\/me\/?$/, 'users_me', ['GET', 'PATCH', 'DELETE']],
+  [/^\/v1\/users\/me\/feed-seen\/?$/, 'users_feed_seen', ['POST']],
+  [/^\/v1\/users\/[^/]+\/?$/, 'users_member', ['GET']],
+  [/^\/v1\/feed\/?$/, 'feed_root', ['GET']],
+  [/^\/v1\/devices\/token\/?$/, 'devices_token', ['POST', 'DELETE']],
+  [/^\/v1\/devices\/keys\/upload\/?$/, 'devices_keys_upload', ['POST']],
+  [/^\/v1\/devices\/keys\/replenish\/?$/, 'devices_keys_replenish', ['POST']],
+  [/^\/v1\/devices\/keys\/rotate-signed\/?$/, 'devices_keys_rotate_signed', ['POST']],
+  [/^\/v1\/devices\/revoke\/?$/, 'devices_revoke', ['POST']],
+];
 
 function boundedPathClass(pathname: string): FailurePathClass {
   const match = pathClassPrefixes.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + '/'));
@@ -71,12 +117,96 @@ function boundedClientPlatform(req: Request): FailureClientPlatform {
     ? value as FailureClientPlatform : 'unknown';
 }
 
+function boundedEndpoint(pathname: string, method: string): { endpoint: FailureEndpoint; route_state: FailureRouteState } {
+  const rule = endpointRules.find(([pattern]) => pattern.test(pathname));
+  if (rule) return { endpoint: rule[1], route_state: rule[2].includes(method) ? 'declared_method' : 'method_mismatch' };
+  const pathClass = boundedPathClass(pathname);
+  const endpoint: FailureEndpoint = pathClass === 'auth' ? 'auth_other'
+    : pathClass === 'users' ? 'users_other'
+    : pathClass === 'feed' ? 'feed_other'
+    : pathClass === 'devices' ? 'devices_other'
+    : pathClass === 'root' ? 'root'
+    : pathClass === 'well_known' ? 'well_known'
+    : pathClass === 'other' ? 'other' : 'family_other';
+  return { endpoint, route_state: 'unknown_path' };
+}
+
+function boundedClientGeneration(req: Request) {
+  const generation = req.headers['x-a-side-client-generation'];
+  const platform = boundedClientPlatform(req);
+  if (generation === '2' && platform !== 'unknown') return 'context_v2' as const;
+  if (generation === undefined && platform !== 'unknown') return 'platform_only' as const;
+  if (generation === undefined) return 'absent' as const;
+  return 'invalid' as const;
+}
+
+function boundedRequestAttempt(req: Request) {
+  const value = req.headers['x-a-side-request-attempt'];
+  if (value === undefined) return 'unknown' as const;
+  if ((failureRequestAttempts as readonly string[]).includes(String(value)) && value !== 'unknown' && value !== 'invalid') {
+    return value as 'initial' | 'auth_retry';
+  }
+  return 'invalid' as const;
+}
+
+function boundedAuthKind(req: Request) {
+  const value = req.headers.authorization;
+  if (typeof value !== 'string' || value.length === 0) return 'missing' as const;
+  return value.startsWith('Bearer ') ? 'bearer' as const : 'other' as const;
+}
+
+function boundedBodyKind(req: Request) {
+  const contentType = req.headers['content-type'];
+  const length = req.headers['content-length'];
+  const transfer = req.headers['transfer-encoding'];
+  if (contentType === undefined) return length === undefined && transfer === undefined ? 'none' as const : 'untyped' as const;
+  const value = Array.isArray(contentType) ? contentType[0] : contentType;
+  const mediaType = value.toLowerCase().split(';', 1)[0].trim();
+  if (mediaType === 'application/json' || mediaType.endsWith('+json')) return 'json' as const;
+  if (mediaType === 'application/x-www-form-urlencoded') return 'form' as const;
+  if (mediaType === 'multipart/form-data') return 'multipart' as const;
+  if (mediaType === 'application/octet-stream' || mediaType.startsWith('image/') || mediaType.startsWith('video/')) return 'binary' as const;
+  return 'other' as const;
+}
+
+function boundedFailureStage(req: Request, res: Response, aborted: boolean, routeState: FailureRouteState): FailureStage {
+  if (aborted) return req.complete ? 'aborted_response' : 'aborted_request';
+  const explicit = res.locals.failureStage;
+  if ((failureStages as readonly unknown[]).includes(explicit)) return explicit as FailureStage;
+  if (typeof req.route?.path === 'string') return 'handler';
+  if (routeState === 'unknown_path' || routeState === 'method_mismatch') return 'routing';
+  return 'pre_route';
+}
+
 export function failureContext(req: Request, aborted: boolean) {
   const pathname = req.originalUrl.split('?')[0];
   return {
     path_class: boundedPathClass(pathname),
     client_platform: boundedClientPlatform(req),
     auth_present: typeof req.headers.authorization === 'string' && req.headers.authorization.length > 0 ? 'yes' : 'no',
+    abort_phase: aborted ? (req.complete ? 'response' : 'request') : 'not_aborted',
+  } as const;
+}
+
+export function failureInvestigation(req: Request, res: Response, aborted: boolean) {
+  const pathname = req.originalUrl.split('?')[0];
+  const method = methods.has(req.method) ? req.method : 'OTHER';
+  const endpoint = boundedEndpoint(pathname, method);
+  const matched = typeof req.route?.path === 'string';
+  const routeState: FailureRouteState = matched ? 'matched' : endpoint.route_state;
+  const authResult = failureAuthResults.includes(res.locals.authResult) ? res.locals.authResult as FailureAuthResult : 'not_checked';
+  return {
+    method,
+    path_class: boundedPathClass(pathname),
+    endpoint: endpoint.endpoint,
+    route_state: routeState,
+    client_platform: boundedClientPlatform(req),
+    client_generation: boundedClientGeneration(req),
+    request_attempt: boundedRequestAttempt(req),
+    auth_kind: boundedAuthKind(req),
+    auth_result: authResult,
+    body_kind: boundedBodyKind(req),
+    failure_stage: boundedFailureStage(req, res, aborted, routeState),
     abort_phase: aborted ? (req.complete ? 'response' : 'request') : 'not_aborted',
   } as const;
 }
@@ -109,6 +239,8 @@ export const measureHttp: RequestHandler = (req, res, next) => {
           ? explicitReason : defaultFailureReason(res.statusCode, route !== 'unmatched');
         httpFailures.inc({ method, route, status: aborted ? 'aborted' : String(res.statusCode), reason });
         httpFailureContexts.inc({ method, ...failureContext(req, aborted),
+          status: aborted ? 'aborted' : String(res.statusCode), reason });
+        httpFailureInvestigations.inc({ ...failureInvestigation(req, res, aborted),
           status: aborted ? 'aborted' : String(res.statusCode), reason });
       }
     } catch { missed.inc(); }

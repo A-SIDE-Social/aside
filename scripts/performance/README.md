@@ -46,6 +46,16 @@ not backfill missed samples. It records missing API observations explicitly.
   user agents, header values, tokens, IDs, or request bodies. `unknown` platform
   includes older app builds that predate the fixed platform header and does not
   by itself prove automated traffic.
+- `http_failure_investigations` adds only fixed categories needed to answer a
+  route/client investigation: recognized endpoint shape, whether the HTTP
+  method is declared, routing/auth/body/handler stage, bounded auth result,
+  declared client telemetry generation, initial-versus-auth-refresh attempt,
+  body media category, and abort phase. `http_failure_bursts` derives active
+  minutes, first/last minute, peak and p95 requests per active minute, and the
+  longest consecutive run from the one-minute counter snapshots. Neither
+  surface stores raw URLs, user agents, IPs, tokens, identifiers, header
+  values, or payloads. Client headers are declared evidence and can be absent
+  or spoofed; they do not establish a person or device identity.
 - Failure details require both the updated API and collector. The historical
   HTTP histogram format is unchanged. `http_failure_detail_coverage_pct` gives
   the portion of the requested window with the new counters; details are null

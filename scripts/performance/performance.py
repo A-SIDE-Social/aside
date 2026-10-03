@@ -29,6 +29,18 @@ FAILURE_PATH_CLASSES = {'auth', 'users', 'follows', 'invites', 'invite_link', 'f
 FAILURE_CLIENT_PLATFORMS = {'ios', 'android', 'web', 'other', 'unknown'}
 FAILURE_AUTH_PRESENCE = {'yes', 'no'}
 FAILURE_ABORT_PHASES = {'not_aborted', 'request', 'response'}
+FAILURE_ENDPOINTS = {'auth_request_otp', 'auth_verify_otp', 'auth_refresh', 'auth_session', 'auth_other',
+                     'users_me', 'users_feed_seen', 'users_member', 'users_other', 'feed_root', 'feed_other',
+                     'devices_token', 'devices_keys_upload', 'devices_keys_replenish',
+                     'devices_keys_rotate_signed', 'devices_revoke', 'devices_other', 'root', 'well_known',
+                     'family_other', 'other'}
+FAILURE_ROUTE_STATES = {'matched', 'declared_method', 'method_mismatch', 'unknown_path'}
+FAILURE_CLIENT_GENERATIONS = {'context_v2', 'platform_only', 'absent', 'invalid'}
+FAILURE_REQUEST_ATTEMPTS = {'initial', 'auth_retry', 'unknown', 'invalid'}
+FAILURE_AUTH_KINDS = {'missing', 'bearer', 'other'}
+FAILURE_AUTH_RESULTS = {'not_checked', 'missing_or_malformed', 'invalid_or_expired', 'inactive_account', 'accepted'}
+FAILURE_BODY_KINDS = {'none', 'json', 'form', 'multipart', 'binary', 'untyped', 'other'}
+FAILURE_STAGES = {'routing', 'body', 'auth', 'handler', 'pre_route', 'aborted_request', 'aborted_response'}
 GAUGES = {'process_resident_memory_bytes', 'nodejs_eventloop_lag_p99_seconds',
           'aside_db_pool_total', 'aside_db_pool_idle', 'aside_db_pool_waiting',
           'aside_websocket_connections', 'aside_metrics_recording_errors_total'}
@@ -41,7 +53,7 @@ def finite(value):
 
 def compact(payload):
     """Discard library metadata and all unapproved metric families/labels."""
-    hist, gauges, failures, contexts = {}, {}, None, None
+    hist, gauges, failures, contexts, investigations = {}, {}, None, None, None
     for family in payload['metrics']:
         name = family['name']
         if name == 'aside_http_failures_total':
@@ -75,6 +87,33 @@ def compact(payload):
                 order = ('method', 'path_class', 'client_platform', 'auth_present', 'abort_phase', 'status', 'reason')
                 key = json.dumps([labels[k] for k in order], separators=(',', ':'))
                 contexts[key] = sample['value']
+        if name == 'aside_http_failure_investigations_total':
+            investigations = {}
+            order = ('method', 'path_class', 'endpoint', 'route_state', 'client_platform', 'client_generation',
+                     'request_attempt', 'auth_kind', 'auth_result', 'body_kind', 'failure_stage', 'abort_phase',
+                     'status', 'reason')
+            expected = set(order)
+            for sample in family['values']:
+                labels = sample.get('labels', {})
+                if set(labels) != expected or not finite(sample['value']) or sample['value'] < 0:
+                    continue
+                status = labels['status']
+                if (labels['method'] not in METHODS or labels['path_class'] not in FAILURE_PATH_CLASSES
+                        or labels['endpoint'] not in FAILURE_ENDPOINTS
+                        or labels['route_state'] not in FAILURE_ROUTE_STATES
+                        or labels['client_platform'] not in FAILURE_CLIENT_PLATFORMS
+                        or labels['client_generation'] not in FAILURE_CLIENT_GENERATIONS
+                        or labels['request_attempt'] not in FAILURE_REQUEST_ATTEMPTS
+                        or labels['auth_kind'] not in FAILURE_AUTH_KINDS
+                        or labels['auth_result'] not in FAILURE_AUTH_RESULTS
+                        or labels['body_kind'] not in FAILURE_BODY_KINDS
+                        or labels['failure_stage'] not in FAILURE_STAGES
+                        or labels['abort_phase'] not in FAILURE_ABORT_PHASES
+                        or labels['reason'] not in FAILURE_REASONS
+                        or not isinstance(status, str) or status not in FAILURE_STATUSES):
+                    continue
+                key = json.dumps([labels[k] for k in order], separators=(',', ':'))
+                investigations[key] = sample['value']
         if name in GAUGES:
             values = [v['value'] for v in family['values'] if not v.get('labels') and finite(v['value'])]
             if values:
@@ -102,6 +141,8 @@ def compact(payload):
         result['failures'] = failures
     if contexts is not None:
         result['contexts'] = contexts
+    if investigations is not None:
+        result['investigations'] = investigations
     return result
 
 
@@ -177,7 +218,8 @@ def summarize(samples, now, hours):
     host_values = {k: [] for k in ('cpu_pct', 'memory_pct', 'disk_pct', 'available_mb', 'swap_used_mb')}
     peaks, totals, combined, routes = {}, {}, {}, {}
     error_routes, failure_details, failure_contexts, stages = {}, {}, {}, {}
-    failure_covered, context_covered = 0, 0
+    failure_covered, context_covered, investigation_covered = 0, 0, 0
+    failure_investigations, investigation_minutes = {}, {}
     covered, host_covered, points, restarts, unavailable = 0, 0, 0, 0, 0
     streak = {'cpu': 0, 'memory': 0}
     sustained = {'cpu': False, 'memory': False}
@@ -233,6 +275,15 @@ def summarize(samples, now, hours):
                         delta = current - prev_api['contexts'].get(key, 0)
                         if delta > 0:
                             failure_contexts[key] = failure_contexts.get(key, 0) + delta
+                if 'investigations' in api and 'investigations' in prev_api:
+                    investigation_covered += elapsed
+                    minute = int(at // 60)
+                    for key, current in api['investigations'].items():
+                        delta = current - prev_api['investigations'].get(key, 0)
+                        if delta > 0:
+                            failure_investigations[key] = failure_investigations.get(key, 0) + delta
+                            minute_counts = investigation_minutes.setdefault(key, {})
+                            minute_counts[minute] = minute_counts.get(minute, 0) + delta
                 for key, current in api['hist'].items():
                     old = prev_api['hist'].get(key, {'n': 0, 'b': {}})
                     delta = current['n'] - old['n']
@@ -297,6 +348,34 @@ def summarize(samples, now, hours):
         contexts.append({'method': method, 'path_class': path_class, 'client_platform': client_platform,
                          'auth_present': auth_present, 'abort_phase': abort_phase,
                          'status': status, 'reason': reason, 'requests': count})
+    investigation_order = ('method', 'path_class', 'endpoint', 'route_state', 'client_platform',
+                           'client_generation', 'request_attempt', 'auth_kind', 'auth_result', 'body_kind',
+                           'failure_stage', 'abort_phase', 'status', 'reason')
+    investigations = []
+    bursts = []
+    for key, count in sorted(failure_investigations.items(), key=lambda item: (-item[1], item[0])):
+        values = json.loads(key)
+        row = dict(zip(investigation_order, values))
+        row['requests'] = count
+        investigations.append(row)
+        per_minute = investigation_minutes.get(key, {})
+        if per_minute:
+            minutes = sorted(per_minute)
+            counts = sorted(per_minute.values())
+            longest = current = 1
+            for previous_minute, current_minute in zip(minutes, minutes[1:]):
+                current = current + 1 if current_minute == previous_minute + 1 else 1
+                longest = max(longest, current)
+            burst = dict(row)
+            burst.update({
+                'active_minutes': len(minutes),
+                'first_seen_utc': dt.datetime.fromtimestamp(minutes[0] * 60, dt.timezone.utc).isoformat(),
+                'last_seen_utc': dt.datetime.fromtimestamp(minutes[-1] * 60, dt.timezone.utc).isoformat(),
+                'max_per_minute': max(counts),
+                'p95_per_active_minute': counts[math.ceil(len(counts) * .95) - 1],
+                'longest_consecutive_active_minutes': longest,
+            })
+            bursts.append(burst)
     stage_rows = [{'stage': stage, 'outcome': outcome, 'observations': value['n'],
                    'p95_ms': round(quantile(value['b'], .95) * 1000, 2)}
                   for (stage, outcome), value in sorted(stages.items()) if value['n'] > 0]
@@ -310,6 +389,9 @@ def summarize(samples, now, hours):
             'http_failure_details': details[:20] if failure_covered else None,
             'http_failure_context_coverage_pct': round(context_covered / (hours * 36), 1),
             'http_failure_contexts': contexts[:30] if context_covered else None,
+            'http_failure_investigation_coverage_pct': round(investigation_covered / (hours * 36), 1),
+            'http_failure_investigations': investigations[:30] if investigation_covered else None,
+            'http_failure_bursts': bursts[:20] if investigation_covered else None,
             'operation_stages': stage_rows,
             'client_errors': totals.get((http, 'client_error'), 0), 'successful_request_latency': latency_http,
             'query_helper_latency_including_pool': latency('aside_db_query_seconds'),

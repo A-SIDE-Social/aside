@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { query } from '../db/pool';
+import type { FailureAuthResult } from '../performance';
 
 export interface AuthPayload {
   userId: string;
@@ -28,8 +29,13 @@ export async function authenticate(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  const setAuthResult = (result: FailureAuthResult) => {
+    res.locals.authResult = result;
+    if (result !== 'accepted') res.locals.failureStage = 'auth';
+  };
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
+    setAuthResult('missing_or_malformed');
     res.status(401).json({ error: 'Missing or invalid authorization header' });
     return;
   }
@@ -39,15 +45,18 @@ export async function authenticate(
   try {
     payload = jwt.verify(token, config.jwtSecret) as AuthPayload;
   } catch {
+    setAuthResult('invalid_or_expired');
     res.status(401).json({ error: 'Invalid or expired token' });
     return;
   }
 
   try {
     if (!(await activeUserExists(payload.userId))) {
+      setAuthResult('inactive_account');
       res.status(401).json({ error: 'Account is no longer active' });
       return;
     }
+    setAuthResult('accepted');
     req.user = payload;
     next();
   } catch (err) {
