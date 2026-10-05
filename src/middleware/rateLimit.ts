@@ -31,6 +31,20 @@ export const writeLimit: RequestHandler = isTest
       message: { error: 'Too many requests, please try again later' },
     });
 
+// Applied before authentication so a stale client cannot recursively hammer
+// the key-revocation route after losing its local credentials. Normal users
+// call this endpoint only during deliberate sign-out.
+export const deviceRevokeLimit: RequestHandler = isTest
+  ? noop
+  : rateLimit({
+      windowMs: 60 * 1000,
+      max: isDev ? 100 : 10,
+      standardHeaders: true,
+      legacyHeaders: false,
+      validate: { trustProxy: false },
+      message: { error: 'Too many device revocation attempts, please try again later' },
+    });
+
 // Auth limit. The bucket is per-IP, and a single user-facing sign-in
 // attempt burns two slots (POST /request-otp + POST /verify-otp), so
 // the effective ceiling is `max / 2` end-to-end attempts per window.

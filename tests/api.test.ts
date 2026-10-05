@@ -98,7 +98,32 @@ describe('Auth', () => {
     const res = await request(app)
       .post('/v1/auth/verify-otp')
       .send({ email: 'test1001@test.com', code: '000000' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /v1/auth/verify-otp treats a missing or expired code as a bad request', async () => {
+    const res = await request(app)
+      .post('/v1/auth/verify-otp')
+      .send({ email: 'missing-otp@test.com', code: '000000' });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /v1/auth/verify-otp rate-limits repeated wrong codes', async () => {
+    const email = 'otp-attempt-limit@test.com';
+    await request(app).post('/v1/auth/request-otp').send({ email });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await request(app)
+        .post('/v1/auth/verify-otp')
+        .send({ email, code: '000000' })
+        .expect(400);
+    }
+
+    await request(app)
+      .post('/v1/auth/verify-otp')
+      .send({ email, code: '000000' })
+      .expect(429);
   });
 
   test('POST /v1/auth/verify-otp requires display_name for new user', async () => {

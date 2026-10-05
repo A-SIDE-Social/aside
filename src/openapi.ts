@@ -326,6 +326,8 @@ export const openApiSpec = {
               },
             },
           },
+          '400': { description: 'Invalid, expired, or malformed code' },
+          '429': { description: 'OTP attempt or request rate limit exceeded' },
         },
       },
     },

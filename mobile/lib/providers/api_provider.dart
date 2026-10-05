@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/network/api_client.dart';
@@ -11,8 +13,8 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   return ApiClient(
     secureStorage: secureStorage,
     onAuthFailure: () {
-      // Force sign-out when the interceptor cannot refresh the token.
-      ref.read(authProvider.notifier).signOut();
+      // Session recovery failed. Do not call authenticated cleanup routes.
+      unawaited(ref.read(authProvider.notifier).handleAuthFailure());
     },
   );
 });
