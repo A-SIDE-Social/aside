@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
+import { deviceRevokeLimit } from '../middleware/rateLimit';
 import authRouter from './auth';
 import usersRouter from './users';
 import followsRouter from './follows';
@@ -46,6 +47,7 @@ router.use('/conversations', authenticate, conversationsRouter);
 // handlers; data model stays internally named `groups`.
 router.use('/lists', authenticate, groupsRouter);
 router.use('/groups', authenticate, groupsRouter);
+router.post('/devices/revoke', deviceRevokeLimit);
 router.use('/devices', authenticate, devicesRouter);
 router.use('/dm-attachments', authenticate, dmAttachmentsRouter);
 router.use('/contacts', authenticate, contactsRouter);

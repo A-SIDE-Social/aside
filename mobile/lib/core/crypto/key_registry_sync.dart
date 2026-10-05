@@ -96,9 +96,13 @@ class KeyRegistrySync {
   /// even if no keys exist (the server side is idempotent).
   Future<void> resetKeys() async {
     // Server first so any stale keys are neutralized even if local
-    // wipe somehow fails partway.
-    await _api.revokeDeviceKeys();
-    await _signal.wipeKeys();
+    // wipe somehow fails partway. Always wipe local keys on a deliberate
+    // sign-out even if the best-effort server revocation cannot complete.
+    try {
+      await _api.revokeDeviceKeys();
+    } finally {
+      await _signal.wipeKeys();
+    }
   }
 
   /// Fetches a peer's bundle for session setup. Thin passthrough,

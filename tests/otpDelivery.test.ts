@@ -51,7 +51,7 @@ test.each([
   mockSendEmail.mockRejectedValue({ statusCode, code });
   await requestOtp().expect(expected);
   expect((await otpRows())[0].valid).toBe(false);
-  await request(app).post('/v1/auth/verify-otp').send({ email, code: sentCode() }).expect(401);
+  await request(app).post('/v1/auth/verify-otp').send({ email, code: sentCode() }).expect(400);
   await requestOtp().expect(429);
   expect(mockSendEmail).toHaveBeenCalledTimes(1);
   await query("UPDATE email_otps SET created_at = clock_timestamp() - INTERVAL '31 seconds' WHERE email = $1", [email]);

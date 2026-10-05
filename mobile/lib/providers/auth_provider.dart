@@ -34,11 +34,7 @@ class AuthState {
     this.isNewRegistration = false,
   });
 
-  AuthState copyWith({
-    AuthStatus? status,
-    User? user,
-    String? error,
-  }) {
+  AuthState copyWith({AuthStatus? status, User? user, String? error}) {
     return AuthState(
       status: status ?? this.status,
       user: user ?? this.user,
@@ -70,14 +66,14 @@ class AuthNotifier extends Notifier<AuthState> {
     PushNotificationService? pushService,
     bool autoInitialize = true,
     User? initialUser,
-  })  : _injectedSecureStorage = secureStorage,
-        _injectedApiService = apiService,
-        _injectedOnDeepLink = onDeepLink,
-        _injectedKeyRegistrySync = keyRegistrySync,
-        _injectedSocketService = socketService,
-        _injectedPushService = pushService,
-        _autoInitialize = autoInitialize,
-        _initialUser = initialUser;
+  }) : _injectedSecureStorage = secureStorage,
+       _injectedApiService = apiService,
+       _injectedOnDeepLink = onDeepLink,
+       _injectedKeyRegistrySync = keyRegistrySync,
+       _injectedSocketService = socketService,
+       _injectedPushService = pushService,
+       _autoInitialize = autoInitialize,
+       _initialUser = initialUser;
 
   // Test-injection slots — null in production.
   final SecureStorage? _injectedSecureStorage;
@@ -97,6 +93,7 @@ class AuthNotifier extends Notifier<AuthState> {
   KeyRegistrySync? _keyRegistrySync;
   SocketService? _socketService;
   PushNotificationService? _pushService;
+  Future<void>? _signOutInFlight;
 
   @override
   AuthState build() {
@@ -116,22 +113,23 @@ class AuthNotifier extends Notifier<AuthState> {
       final apiClient = ApiClient(
         secureStorage: _secureStorage,
         onAuthFailure: () {
-          // Called by the interceptor on unrecoverable 401. Drop into
-          // our own signOut() so storage + state stay consistent.
-          // Fire-and-forget — interceptor doesn't await.
-          // ignore: discarded_futures
-          signOut();
+          // An unrecoverable session failure cannot safely call protected
+          // cleanup endpoints. Clear only local session state and preserve
+          // the E2EE identity for the next successful authentication.
+          unawaited(handleAuthFailure());
         },
       );
       _apiService = ApiService(apiClient);
     }
 
-    _keyRegistrySync = _injectedKeyRegistrySync ??
+    _keyRegistrySync =
+        _injectedKeyRegistrySync ??
         KeyRegistrySync(ref.read(signalClientProvider), _apiService);
     _socketService = _injectedSocketService ?? ref.read(socketServiceProvider);
     _pushService = _injectedPushService;
 
-    _onDeepLink = _injectedOnDeepLink ??
+    _onDeepLink =
+        _injectedOnDeepLink ??
         (route) {
           ref.read(pendingDeepLinkProvider.notifier).set(route);
         };
@@ -147,10 +145,7 @@ class AuthNotifier extends Notifier<AuthState> {
     }
 
     if (_initialUser != null) {
-      return AuthState(
-        status: AuthStatus.authenticated,
-        user: _initialUser,
-      );
+      return AuthState(status: AuthStatus.authenticated, user: _initialUser);
     }
     return const AuthState();
   }
@@ -245,8 +240,8 @@ class AuthNotifier extends Notifier<AuthState> {
     } on DioException catch (e) {
       final status = e.response?.statusCode;
       if (status == 401 || status == 403) {
-        // Auth is truly invalid — clear everything.
-        await _secureStorage.clearAll();
+        await handleAuthFailure();
+        return;
       }
       // For network/server errors, keep tokens so next launch can retry.
       state = state.copyWith(status: AuthStatus.unauthenticated);
@@ -280,8 +275,9 @@ class AuthNotifier extends Notifier<AuthState> {
       final responseMap = data as Map<String, dynamic>;
       final token =
           (responseMap['access_token'] ?? responseMap['token']) as String;
-      final refreshToken = (responseMap['refresh_token'] ??
-          responseMap['refreshToken']) as String;
+      final refreshToken =
+          (responseMap['refresh_token'] ?? responseMap['refreshToken'])
+              as String;
       final userData = responseMap['user'] as Map<String, dynamic>;
 
       await _secureStorage.setAuthToken(token);
@@ -336,7 +332,7 @@ class AuthNotifier extends Notifier<AuthState> {
     try {
       final refreshToken = await _secureStorage.getRefreshToken();
       if (refreshToken == null) {
-        await signOut();
+        await handleAuthFailure();
         return;
       }
 
@@ -344,8 +340,9 @@ class AuthNotifier extends Notifier<AuthState> {
       final responseMap = data as Map<String, dynamic>;
       final newToken =
           (responseMap['access_token'] ?? responseMap['token']) as String;
-      final newRefreshToken = (responseMap['refresh_token'] ??
-          responseMap['refreshToken']) as String?;
+      final newRefreshToken =
+          (responseMap['refresh_token'] ?? responseMap['refreshToken'])
+              as String?;
 
       await _secureStorage.setAuthToken(newToken);
       if (newRefreshToken != null) {
@@ -354,30 +351,55 @@ class AuthNotifier extends Notifier<AuthState> {
       // Keep App Group token in sync
       await AppGroupChannel.setToken(newToken);
     } catch (_) {
-      await signOut();
+      await handleAuthFailure();
     }
   }
 
-  /// Sign out: clear tokens and set state to unauthenticated.
-  Future<void> signOut() async {
-    try {
-      final refreshToken = await _secureStorage.getRefreshToken();
-      if (refreshToken != null) {
-        await _apiService.logout(refreshToken);
+  /// Clear an invalid local session without making authenticated requests.
+  /// The E2EE identity remains intact so a later sign-in can reuse the key
+  /// bundle that is still active on the server.
+  Future<void> handleAuthFailure() =>
+      _beginSignOut(performServerCleanup: false);
+
+  /// Deliberate user sign-out: best-effort server cleanup, then local cleanup.
+  Future<void> signOut() => _beginSignOut(performServerCleanup: true);
+
+  Future<void> _beginSignOut({required bool performServerCleanup}) {
+    final inFlight = _signOutInFlight;
+    if (inFlight != null) return inFlight;
+
+    late final Future<void> operation;
+    operation = _performSignOut(performServerCleanup: performServerCleanup)
+        .whenComplete(() {
+          if (identical(_signOutInFlight, operation)) {
+            _signOutInFlight = null;
+          }
+        });
+    _signOutInFlight = operation;
+    return operation;
+  }
+
+  Future<void> _performSignOut({required bool performServerCleanup}) async {
+    if (performServerCleanup) {
+      try {
+        final refreshToken = await _secureStorage.getRefreshToken();
+        if (refreshToken != null) {
+          await _apiService.logout(refreshToken);
+        }
+      } catch (_) {
+        // Best-effort server logout; continue clearing local state.
       }
-    } catch (_) {
-      // Best-effort server logout; continue clearing local state.
+      try {
+        await _keyRegistrySync?.resetKeys();
+      } catch (_) {}
+      try {
+        await _pushService?.unregister();
+      } catch (_) {}
     }
-    // Revoke E2EE keys on server and wipe locally. Best-effort —
-    // losing Keychain access or a network blip shouldn't block
-    // sign-out; the server has per-user-revoke idempotent semantics
-    // so a retry later is safe.
-    try {
-      await _keyRegistrySync?.resetKeys();
-    } catch (_) {}
     _socketService?.disconnect();
-    await _pushService?.unregister();
-    await RevenueCatService.logOut();
+    try {
+      await RevenueCatService.logOut();
+    } catch (_) {}
     await _secureStorage.clearAll();
     await AppGroupChannel.clearToken();
     state = const AuthState(status: AuthStatus.unauthenticated);
@@ -399,5 +421,6 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 }
 
-final authProvider =
-    NotifierProvider<AuthNotifier, AuthState>(AuthNotifier.new);
+final authProvider = NotifierProvider<AuthNotifier, AuthState>(
+  AuthNotifier.new,
+);

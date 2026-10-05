@@ -381,14 +381,14 @@ router.post(
       `SELECT * FROM email_otps WHERE email = $1 AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1`,
       [normalizedEmail],
     );
-    if (otps.length === 0) throw new AppError(401, 'Invalid or expired code');
+    if (otps.length === 0) throw new AppError(400, 'Invalid or expired code');
 
     const otp = otps[0];
 
     // Check attempt limit
     if (otp.attempts >= 5) {
       await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
-      throw new AppError(401, 'Too many attempts. Please request a new code.');
+      throw new AppError(429, 'Too many attempts. Please request a new code.');
     }
 
     // Increment attempts
@@ -397,7 +397,7 @@ router.post(
     // Compare hashes
     const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
     if (submittedHash !== otp.code_hash) {
-      throw new AppError(401, 'Invalid code');
+      throw new AppError(400, 'Invalid code');
     }
 
     // OTP is valid — resolve user (may throw 400 if display_name needed)

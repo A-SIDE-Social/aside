@@ -1,8 +1,25 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 
 import 'package:aside/core/network/api_client.dart';
+import 'package:aside/core/network/api_endpoints.dart';
+import 'package:aside/core/network/api_service.dart';
 import '../../helpers/mocks.dart';
+
+Future<HttpServer> unauthorizedServer() async {
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  server.listen((request) async {
+    request.response
+      ..statusCode = HttpStatus.unauthorized
+      ..headers.contentType = ContentType.json
+      ..write('{"error":"unauthorized"}');
+    await request.response.close();
+  });
+  return server;
+}
 
 void main() {
   group('ApiException', () {
@@ -80,10 +97,12 @@ void main() {
       final client = ApiClient(secureStorage: mockStorage);
       expect(client.dio, isNotNull);
       expect(client.dio.options.connectTimeout, const Duration(seconds: 30));
-      expect(
-        ['ios', 'android', 'web', 'other'],
-        contains(client.dio.options.headers['X-A-Side-Client-Platform']),
-      );
+      expect([
+        'ios',
+        'android',
+        'web',
+        'other',
+      ], contains(client.dio.options.headers['X-A-Side-Client-Platform']));
       expect(client.dio.options.headers['X-A-Side-Client-Generation'], '2');
       expect(client.dio.options.headers['X-A-Side-Request-Attempt'], 'initial');
     });
@@ -104,6 +123,77 @@ void main() {
         onAuthFailure: () {},
       );
       expect(client, isNotNull);
+    });
+  });
+
+  group('ApiClient auth recovery boundaries', () {
+    test('does not treat an OTP verification 401 as session expiry', () async {
+      final server = await unauthorizedServer();
+      addTearDown(() => server.close(force: true));
+      final storage = MockSecureStorage();
+      when(() => storage.getAuthToken()).thenAnswer((_) async => null);
+      var authFailures = 0;
+      final client = ApiClient(
+        secureStorage: storage,
+        onAuthFailure: () => authFailures += 1,
+      );
+      client.dio.options.baseUrl =
+          'http://${InternetAddress.loopbackIPv4.address}:${server.port}';
+
+      await expectLater(
+        client.dio.post(ApiEndpoints.verifyOtp),
+        throwsA(isA<DioException>()),
+      );
+
+      expect(authFailures, 0);
+      verifyNever(() => storage.getRefreshToken());
+    });
+
+    test(
+      'calls auth failure once for a protected 401 without refresh token',
+      () async {
+        final server = await unauthorizedServer();
+        addTearDown(() => server.close(force: true));
+        final storage = MockSecureStorage();
+        when(() => storage.getAuthToken()).thenAnswer((_) async => null);
+        when(() => storage.getRefreshToken()).thenAnswer((_) async => null);
+        var authFailures = 0;
+        final client = ApiClient(
+          secureStorage: storage,
+          onAuthFailure: () => authFailures += 1,
+        );
+        client.dio.options.baseUrl =
+            'http://${InternetAddress.loopbackIPv4.address}:${server.port}';
+
+        await expectLater(
+          client.dio.get(ApiEndpoints.me),
+          throwsA(isA<DioException>()),
+        );
+
+        expect(authFailures, 1);
+      },
+    );
+
+    test('does not recover authentication for sign-out cleanup 401s', () async {
+      final server = await unauthorizedServer();
+      addTearDown(() => server.close(force: true));
+      final storage = MockSecureStorage();
+      when(() => storage.getAuthToken()).thenAnswer((_) async => null);
+      var authFailures = 0;
+      final client = ApiClient(
+        secureStorage: storage,
+        onAuthFailure: () => authFailures += 1,
+      );
+      client.dio.options.baseUrl =
+          'http://${InternetAddress.loopbackIPv4.address}:${server.port}';
+
+      await expectLater(
+        ApiService(client).revokeDeviceKeys(),
+        throwsA(isA<DioException>()),
+      );
+
+      expect(authFailures, 0);
+      verifyNever(() => storage.getRefreshToken());
     });
   });
 }
