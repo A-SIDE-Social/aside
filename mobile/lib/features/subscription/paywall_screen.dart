@@ -23,7 +23,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   @override
   void initState() {
     super.initState();
-    ref.read(subscriptionProvider.notifier).loadOfferings();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(subscriptionProvider.notifier).loadOfferings();
+    });
   }
 
   Package? _getSelectedPackage(Offerings? offerings) {
@@ -170,7 +172,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                       child: Text(
                         package != null
                             ? 'Subscribe for ${package.storeProduct.priceString}'
-                            : 'Loading...',
+                            : sub.isLoadingOfferings || !sub.hasLoadedOfferings
+                                ? 'Loading plans...'
+                                : 'Plans unavailable',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -187,6 +191,16 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                       textAlign: TextAlign.center,
                     ),
                   ],
+
+                  if (sub.offerings == null &&
+                      sub.hasLoadedOfferings &&
+                      !sub.isLoadingOfferings)
+                    TextButton(
+                      onPressed: () => ref
+                          .read(subscriptionProvider.notifier)
+                          .loadOfferings(),
+                      child: const Text('Try again'),
+                    ),
 
                   const SizedBox(height: 16),
 
