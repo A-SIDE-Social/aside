@@ -38,6 +38,8 @@ class FamilyInfo {
 
 class SubscriptionState {
   final bool isLoading;
+  final bool isLoadingOfferings;
+  final bool hasLoadedOfferings;
   final Offerings? offerings;
   final String subscriptionPlan;
   final String subscriptionStatus;
@@ -47,6 +49,8 @@ class SubscriptionState {
 
   const SubscriptionState({
     this.isLoading = false,
+    this.isLoadingOfferings = false,
+    this.hasLoadedOfferings = false,
     this.offerings,
     this.subscriptionPlan = 'free',
     this.subscriptionStatus = 'free',
@@ -57,7 +61,10 @@ class SubscriptionState {
 
   SubscriptionState copyWith({
     bool? isLoading,
+    bool? isLoadingOfferings,
+    bool? hasLoadedOfferings,
     Offerings? offerings,
+    bool clearOfferings = false,
     String? subscriptionPlan,
     String? subscriptionStatus,
     DateTime? periodEnd,
@@ -66,7 +73,9 @@ class SubscriptionState {
   }) {
     return SubscriptionState(
       isLoading: isLoading ?? this.isLoading,
-      offerings: offerings ?? this.offerings,
+      isLoadingOfferings: isLoadingOfferings ?? this.isLoadingOfferings,
+      hasLoadedOfferings: hasLoadedOfferings ?? this.hasLoadedOfferings,
+      offerings: clearOfferings ? null : offerings ?? this.offerings,
       subscriptionPlan: subscriptionPlan ?? this.subscriptionPlan,
       subscriptionStatus: subscriptionStatus ?? this.subscriptionStatus,
       periodEnd: periodEnd ?? this.periodEnd,
@@ -82,13 +91,26 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
 
   /// Load RevenueCat offerings (available packages for purchase).
   Future<void> loadOfferings() async {
+    if (state.isLoadingOfferings) return;
+    state = state.copyWith(isLoadingOfferings: true, clearOfferings: true);
     try {
       final offerings = await RevenueCatService.getOfferings();
       if (!ref.mounted) return;
-      state = state.copyWith(offerings: offerings);
+      state = state.copyWith(
+        offerings: offerings,
+        isLoadingOfferings: false,
+        hasLoadedOfferings: true,
+        error: offerings.current?.availablePackages.isNotEmpty == true
+            ? null
+            : RevenueCatService.unavailableMessage,
+      );
     } catch (e) {
       if (ref.mounted) {
-        state = state.copyWith(error: 'Failed to load offerings: $e');
+        state = state.copyWith(
+          isLoadingOfferings: false,
+          hasLoadedOfferings: true,
+          error: RevenueCatService.unavailableMessage,
+        );
       }
     }
   }

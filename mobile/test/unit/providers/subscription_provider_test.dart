@@ -18,8 +18,10 @@ void main() {
       () async {
     const channel = MethodChannel('purchases_flutter');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-            channel, (_) async => throw PlatformException(code: '1'));
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'isConfigured') return true;
+      throw PlatformException(code: '1');
+    });
     addTearDown(() => TestDefaultBinaryMessengerBinding
         .instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null));
