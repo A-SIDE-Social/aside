@@ -9,6 +9,7 @@ import 'package:aside/models/post.dart';
 import 'package:aside/models/user.dart';
 import 'package:aside/providers/auth_provider.dart';
 import 'package:aside/providers/feed_updates_provider.dart';
+import 'package:aside/providers/feed_provider.dart';
 import '../../../helpers/fixtures.dart';
 import '../../../helpers/mocks.dart';
 
@@ -50,6 +51,53 @@ void main() {
   }
 
   group('FeedScreen', () {
+    testWidgets('failed pagination keeps posts and retries only after a tap',
+        (tester) async {
+      var pageCalls = 0;
+      when(() => mockApi.getFeed(
+            before: any(named: 'before'),
+            groupId: any(named: 'groupId'),
+          )).thenAnswer((invocation) async {
+        if (invocation.namedArguments[#before] == null) {
+          return {
+            'posts': List.generate(
+                20, (i) => postJson(id: 'p$i', caption: 'Post $i', media: []))
+          };
+        }
+        if (++pageCalls == 1) throw Exception('Offline');
+        return {
+          'posts': [postJson(id: 'next', caption: 'Next page', media: [])]
+        };
+      });
+      stubGroupsEmpty();
+      await tester.pumpWidget(createFeedScreen());
+      await tester.pumpAndSettle();
+      Navigator.of(tester.element(find.byType(FeedScreen))).pop();
+      await tester.pumpAndSettle();
+      final container =
+          ProviderScope.containerOf(tester.element(find.byType(FeedScreen)));
+      await container.read(feedNotifierProvider.notifier).loadMore();
+      await tester.pumpAndSettle();
+      expect(container.read(feedNotifierProvider.notifier).pageFailed, isTrue);
+      final controller = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      for (var i = 0;
+          i < 20 && find.text('Retry loading posts').evaluate().isEmpty;
+          i++) {
+        controller.jumpTo(controller.position.maxScrollExtent);
+        await tester.pumpAndSettle();
+      }
+      expect(find.text('Retry loading posts'), findsOneWidget);
+      expect(pageCalls, 1);
+      expect(container.read(feedNotifierProvider).value, hasLength(20));
+      await tester.tap(find.text('Retry loading posts'));
+      await tester.pumpAndSettle();
+      expect(pageCalls, 2);
+      expect(container.read(feedNotifierProvider).value!.last.id, 'next');
+      expect(find.text('Retry loading posts'), findsNothing);
+    });
+
     testWidgets('new posts wait for a tap and clear after a successful refresh',
         (tester) async {
       when(() => mockApi.getFeed(
