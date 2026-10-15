@@ -2,7 +2,7 @@
 
 A small first step for the single DigitalOcean droplet: private API histograms,
 a local once-per-minute collector, and a deterministic report. No hosted APM,
-user tracking, request logs, public metrics endpoint, or AI-powered polling.
+user tracking, request logs, public metrics endpoint, or external polling.
 
 ## Enable
 
@@ -74,6 +74,22 @@ not backfill missed samples. It records missing API observations explicitly.
   instrumentation is absent or no matching operations occurred.
 - Slow-route rows also show the number of successful requests over one second
   and 2.5 seconds. Check these counts alongside p95 when traffic is sparse.
+- `feed_request_contexts` groups authenticated feed handler timings by
+  `initial` versus `cursor`, `all` versus `list`, declared client platform,
+  and `ok` versus `error`. Only the presence of a cursor/list is classified;
+  their values are never retained. Rows include counts, p95, responses over
+  one second, active minutes and peak requests per minute. They cannot establish
+  whether concurrent calls came from one installation or several. The new
+  API and collector must both be deployed; `feed_context_coverage_pct` reports
+  this window independently, and absent history returns null rather than zero
+  requests. Older collectors continue to work without the new family.
+- Feed stages in `operation_stages` separate subscription lookup, selection,
+  media, comment counts/previews, likes, reactions and older-post checks.
+  `feed_handler` contains these stages; do not add their percentiles. The list
+  ownership check and post selection both use `feed_select`. The same opt-in,
+  container-loopback access and 14-date root-only retention apply. Even fixed
+  categories can reveal coarse usage timing in low-traffic periods; these
+  measurements must remain private and must not be joined to user-level data.
 - Query-helper latency includes acquiring the pool connection. Separately,
   pool-wait timing covers explicit `getClient()` calls used for transactions.
   Individual statements inside those transactions are not timed. The pool's

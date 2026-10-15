@@ -4,33 +4,37 @@ import { asyncHandler, resolvePostMedia, resolveMediaUrl, getUserSubscriptionSta
 import { AppError } from '../middleware/errorHandler';
 import { getPlanLimits, LIMITS } from '../constants';
 import { postAudiencePredicate } from '../lib/postAudience';
+import { measureFeedHandler, measureStage, performanceStages } from '../performance';
 
 const router = Router();
+type FeedStage = Extract<typeof performanceStages[number], `feed_${string}`>;
+const feedQuery = (stage: FeedStage, ...args: Parameters<typeof query>) =>
+  measureStage(stage, () => query(...args));
 
 // GET / - Chronological feed from mutual follows
 router.get(
   '/',
-  asyncHandler(async (req: any, res: any) => {
+  asyncHandler(measureFeedHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
     const before = parseBeforeCursor(req.query.before);
     const groupId = (req.query.group_id as string) || null;
     const excludeOwn = req.query.exclude_own === 'true';
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || LIMITS.postsPerPage, 1), LIMITS.postsPerPage);
 
-    const status = await getUserSubscriptionStatus(userId);
+    const status = await measureStage('feed_subscription', () => getUserSubscriptionStatus(userId));
     const { feedHistoryDays } = getPlanLimits(status);
 
     let posts;
 
     if (groupId) {
       // Verify the group belongs to the current user
-      const { rows: groups } = await query(
+      const { rows: groups } = await feedQuery('feed_select',
         'SELECT id FROM groups WHERE id = $1 AND user_id = $2',
         [groupId, userId],
       );
       if (groups.length === 0) throw new AppError(404, 'Group not found');
 
-      const { rows } = await query(
+      const { rows } = await feedQuery('feed_select',
         `SELECT p.*, u.username, u.display_name, u.avatar_url
          FROM posts p
          JOIN users u ON u.id = p.user_id
@@ -55,7 +59,7 @@ router.get(
       );
       posts = rows;
     } else {
-      const { rows } = await query(
+      const { rows } = await feedQuery('feed_select',
         `SELECT p.*, u.username, u.display_name, u.avatar_url
          FROM posts p
          JOIN users u ON u.id = p.user_id
@@ -83,7 +87,7 @@ router.get(
     // Fetch media for all posts
     if (posts.length > 0) {
       const postIds = posts.map((p: any) => p.id);
-      const { rows: media } = await query(
+      const { rows: media } = await feedQuery('feed_media',
         `SELECT * FROM post_media WHERE post_id = ANY($1) ORDER BY position ASC`,
         [postIds],
       );
@@ -99,7 +103,7 @@ router.get(
       // deleted, so the badge count matches what the comments sheet
       // actually renders (the sheet uses the same filter — see
       // src/routes/comments.ts).
-      const { rows: commentCounts } = await query(
+      const { rows: commentCounts } = await feedQuery('feed_comment_counts',
         `SELECT c.post_id, COUNT(*)::int AS comment_count
          FROM comments c
          LEFT JOIN comments parent_c ON parent_c.id = c.reply_to_comment_id
@@ -114,7 +118,7 @@ router.get(
         countByPost.set(c.post_id, c.comment_count);
       }
 
-      const { rows: recentComments } = await query(
+      const { rows: recentComments } = await feedQuery('feed_comment_preview',
         `SELECT DISTINCT ON (c.post_id, c.id)
            c.id, c.post_id, c.user_id, c.body, c.created_at,
            u.display_name, u.avatar_url
@@ -147,19 +151,15 @@ router.get(
       }
 
       // Like enrichment
-      const { rows: likeCounts } = await query(
-        `SELECT post_id, COUNT(*)::int AS like_count
+      const { rows: likeCounts } = await feedQuery('feed_likes',
+        `SELECT post_id, COUNT(*)::int AS like_count,
+                BOOL_OR(user_id = $2) AS liked_by_me
          FROM post_likes WHERE post_id = ANY($1) GROUP BY post_id`,
-        [postIds],
+        [postIds, userId],
       );
       const likeCountByPost = new Map<string, number>();
       for (const lc of likeCounts) likeCountByPost.set(lc.post_id, lc.like_count);
-
-      const { rows: userLikes } = await query(
-        'SELECT post_id FROM post_likes WHERE post_id = ANY($1) AND user_id = $2',
-        [postIds, userId],
-      );
-      const likedByUser = new Set(userLikes.map((l: any) => l.post_id));
+      const likedByUser = new Set(likeCounts.filter((lc: any) => lc.liked_by_me).map((lc: any) => lc.post_id));
 
       // Reaction enrichment. One query gets {post_id, emoji, count,
       // reacted_by_me} for the entire page. Defensive try/catch so
@@ -168,7 +168,7 @@ router.get(
       // been applied yet on this server.
       const reactionsByPost = new Map<string, any[]>();
       try {
-        const { rows: reactionRows } = await query(
+        const { rows: reactionRows } = await feedQuery('feed_reactions',
           `SELECT post_id, emoji,
                   COUNT(*)::int AS count,
                   BOOL_OR(user_id = $2) AS reacted_by_me
@@ -232,7 +232,7 @@ router.get(
     // currently selected list. Correct enough for the upsell signal.
     let hasOlderPosts = false;
     if (feedHistoryDays != null && before === null) {
-      const { rows: olderCheck } = await query(
+      const { rows: olderCheck } = await feedQuery('feed_older_posts',
         `SELECT EXISTS (
            SELECT 1 FROM posts p
            WHERE p.deleted_at IS NULL
@@ -254,7 +254,7 @@ router.get(
     }
 
     res.json({ posts, has_older_posts: hasOlderPosts });
-  }),
+  })),
 );
 
 export default router;
