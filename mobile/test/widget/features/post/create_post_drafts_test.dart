@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:aside/features/post/create_post_screen.dart';
@@ -31,8 +32,10 @@ class _TextDraftStorage extends DraftStorage {
   @override
   Future<void> removeMedia(String owner, String id) async {}
   bool failWrites = false;
+  Completer<void>? pendingWrite;
   @override
   Future<void> write(String owner, List<PostDraft> drafts) async {
+    await pendingWrite?.future;
     if (failWrites) throw const FileSystemException('Storage full');
     await super.write(owner, drafts);
   }
@@ -73,10 +76,17 @@ void main() {
     directory.deleteSync(recursive: true);
   });
 
-  Future<void> open(WidgetTester tester) async {
+  Future<void> open(WidgetTester tester, {double textScale = 1}) async {
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
-      child: MaterialApp.router(routerConfig: router),
+      child: MaterialApp.router(
+        routerConfig: router,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(textScale)),
+          child: child!,
+        ),
+      ),
     ));
     await tester.pumpAndSettle();
     router.push('/post/new');
@@ -138,6 +148,54 @@ void main() {
     expect(find.text('Home'), findsOneWidget);
     expect(container.read(draftProvider).single.caption, 'Saved by Back');
   });
+
+  for (final textScale in [1.0, 2.0]) {
+    testWidgets('draft status never moves the editor at text scale $textScale',
+        (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await open(tester, textScale: textScale);
+      await tester.tap(find.text('Text post'));
+      await tester.pumpAndSettle();
+      final field = find.byType(TextField).first;
+      final position = tester.getTopLeft(field);
+      void expectStable(String status) {
+        expect(find.text(status).hitTestable(), findsOneWidget);
+        expect(tester.getTopLeft(field), position);
+      }
+
+      expectStable('Drafts save on this device');
+      storage.pendingWrite = Completer<void>();
+      await tester.enterText(field, 'First thought');
+      await tester.pump(const Duration(milliseconds: 800));
+      expectStable('Saving draft…');
+      storage.pendingWrite!.complete();
+      storage.pendingWrite = null;
+      await tester.pumpAndSettle();
+      expectStable('Draft saved on this device');
+
+      storage.failWrites = true;
+      await tester.enterText(field, 'Revised thought');
+      await tester.pump();
+      expectStable('Saving draft…');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+      expectStable('Draft couldn’t be saved. Try again.');
+
+      storage.failWrites = false;
+      await tester.enterText(field, 'Ready for later');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+      expectStable('Draft saved on this device');
+
+      await tester.enterText(field, '');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+      expectStable('Drafts save on this device');
+    });
+  }
 
   testWidgets('a failed save keeps the editor open for a retry',
       (tester) async {

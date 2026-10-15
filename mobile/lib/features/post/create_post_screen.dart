@@ -134,73 +134,76 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text('Take photo'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _pickFromCamera().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Choose from library'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _pickFromLibrary().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined),
-              title: Text('Record video (${_maxVideoSeconds}s)'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _recordVideo().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.video_library_outlined),
-              title: Text('Choose video from library (${_maxVideoSeconds}s)'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _pickVideoFromLibrary().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.text_fields_outlined),
-              title: const Text('Text post'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _edit(() => _isTextPost = true);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.close),
-              title: const Text('Cancel'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                context.pop();
-              },
-            ),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: const Text('Take photo'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _pickFromCamera().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Choose from library'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _pickFromLibrary().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.videocam_outlined),
+                title: Text('Record video (${_maxVideoSeconds}s)'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _recordVideo().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.video_library_outlined),
+                title: Text('Choose video from library (${_maxVideoSeconds}s)'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _pickVideoFromLibrary().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.text_fields_outlined),
+                title: const Text('Text post'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _edit(() => _isTextPost = true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.close),
+                title: const Text('Cancel'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  context.pop();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     ).then((_) {
@@ -853,6 +856,43 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   bool get _hasDraftContent =>
       _media.isNotEmpty || _captionController.text.trim().isNotEmpty;
 
+  static const _draftStatusMessages = [
+    'Drafts save on this device',
+    'Saving draft…',
+    'Draft saved on this device',
+    'Draft couldn’t be saved. Try again.',
+  ];
+
+  Widget _buildDraftStatus(AppColorTokens colors, ThemeData theme) {
+    final message = _draftError ??
+        (!_hasDraftContent
+            ? _draftStatusMessages[0]
+            : _draftSaved
+                ? _draftStatusMessages[2]
+                : _draftStatusMessages[1]);
+    final style = theme.textTheme.bodySmall?.copyWith(
+      color:
+          _draftError == null ? colors.textSecondary : theme.colorScheme.error,
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      // Reserve the tallest status at the current width and text scale, so
+      // saving, success and errors never move the editor underneath it.
+      child: Stack(
+        children: [
+          for (final status in _draftStatusMessages)
+            Visibility(
+              visible: status == message,
+              maintainSize: true,
+              maintainAnimation: true,
+              maintainState: true,
+              child: Text(status, style: style),
+            ),
+        ],
+      ),
+    );
+  }
+
   void _edit(VoidCallback change) {
     setState(change);
     _scheduleDraftSave();
@@ -862,7 +902,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
     _draftTimer?.cancel();
     if (_published || _isPosting || _closing) return;
     _draftRevision++;
-    _draftSaved = false;
+    if (_draftSaved) setState(() => _draftSaved = false);
     _draftTimer = Timer(const Duration(milliseconds: 700), () {
       unawaited(_saveDraftSafely());
     });
@@ -1234,18 +1274,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                         ),
                       ),
                   ],
-                  if (_draftError != null || (_draftSaved && _hasDraftContent))
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                      child: Text(
-                        _draftError ?? 'Draft saved on this device',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: _draftError == null
-                              ? colors.textSecondary
-                              : theme.colorScheme.error,
-                        ),
-                      ),
-                    ),
+                  if (_isTextPost || hasMedia) _buildDraftStatus(colors, theme),
                   if (_isTextPost) ...[
                     // Text post: large centered input
                     Padding(
