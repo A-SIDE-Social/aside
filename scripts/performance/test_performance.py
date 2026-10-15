@@ -14,6 +14,44 @@ def sample(at, count=0, start=1, busy=False):
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_feed_contexts_are_allowlisted_and_do_not_duplicate_http_requests(self):
+        labels = dict(page_kind='cursor', filter_kind='all', client_platform='ios', outcome='ok')
+        def value(labels, count=1, suffix='count'):
+            return dict(labels=labels, value=count, metricName='aside_feed_duration_seconds_' + suffix)
+        payload = dict(started_at=1, metrics=[dict(name='aside_feed_duration_seconds', values=[
+            value(labels, 3), value(dict(labels, le='1'), 1, 'bucket'),
+            value(dict(labels, le='+Inf'), 3, 'bucket'),
+            value(dict(labels, page_kind='private')), value(dict(labels, filter_kind='private')),
+            value(dict(labels, client_platform='private')), value(dict(labels, outcome='private')),
+            value(dict(labels, user_id='secret')), value(dict(labels, le='secret'), 1, 'bucket'),
+        ])])
+        compact = p.compact(payload)
+        key = json.dumps(list(labels.values()), separators=(',', ':'))
+        self.assertEqual(compact['feed'], {key: {'n': 3, 'b': {'1': 1, '+Inf': 3}}})
+        self.assertNotIn('private', json.dumps(compact))
+        self.assertNotIn('secret', json.dumps(compact))
+        records = [sample(1000), sample(1060), sample(1120, 3), sample(1180, 6)]
+        records[1]['api']['feed'] = {}
+        records[2]['api']['feed'] = compact['feed']
+        records[3]['api']['feed'] = {key: {'n': 6, 'b': {'1': 2, '+Inf': 6}}}
+        report = p.summarize(records, 1180, 1)
+        self.assertEqual(report['requests_excluding_health'], 6)
+        self.assertEqual(report['feed_context_coverage_pct'], 3.3)
+        self.assertEqual(report['feed_request_contexts'], [dict(labels, requests=6, p95_ms=1000,
+                         over_1s=4, active_minutes=2, max_per_minute=3)])
+        self.assertIsNone(p.summarize(records[:1], 1000, 1)['feed_request_contexts'])
+        self.assertEqual(p.summarize(records[:1], 1000, 1)['feed_context_coverage_pct'], 0)
+
+    def test_feed_contexts_exclude_restarts_gaps_and_counter_resets(self):
+        key = json.dumps(['initial', 'list', 'android', 'ok'])
+        records = [sample(1000), sample(1060), sample(1120, start=2),
+                   sample(1180, start=2), sample(1240, start=2), sample(1900, start=2)]
+        for record, n in zip(records, [5, 7, 10, 11, 0, 100]):
+            record['api']['feed'] = {key: {'n': n, 'b': {'1': n, '+Inf': n}}}
+        report = p.summarize(records, 1900, 1)
+        self.assertEqual(report['feed_request_contexts'][0]['requests'], 3)
+        self.assertEqual(report['feed_request_contexts'][0]['max_per_minute'], 2)
+
     def test_failure_details_and_stages_are_bounded_and_private(self):
         def counter(labels, value=2):
             return {'labels': labels, 'value': value}

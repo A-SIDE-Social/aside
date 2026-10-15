@@ -2816,6 +2816,18 @@ describe('Post Likes', () => {
     expect(feedPost.is_liked).toBe(false);
   });
 
+  test('feed like counts include other users without marking the viewer as liking', async () => {
+    const created = await request(app).post('/v1/posts').set('Authorization', `Bearer ${tokenB}`)
+      .send({ caption: 'Like aggregation' }).expect(201);
+    const postId = created.body.post.id;
+    await request(app).post(`/v1/posts/${postId}/like`).set('Authorization', `Bearer ${tokenB}`).expect(200);
+    const feed = await request(app).get('/v1/feed').set('Authorization', `Bearer ${tokenA}`).expect(200);
+    expect(feed.body.posts.find((post: any) => post.id === postId)).toMatchObject({ like_count: 1, is_liked: false });
+    await request(app).post(`/v1/posts/${postId}/like`).set('Authorization', `Bearer ${tokenA}`).expect(200);
+    const likedFeed = await request(app).get('/v1/feed').set('Authorization', `Bearer ${tokenA}`).expect(200);
+    expect(likedFeed.body.posts.find((post: any) => post.id === postId)).toMatchObject({ like_count: 2, is_liked: true });
+  });
+
   test('GET /v1/posts/by-user/:id includes like_count and is_liked', async () => {
     await request(app)
       .post(`/v1/posts/${postId}/like`)
