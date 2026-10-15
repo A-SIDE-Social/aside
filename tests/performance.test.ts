@@ -1,7 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import { Histogram } from '@prometheus-io/client';
-import { measureHttp, measureMessageHandler, measureStage, performanceRegistry, startPerformanceServer } from '../src/performance';
+import { measureFeedHandler, measureHttp, measureMessageHandler, measureStage, performanceRegistry, startPerformanceServer } from '../src/performance';
 import { AppError, errorHandler } from '../src/middleware/errorHandler';
 import { authenticate } from '../src/middleware/auth';
 import { EventEmitter } from 'events';
@@ -48,7 +48,37 @@ test('does not instrument requests or start listener when disabled', async () =>
   expect((await performanceRegistry.getSingleMetric('aside_http_duration_seconds')!.get()).values).toHaveLength(0);
   expect(startPerformanceServer({ totalCount: 0, idleCount: 0, waitingCount: 0 })).toBeUndefined();
   await measureStage('otp_delivery', async () => 42);
+  await measureFeedHandler(async (_req, res) => { res.statusCode = 200; })({} as any, {} as any);
   expect((await performanceRegistry.getSingleMetric('aside_operation_stage_seconds')!.get()).values).toHaveLength(0);
+  expect((await performanceRegistry.getSingleMetric('aside_feed_duration_seconds')!.get()).values).toHaveLength(0);
+});
+
+test('feed timings retain only fixed categories and preserve handler failures', async () => {
+  const app = express().use(measureHttp);
+  const feed = express.Router();
+  feed.get('/', (req, res, next) => {
+    measureFeedHandler(async () => {
+      await measureStage('feed_select', async () => {});
+      if (req.query.before === 'rejected-cursor') throw new AppError(400, 'Invalid cursor');
+      res.json({ posts: [] });
+    })(req, res).catch(next);
+  });
+  app.use('/v1/feed', feed);
+  app.use(errorHandler);
+  await request(app).get('/v1/feed?before=private-cursor&group_id=private-group')
+    .set('Authorization', 'Bearer private-token').set('X-A-Side-Client-Platform', 'ios').expect(200);
+  await request(app).get('/v1/feed').set('X-A-Side-Client-Platform', 'private-platform').expect(200);
+  await request(app).get('/v1/feed?before=rejected-cursor').expect(400);
+  const metric = await (performanceRegistry.getSingleMetric('aside_feed_duration_seconds') as Histogram<string>).get();
+  expect(metric.values.filter(row => row.metricName?.endsWith('_count'))).toEqual(expect.arrayContaining([
+    expect.objectContaining({ value: 1, labels: { page_kind: 'cursor', filter_kind: 'list', client_platform: 'ios', outcome: 'ok' } }),
+    expect.objectContaining({ value: 1, labels: { page_kind: 'initial', filter_kind: 'all', client_platform: 'unknown', outcome: 'ok' } }),
+    expect.objectContaining({ value: 1, labels: { page_kind: 'cursor', filter_kind: 'all', client_platform: 'unknown', outcome: 'error' } }),
+  ]));
+  const serialized = JSON.stringify(await performanceRegistry.getMetricsAsJSON());
+  for (const value of ['private-cursor', 'private-group', 'private-token', 'private-platform', 'rejected-cursor']) {
+    expect(serialized).not.toContain(value);
+  }
 });
 
 test('distinguishes rejection before route matching from an unknown route', async () => {

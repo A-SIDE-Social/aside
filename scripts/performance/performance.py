@@ -14,7 +14,11 @@ import subprocess
 import time
 
 HISTOGRAMS = {'aside_http_duration_seconds', 'aside_db_pool_wait_seconds', 'aside_db_query_seconds', 'aside_operation_stage_seconds'}
-STAGES = {'otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout'}
+STAGES = {'otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout',
+          'feed_handler', 'feed_subscription', 'feed_select', 'feed_media', 'feed_comment_counts',
+          'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts'}
+FEED_FIELDS = ('page_kind', 'filter_kind', 'client_platform', 'outcome')
+FEED_CATEGORIES = ({'initial', 'cursor'}, {'all', 'list'}, {'ios', 'android', 'web', 'other', 'unknown'}, {'ok', 'error'})
 FAILURE_REASONS = {'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
                    'request_aborted', 'auth_failure', 'forbidden', 'route_not_found', 'not_found',
                    'method_not_allowed', 'rate_limited', 'client_error', 'internal_error',
@@ -54,8 +58,28 @@ def finite(value):
 def compact(payload):
     """Discard library metadata and all unapproved metric families/labels."""
     hist, gauges, failures, contexts, investigations = {}, {}, None, None, None
+    feed = None
     for family in payload['metrics']:
         name = family['name']
+        if name == 'aside_feed_duration_seconds':
+            feed = {}
+            for sample in family['values']:
+                labels = sample.get('labels', {})
+                metric = sample.get('metricName', '')
+                expected = set(FEED_FIELDS) | ({'le'} if metric.endswith('_bucket') else set())
+                if (set(labels) != expected or not finite(sample['value']) or sample['value'] < 0
+                        or any(labels.get(field) not in allowed for field, allowed in zip(FEED_FIELDS, FEED_CATEGORIES))):
+                    continue
+                if metric not in {'aside_feed_duration_seconds_count', 'aside_feed_duration_seconds_bucket'}:
+                    continue
+                if metric.endswith('_bucket') and str(labels['le']) not in {'0.005', '0.01', '0.025', '0.05', '0.1', '0.25', '0.5', '1', '2.5', '5', '10', '30', '+Inf'}:
+                    continue
+                key = json.dumps([labels[field] for field in FEED_FIELDS], separators=(',', ':'))
+                item = feed.setdefault(key, {'n': 0, 'b': {}})
+                if metric.endswith('_bucket'):
+                    item['b'][str(labels['le'])] = sample['value']
+                else:
+                    item['n'] = sample['value']
         if name == 'aside_http_failures_total':
             failures = {}
             for sample in family['values']:
@@ -143,6 +167,8 @@ def compact(payload):
         result['contexts'] = contexts
     if investigations is not None:
         result['investigations'] = investigations
+    if feed is not None:
+        result['feed'] = feed
     return result
 
 
@@ -220,6 +246,8 @@ def summarize(samples, now, hours):
     error_routes, failure_details, failure_contexts, stages = {}, {}, {}, {}
     failure_covered, context_covered, investigation_covered = 0, 0, 0
     failure_investigations, investigation_minutes = {}, {}
+    feed_covered = 0
+    feed_totals, feed_minutes = {}, {}
     covered, host_covered, points, restarts, unavailable = 0, 0, 0, 0, 0
     streak = {'cpu': 0, 'memory': 0}
     sustained = {'cpu': False, 'memory': False}
@@ -261,6 +289,21 @@ def summarize(samples, now, hours):
                 restarts += 1
             else:
                 covered += elapsed
+                if 'feed' in api and 'feed' in prev_api:
+                    feed_covered += elapsed
+                    for key, current in api['feed'].items():
+                        old = prev_api['feed'].get(key, {'n': 0, 'b': {}})
+                        delta = current['n'] - old['n']
+                        buckets = {b: v - old['b'].get(b, 0) for b, v in current['b'].items()}
+                        if delta < 0 or any(v < 0 for v in buckets.values()):
+                            continue
+                        entry = feed_totals.setdefault(key, {'n': 0, 'b': {}})
+                        entry['n'] += delta
+                        combine(entry['b'], buckets)
+                        if delta > 0:
+                            minute = int(at // 60)
+                            counts = feed_minutes.setdefault(key, {})
+                            counts[minute] = counts.get(minute, 0) + delta
                 if 'failures' in api and 'failures' in prev_api:
                     failure_covered += elapsed
                     for key, current in api['failures'].items():
@@ -379,6 +422,17 @@ def summarize(samples, now, hours):
     stage_rows = [{'stage': stage, 'outcome': outcome, 'observations': value['n'],
                    'p95_ms': round(quantile(value['b'], .95) * 1000, 2)}
                   for (stage, outcome), value in sorted(stages.items()) if value['n'] > 0]
+    feed_rows = []
+    for key, value in sorted(feed_totals.items(), key=lambda item: (-item[1]['n'], item[0])):
+        if value['n'] <= 0:
+            continue
+        row = dict(zip(FEED_FIELDS, json.loads(key)))
+        counts = feed_minutes.get(key, {})
+        p95 = quantile(value['b'], .95)
+        row.update({'requests': value['n'], 'p95_ms': round(p95 * 1000, 2) if p95 is not None else None,
+                    'over_1s': value['n'] - value['b']['1'] if '1' in value['b'] else None,
+                    'active_minutes': len(counts), 'max_per_minute': max(counts.values()) if counts else 0})
+        feed_rows.append(row)
     return {'verdict': verdict, 'window_hours': hours, 'samples': points,
             'api_coverage_pct': round(coverage * 100, 1), 'host_coverage_pct': round(host_covered / (hours * 36), 1),
             'latest_sample_age_seconds': round(age) if age is not None else None,
@@ -393,6 +447,8 @@ def summarize(samples, now, hours):
             'http_failure_investigations': investigations[:30] if investigation_covered else None,
             'http_failure_bursts': bursts[:20] if investigation_covered else None,
             'operation_stages': stage_rows,
+            'feed_context_coverage_pct': round(feed_covered / (hours * 36), 1),
+            'feed_request_contexts': feed_rows if feed_covered else None,
             'client_errors': totals.get((http, 'client_error'), 0), 'successful_request_latency': latency_http,
             'query_helper_latency_including_pool': latency('aside_db_query_seconds'),
             'query_helper_errors': totals.get(('aside_db_query_seconds', 'error'), 0),
