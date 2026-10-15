@@ -35,8 +35,15 @@ const httpFailureInvestigations = new Counter({
 });
 const stageDuration = new Histogram({ name: 'aside_operation_stage_seconds', help: 'Duration of fixed application stages',
   labelNames: ['stage', 'outcome'] as const, buckets, registers: [performanceRegistry] });
-export const performanceStages = ['otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout'] as const;
+export const performanceStages = ['otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout',
+  'feed_handler', 'feed_subscription', 'feed_select', 'feed_media', 'feed_comment_counts',
+  'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts'] as const;
 type PerformanceStage = typeof performanceStages[number];
+const feedDuration = new Histogram({
+  name: 'aside_feed_duration_seconds', help: 'Authenticated feed handler duration by fixed page, filter and declared client categories',
+  labelNames: ['page_kind', 'filter_kind', 'client_platform', 'outcome'] as const,
+  buckets, registers: [performanceRegistry],
+});
 const requestStarts = new WeakMap<Request, bigint>();
 
 // Only these literal mount prefixes and Express's declared route templates can
@@ -269,6 +276,27 @@ export function measureMessageHandler(handler: (req: Request, res: Response) => 
   return (req: Request, res: Response) => {
     recordMessagePrehandler(req);
     return measureStage('message_handler', () => handler(req, res));
+  };
+}
+
+export function measureFeedHandler(handler: (req: Request, res: Response) => Promise<void>) {
+  return async (req: Request, res: Response) => {
+    if (!performanceEnabled()) return handler(req, res);
+    const labels = {
+      page_kind: typeof req.query.before === 'string' && req.query.before.length > 0 ? 'cursor' : 'initial',
+      filter_kind: typeof req.query.group_id === 'string' && req.query.group_id.length > 0 ? 'list' : 'all',
+      client_platform: boundedClientPlatform(req),
+    };
+    const start = process.hrtime.bigint();
+    let ok = false;
+    try {
+      await measureStage('feed_handler', () => handler(req, res));
+      ok = res.statusCode < 400;
+    } finally {
+      try {
+        feedDuration.observe({ ...labels, outcome: ok ? 'ok' : 'error' }, Number(process.hrtime.bigint() - start) / 1e9);
+      } catch { missed.inc(); }
+    }
   };
 }
 

@@ -147,7 +147,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 200) {
       final notifier = ref.read(feedNotifierProvider.notifier);
-      if (notifier.hasMore) {
+      if (notifier.hasMore && !notifier.pageFailed) {
         notifier.loadMore();
       }
     }
@@ -252,6 +252,16 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                           if (index == posts.length) {
                             final notifier =
                                 ref.read(feedNotifierProvider.notifier);
+                            if (notifier.pageFailed) {
+                              return Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: TextButton.icon(
+                                  onPressed: notifier.loadMore,
+                                  icon: const Icon(Icons.refresh),
+                                  label: const Text('Retry loading posts'),
+                                ),
+                              );
+                            }
                             if (notifier.hasMore) {
                               return const Padding(
                                 padding: EdgeInsets.all(24),

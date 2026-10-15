@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/platform/app_group_channel.dart';
@@ -21,6 +23,14 @@ class FeedGroupFilter extends Notifier<String?> {
 final feedGroupFilterProvider =
     NotifierProvider<FeedGroupFilter, String?>(FeedGroupFilter.new);
 
+class _FeedLoad {
+  _FeedLoad(this.generation, this.groupId);
+
+  final int generation;
+  final String? groupId;
+  final done = Completer<void>();
+}
+
 /// Manages paginated feed loading with a "load more" cursor.
 ///
 /// Riverpod 3 Notifier — `build()` returns `AsyncValue.loading()` and
@@ -30,6 +40,9 @@ final feedGroupFilterProvider =
 /// filter change).
 class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
   int _loadGeneration = 0;
+  _FeedLoad? _initialLoad;
+  _FeedLoad? _pageLoad;
+  bool _pageFailed = false;
   String? _nextCursor;
   bool _hasMore = true;
 
@@ -55,10 +68,25 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
   }
 
   bool get hasMore => _hasMore;
+  bool get pageFailed => _pageFailed;
   bool get hasOlderPosts => _hasOlderPosts;
 
-  Future<void> loadInitial() async {
-    final generation = ++_loadGeneration;
+  Future<void> loadInitial() {
+    if (!ref.mounted) return Future.value();
+    final groupId = ref.read(feedGroupFilterProvider);
+    final pending = _initialLoad;
+    if (pending != null && pending.groupId == groupId) {
+      return pending.done.future;
+    }
+    final load = _FeedLoad(++_loadGeneration, groupId);
+    _initialLoad = load;
+    _pageLoad = null;
+    _pageFailed = false;
+    unawaited(_loadInitial(load));
+    return load.done.future;
+  }
+
+  Future<void> _loadInitial(_FeedLoad load) async {
     final pendingAtStart = Set<String>.of(ref.read(feedUpdatesProvider));
     state = const AsyncValue.loading();
     _nextCursor = null;
@@ -67,9 +95,8 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
 
     try {
       final apiService = ref.read(apiServiceProvider);
-      final groupId = ref.read(feedGroupFilterProvider);
-      final data = await apiService.getFeed(groupId: groupId);
-      if (!ref.mounted || generation != _loadGeneration) return;
+      final data = await apiService.getFeed(groupId: load.groupId);
+      if (!ref.mounted || load.generation != _loadGeneration) return;
       final list = (data['posts'] as List<dynamic>?) ?? [];
       final posts =
           list.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
@@ -83,42 +110,74 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
       _hasOlderPosts = data['has_older_posts'] as bool? ?? false;
       state = AsyncValue.data(posts);
       ref.read(feedUpdatesProvider.notifier).acknowledge(
-            groupId == null ? pendingAtStart : posts.map((post) => post.id),
+            load.groupId == null
+                ? pendingAtStart
+                : posts.map((post) => post.id),
           );
 
       // Cache latest friend's photo for iOS widget
       _cacheWidgetImage(posts);
     } catch (e, st) {
-      if (ref.mounted && generation == _loadGeneration) {
+      if (ref.mounted && load.generation == _loadGeneration) {
         state = AsyncValue.error(e, st);
       }
+    } finally {
+      if (identical(_initialLoad, load)) _initialLoad = null;
+      load.done.complete();
     }
   }
 
-  Future<void> loadMore() async {
-    if (!_hasMore || _nextCursor == null) return;
+  Future<void> loadMore() {
+    if (!ref.mounted ||
+        _initialLoad != null ||
+        !_hasMore ||
+        _nextCursor == null ||
+        state.value == null) {
+      return Future.value();
+    }
+    final pending = _pageLoad;
+    if (pending != null) return pending.done.future;
 
-    final current = state.value ?? [];
-    final generation = _loadGeneration;
+    final load = _FeedLoad(_loadGeneration, ref.read(feedGroupFilterProvider));
+    _pageLoad = load;
+    _pageFailed = false;
+    unawaited(_loadPage(load, _nextCursor!));
+    return load.done.future;
+  }
+
+  Future<void> _loadPage(_FeedLoad load, String cursor) async {
     try {
       final apiService = ref.read(apiServiceProvider);
-      final groupId = ref.read(feedGroupFilterProvider);
       final data =
-          await apiService.getFeed(before: _nextCursor, groupId: groupId);
-      if (!ref.mounted || generation != _loadGeneration) return;
+          await apiService.getFeed(before: cursor, groupId: load.groupId);
+      if (!ref.mounted || load.generation != _loadGeneration) return;
       final list = (data['posts'] as List<dynamic>?) ?? [];
       final newPosts =
           list.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
 
-      _nextCursor = newPosts.isNotEmpty
+      final nextCursor = newPosts.isNotEmpty
           ? newPosts.last.createdAt.toUtc().toIso8601String()
           : null;
-      _hasMore = newPosts.length >= 20;
-      state = AsyncValue.data([...current, ...newPosts]);
-    } catch (e, st) {
-      if (ref.mounted && generation == _loadGeneration) {
-        state = AsyncValue.error(e, st);
+      _nextCursor = nextCursor;
+      _hasMore = newPosts.length >= 20 && nextCursor != cursor;
+      // Merge into the latest state so pending likes, comments and deletions
+      // survive the network round trip. Overlapping pages must not duplicate posts.
+      final current = state.value ?? [];
+      final existing = current.map((post) => post.id).toSet();
+      state = AsyncValue.data([
+        ...current,
+        ...newPosts.where((post) => existing.add(post.id)),
+      ]);
+    } catch (_) {
+      if (ref.mounted && load.generation == _loadGeneration) {
+        // Pause automatic pagination until the user retries. Keep loaded posts.
+        _pageFailed = true;
+        state = AsyncValue.data([...(state.value ?? <Post>[])]);
       }
+    } finally {
+      // An older response must never unlock a newer generation's pending page.
+      if (identical(_pageLoad, load)) _pageLoad = null;
+      load.done.complete();
     }
   }
 
