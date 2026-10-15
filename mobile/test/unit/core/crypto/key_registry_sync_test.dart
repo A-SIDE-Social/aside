@@ -327,6 +327,16 @@ void main() {
         () => signal.wipeKeys(),
       ]);
     });
+
+    test('wipes locally when server revocation fails', () async {
+      when(() => api.revokeDeviceKeys())
+          .thenThrow(Exception('server unavailable'));
+      when(() => signal.wipeKeys()).thenAnswer((_) async {});
+
+      await expectLater(sync.resetKeys(), throwsException);
+
+      verify(() => signal.wipeKeys()).called(1);
+    });
   });
 
   group('fetchPeerKeyBundle', () {

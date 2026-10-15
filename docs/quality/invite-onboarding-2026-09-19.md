@@ -1,6 +1,7 @@
 # Invite and onboarding incident — 2026-09-19
 
-Priority: high. Existing users who decline contacts can be unable to connect at all. Fixes are implemented locally; production and store releases have not been performed.
+Historical incident record. The invite fixes were subsequently merged on main.
+See the October 14 release follow-up below for the current verification status.
 
 ## Diagnosis
 
@@ -48,13 +49,13 @@ The old invite tests copied URL parsing and navigation into a test harness; the 
 
 Backend: `npm run lint`; run the Jest suite using a dedicated disposable PostgreSQL database. The integration harness drops its test schema; never point it at production. Mobile: `flutter test`, `flutter analyze lib test`. Website: `npm run build`, `npm run test:invites`. Hosted overlay: `bash scripts/test-app-links.sh ../aside`. Native plist: `plutil -lint mobile/ios/Runner/Info.plist`.
 
-Final results: **432 backend tests across 10 suites passed on Node 24.19.0; 414 mobile tests passed; 5 website tests passed; hosted iOS/Android overlay checks passed; TypeScript lint, app/test Dart analysis, native plist validation and website build passed.** The unscoped `flutter analyze` additionally scans the vendored Rust build-tool package and reports its missing standalone dependencies/documentation warnings; application and test analysis is evaluated separately. A Node 26 full-suite rerun produced intermittent unrelated socket/test failures; the final verification also uses the bundled Node 24 LTS runtime.
+Final results: **448 backend tests across 12 suites passed on Node 24.19.0 after updating the PR branch to the latest main; 414 mobile tests passed; 5 website tests passed; hosted iOS/Android overlay checks passed; TypeScript lint, app/test Dart analysis, native plist validation and website build passed.** The unscoped `flutter analyze` additionally scans the vendored Rust build-tool package and reports its missing standalone dependencies/documentation warnings; application and test analysis is evaluated separately. A Node 26 full-suite rerun produced intermittent unrelated socket/test failures; the final verification also uses the bundled Node 24 LTS runtime.
 
 Unit/integration/browser checks cannot prove iOS association caching, store signing, installation handoff, real OTP email delivery or physical-device behavior. These remain release gates, not claimed successes.
 
 ## Release sequence and physical-device acceptance
 
-1. Review and release the API changes. Ensure production `INVITE_LINK_ALLOWED_HOSTS` includes **both** `a-side.social,www.a-side.social`; verify the emitted invite URL uses an associated host. No database migration is required.
+1. Review and release the API changes. Production `INVITE_LINK_ALLOWED_HOSTS=a-side.social,www.a-side.social` is already applied: only the API container was recreated, its image stayed unchanged, the database container was unchanged, and local/public health returned HTTP 200. The previous environment was backed up on the host. Verify the emitted invite URL uses an associated host. No database migration is required by these invite fixes.
 2. Build a new store version through the repaired hosted overlay. Inspect the **signed IPA** entitlements for real domains and inspect the **signed Android app** for both hosts/path variants. Verify the App Store/Play signing identifiers against the association files.
 3. Configure Vercel to serve **both hosts directly**, including association endpoints; do not keep a host-level redirect intercepting them. Deploy the website repair with JSON headers. Coordinate the new Open scheme/manual-entry instructions with availability of the updated app.
 4. On physical iPhone and Android devices, test fresh and upgraded installs; app absent, terminated, backgrounded and foregrounded; signed in and signed out; Mail/Messages, Safari, QR and pasted links. Test the apex and `www`, and legacy `/join` links. Inspect association verification on the actual devices.
@@ -63,11 +64,21 @@ Unit/integration/browser checks cannot prove iOS association caching, store sign
 7. Uninstall/install does not promise deferred invite retention. Verify the documented copy/paste or return-to-original-link path after installation. Confirm that opening an invite in Safari always leaves readable recovery instructions.
 8. Only after those checks and store availability should support describe the issue as fixed. No customer email was sent by this task.
 
-Local changes span the public `aside` repository, `aside-deploy` build scripts/configuration, and `kin/web` marketing site. Existing unrelated website edits were left intact.
+PR changes span the public `aside` repository, `aside-deploy` build scripts/configuration, and `kin/web` marketing site. Existing unrelated website edits were left intact.
+
+## UI review evidence
+
+These images render the production widgets with the app theme and fictional test data at 390×844. They are widget renders, not physical-device screenshots.
+
+![Manual invite entry](images/invite-add-friend.png)
+
+![Connection confirmation](images/invite-confirmation.png)
+
 
 ## Release follow-up — October 14, 2026
 
-The app and API repairs above are included in the 1.5.0 source candidate. The
+The invite repairs above are already merged on main and are retained in the
+1.5.0 source candidate alongside the newer OTP, auth and subscription fixes. The
 old association-hosting diagnosis no longer describes the live site: all four
 apex/www iOS and Android association endpoints returned HTTP 200 with JSON
 content types during this check. The website build and invite handoff tests
@@ -87,7 +98,8 @@ recovery into the current account. Failed saves retain the editor for retry;
 successful shares remove the saved draft. A related speech-input unmount error
 was fixed after exercising the actual composer exit flow.
 
-Validation before packaging: 433 backend tests and 437 mobile tests passed;
+Validation on the current main plus the release changes: 539 backend tests and
+459 mobile tests passed;
 TypeScript and application/test Dart analysis passed; the invite website
 build, its 5 handoff tests, and hosted iOS/Android link overlay checks passed.
 The iOS simulator build passed. Store availability and physical-device invite,

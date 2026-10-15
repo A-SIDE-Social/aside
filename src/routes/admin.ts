@@ -22,7 +22,9 @@ import { config } from '../config';
 import { authLimit, writeLimit } from '../middleware/rateLimit';
 import { asyncHandler } from '../helpers';
 import { generateAccessToken } from '../middleware/auth';
-import { sendOtpEmail } from '../email';
+import { requestEmailOtp } from '../services/emailOtp';
+import { normalizeEmail } from '../lib/emailAddress';
+import { AppError } from '../middleware/errorHandler';
 import { permanentlyDeleteUser } from '../services/userDeletion';
 import { processMediaDeletionQueue } from '../services/mediaDeletion';
 import {
@@ -146,11 +148,11 @@ adminRouter.post(
   authLimit,
   express_urlencoded(),
   asyncHandler(async (req: Request, res: Response) => {
-    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const email = normalizeEmail(req.body?.email);
     if (!email) {
       return res.status(400).type('html').send(layout({
         title: 'Sign in',
-        body: '<p>Email is required. <a href="/admin/login">Try again</a>.</p>',
+        body: '<p>A valid email address is required. <a href="/admin/login">Try again</a>.</p>',
       }));
     }
 
@@ -168,29 +170,12 @@ adminRouter.post(
     // actually generate + send the OTP through the same path the
     // mobile auth uses.
     if (isAdmin) {
-      // Reuse the dev-OTP gate that the mobile flow uses, so a
-      // reviewer / dev can sign into the dashboard with the same
-      // 123456 they use in the mobile app.
-      const isDevEnv =
-        config.nodeEnv === 'development' || config.nodeEnv === 'test';
-      const emailAllowedForDevOtp =
-        isDevEnv ||
-        (!!config.devOtp && config.devOtpAllowedEmails.includes(email));
-      const code = emailAllowedForDevOtp
-        ? config.devOtp || '123456'
-        : crypto.randomInt(100000, 999999).toString();
-      const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-
-      // Replace any previous OTP for this address (same shape as
-      // the mobile flow).
-      await query('DELETE FROM email_otps WHERE email = $1', [email]);
-      await query(
-        `INSERT INTO email_otps (email, code_hash, expires_at)
-         VALUES ($1, $2, NOW() + INTERVAL '10 minutes')`,
-        [email, codeHash],
-      );
-      if (!emailAllowedForDevOtp) {
-        await sendOtpEmail(email, code);
+      try {
+        await requestEmailOtp(email);
+      } catch (error) {
+        // Keep the same form for non-admins and already-requested admins;
+        // the shared cooldown must not reveal whether an address is an admin.
+        if (!(error instanceof AppError) || error.statusCode !== 429) throw error;
       }
     }
 

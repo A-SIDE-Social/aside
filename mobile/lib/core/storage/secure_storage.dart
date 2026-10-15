@@ -50,9 +50,15 @@ class SecureStorage {
     await _storage.write(key: _userIdKey, value: userId);
   }
 
-  // Clear all
+  // Clear all session values owned by this class. Do not use deleteAll():
+  // E2EE key material shares the platform secure-storage backend under its
+  // own prefix and must only be removed by SecureKeyStorage.wipe().
 
   Future<void> clearAll() async {
-    await _storage.deleteAll();
+    await Future.wait([
+      _storage.delete(key: _authTokenKey),
+      _storage.delete(key: _refreshTokenKey),
+      _storage.delete(key: _userIdKey),
+    ]);
   }
 }

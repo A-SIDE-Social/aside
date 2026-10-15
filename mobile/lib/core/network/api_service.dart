@@ -96,6 +96,7 @@ class ApiService {
     final response = await _dio.delete(
       ApiEndpoints.logout,
       data: {'refresh_token': refreshToken},
+      options: Options(extra: {skipAuthRecoveryExtra: true}),
     );
     return response.data;
   }
@@ -182,6 +183,19 @@ class ApiService {
   // ---------------------------------------------------------------------------
   // Subscriptions
   // ---------------------------------------------------------------------------
+
+  Future<Map<String, dynamic>> resolvePartnerOffer({
+    required String code,
+    required String platform,
+    required String country,
+  }) async {
+    final response = await _dio.post('/v1/partner-offers/resolve', data: {
+      'code': code.trim(),
+      'platform': platform,
+      'country': country,
+    });
+    return Map<String, dynamic>.from(response.data['offer'] as Map);
+  }
 
   Future<Map<String, dynamic>> getSubscriptionStatus() async {
     final response = await _dio.get(ApiEndpoints.subscriptionStatus);
@@ -799,6 +813,7 @@ class ApiService {
     await _dio.delete(
       ApiEndpoints.deviceToken,
       data: {'token': token},
+      options: Options(extra: {skipAuthRecoveryExtra: true}),
     );
   }
 
@@ -843,7 +858,10 @@ class ApiService {
   /// Marks the current key set revoked on the server. Client should
   /// pair with SignalClient.wipeKeys() for a full reset.
   Future<void> revokeDeviceKeys() async {
-    await _dio.post(ApiEndpoints.deviceKeysRevoke);
+    await _dio.post(
+      ApiEndpoints.deviceKeysRevoke,
+      options: Options(extra: {skipAuthRecoveryExtra: true}),
+    );
   }
 
   /// Fetches a peer's key bundle for session setup. Server atomically

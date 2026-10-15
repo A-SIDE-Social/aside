@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'partner_offer_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -16,11 +18,14 @@ class PaywallScreen extends ConsumerStatefulWidget {
 
 class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   bool _family = false;
+  bool _purchasing = false;
 
   @override
   void initState() {
     super.initState();
-    ref.read(subscriptionProvider.notifier).loadOfferings();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(subscriptionProvider.notifier).loadOfferings();
+    });
   }
 
   Package? _getSelectedPackage(Offerings? offerings) {
@@ -42,10 +47,12 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   Future<void> _purchase() async {
     final sub = ref.read(subscriptionProvider);
     final package = _getSelectedPackage(sub.offerings);
-    if (package == null) return;
+    if (package == null || _purchasing) return;
+    setState(() => _purchasing = true);
 
     final success =
         await ref.read(subscriptionProvider.notifier).purchase(package);
+    if (mounted) setState(() => _purchasing = false);
     if (success && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Welcome to Pro!')),
@@ -55,18 +62,23 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   }
 
   Future<void> _restore() async {
+    if (_purchasing) return;
+    setState(() => _purchasing = true);
     await ref.read(subscriptionProvider.notifier).restorePurchases();
     if (!mounted) return;
 
-    final status = ref.read(subscriptionProvider).subscriptionStatus;
-    if (status == 'active' || status == 'trial') {
+    setState(() => _purchasing = false);
+    final restored = ref.read(subscriptionProvider);
+    final status = restored.subscriptionStatus;
+    if (restored.error == null && (status == 'active' || status == 'trial')) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Purchases restored!')),
       );
       context.pop();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No active subscription found.')),
+        SnackBar(
+            content: Text(restored.error ?? 'No active subscription found.')),
       );
     }
   }
@@ -86,7 +98,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
         ),
         title: const Text('Upgrade'),
       ),
-      body: sub.isLoading
+      body: sub.isLoading || _purchasing
           ? const LoadingIndicator()
           : SingleChildScrollView(
               padding: const EdgeInsets.all(24),
@@ -160,7 +172,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                       child: Text(
                         package != null
                             ? 'Subscribe for ${package.storeProduct.priceString}'
-                            : 'Loading...',
+                            : sub.isLoadingOfferings || !sub.hasLoadedOfferings
+                                ? 'Loading plans...'
+                                : 'Plans unavailable',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -178,7 +192,28 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                     ),
                   ],
 
+                  if (sub.offerings == null &&
+                      sub.hasLoadedOfferings &&
+                      !sub.isLoadingOfferings)
+                    TextButton(
+                      onPressed: () => ref
+                          .read(subscriptionProvider.notifier)
+                          .loadOfferings(),
+                      child: const Text('Try again'),
+                    ),
+
                   const SizedBox(height: 16),
+
+                  TextButton(
+                    onPressed: () async {
+                      final active = await Navigator.of(context).push<bool>(
+                        MaterialPageRoute(
+                            builder: (_) => const PartnerOfferScreen()),
+                      );
+                      if (active == true && context.mounted) context.pop();
+                    },
+                    child: const Text('Have a partner code?'),
+                  ),
 
                   // Restore + legal links
                   TextButton(
@@ -211,7 +246,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Payment will be charged to your Apple ID account at confirmation of purchase. '
+                    'Payment will be charged to your ${Platform.isIOS ? 'Apple' : 'Google Play'} account at confirmation of purchase. '
                     'Subscription automatically renews unless canceled at least 24 hours before the end of the current period.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: colors.textTertiary,

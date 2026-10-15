@@ -78,6 +78,7 @@ void main() {
       when(() => mockDio.delete(
             ApiEndpoints.logout,
             data: any(named: 'data'),
+            options: any(named: 'options'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ''),
             data: {'success': true},
@@ -88,9 +89,12 @@ void main() {
       final captured = verify(() => mockDio.delete(
             ApiEndpoints.logout,
             data: captureAny(named: 'data'),
-          )).captured.single as Map<String, dynamic>;
+            options: captureAny(named: 'options'),
+          )).captured;
 
-      expect(captured['refresh_token'], 'refresh-123');
+      expect((captured[0] as Map<String, dynamic>)['refresh_token'],
+          'refresh-123');
+      expect((captured[1] as Options).extra![skipAuthRecoveryExtra], isTrue);
     });
   });
 
@@ -330,6 +334,7 @@ void main() {
       when(() => mockDio.delete(
             ApiEndpoints.deviceToken,
             data: any(named: 'data'),
+            options: any(named: 'options'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ''),
             data: {},
@@ -340,9 +345,11 @@ void main() {
       final captured = verify(() => mockDio.delete(
             ApiEndpoints.deviceToken,
             data: captureAny(named: 'data'),
-          )).captured.single as Map<String, dynamic>;
+            options: captureAny(named: 'options'),
+          )).captured;
 
-      expect(captured['token'], 'fcm-token');
+      expect((captured[0] as Map<String, dynamic>)['token'], 'fcm-token');
+      expect((captured[1] as Options).extra![skipAuthRecoveryExtra], isTrue);
     });
   });
 

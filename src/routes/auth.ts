@@ -7,9 +7,10 @@ import { asyncHandler, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import { config } from '../config';
 import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants';
-import { sendOtpEmail } from '../email';
+import { requestEmailOtp } from '../services/emailOtp';
 import { generateUniqueSlug, extractSlug, extractLegacyCode, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
+import { normalizeEmail } from '../lib/emailAddress';
 import {
   sendPush,
   getTokensForUsers,
@@ -355,92 +356,10 @@ router.post(
   '/request-otp',
   authLimit,
   asyncHandler(async (req: any, res: any) => {
-    const { email } = req.body;
-    if (!email) throw new AppError(400, 'Email is required');
+    const normalizedEmail = normalizeEmail(req.body?.email);
+    if (!normalizedEmail) throw new AppError(400, 'A valid email address is required', 'validation_failure');
 
-    const normalizedEmail = email.trim().toLowerCase();
-
-    // Rate limit: max 1 OTP per 30 seconds per email
-    const { rows: recent } = await query(
-      `SELECT 1 FROM email_otps WHERE email = $1 AND created_at > NOW() - INTERVAL '30 seconds'`,
-      [normalizedEmail],
-    );
-    if (recent.length > 0) {
-      throw new AppError(429, 'Please wait before requesting another code');
-    }
-
-    // Generate OTP.
-    //
-    // DEV_OTP is an email-scoped backdoor used to let App Store
-    // reviewers (and devs) sign in without a real email round-trip.
-    // Scoping rules:
-    //
-    //   - In development/test NODE_ENV: applies to every email.
-    //     Matches historical behavior for local work.
-    //   - In production NODE_ENV: applies ONLY to emails in
-    //     DEV_OTP_ALLOWED_EMAILS. If the allowlist is empty in prod,
-    //     DEV_OTP is ignored — we NEVER turn it on globally for
-    //     real TestFlight testers, who must get a genuine random OTP
-    //     via Postmark.
-    //
-    // This guardrail exists because leaving DEV_OTP globally on in
-    // prod is equivalent to letting anyone log in as any email they
-    // know — a full authentication bypass masquerading as a testing
-    // convenience.
-    const isDevEnv =
-      config.nodeEnv === 'development' || config.nodeEnv === 'test';
-    // In dev/test: DEV_OTP applies to every email, but only when it
-    // is explicitly configured. Without DEV_OTP, dev/test requests
-    // still generate a random code and send/log through sendOtpEmail.
-    //
-    // In production: DEV_OTP applies ONLY to emails explicitly listed
-    // in DEV_OTP_ALLOWED_EMAILS (typically App Store reviewers). Any
-    // other email gets a genuine random OTP via Postmark. If DEV_OTP
-    // is unset in prod, the allowlist is ignored and no backdoor
-    // exists.
-    const emailAllowedForDevOtp = !!config.devOtp &&
-      (isDevEnv || config.devOtpAllowedEmails.includes(normalizedEmail));
-    const code = emailAllowedForDevOtp
-      ? config.devOtp
-      : crypto.randomInt(100000, 999999).toString();
-
-    // Hash and store
-    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-
-    // Delete any previous OTPs for this email
-    await query('DELETE FROM email_otps WHERE email = $1', [normalizedEmail]);
-
-    // Insert new OTP with 10-minute expiry
-    await query(
-      `INSERT INTO email_otps (email, code_hash, expires_at)
-       VALUES ($1, $2, NOW() + INTERVAL '10 minutes')`,
-      [normalizedEmail, codeHash],
-    );
-
-    // Send the OTP email via Postmark.
-    //
-    // Skip delivery entirely for allowlisted dev-OTP emails (reviewers,
-    // internal testers). Those addresses already know the code from
-    // review notes, don't need the email, and attempting to actually
-    // deliver to them can fail — @apple.com in particular is subject
-    // to aggressive spam filtering and can cause Postmark to return
-    // errors that bubble up as a 500 on the mobile side, which has
-    // historically gotten App Review submissions rejected for showing
-    // an error on the email-entry screen.
-    //
-    // For everyone else we still call Postmark and let errors
-    // become an explicit temporary-unavailability response. If delivery
-    // fails, remove the stored OTP so the user is not left with a code that
-    // can never arrive or be verified.
-    if (!emailAllowedForDevOtp) {
-      try {
-        await sendOtpEmail(normalizedEmail, code);
-      } catch {
-        await query('DELETE FROM email_otps WHERE email = $1', [normalizedEmail])
-          .catch(() => undefined);
-        throw new AppError(503, 'Verification email is temporarily unavailable. Please try again.');
-      }
-    }
+    await requestEmailOtp(normalizedEmail);
 
     res.json({ message: 'OTP sent' });
   }),
@@ -451,24 +370,25 @@ router.post(
   '/verify-otp',
   authLimit,
   asyncHandler(async (req: any, res: any) => {
-    const { email, code, invite_code, display_name } = req.body;
-    if (!email || !code) throw new AppError(400, 'Email and code are required');
-
-    const normalizedEmail = email.trim().toLowerCase();
+    const { email, code, invite_code, display_name } = req.body ?? {};
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail || typeof code !== 'string' || !code || code.length > 128) {
+      throw new AppError(400, 'A valid email address and code are required', 'validation_failure');
+    }
 
     // Look up the OTP
     const { rows: otps } = await query(
       `SELECT * FROM email_otps WHERE email = $1 AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1`,
       [normalizedEmail],
     );
-    if (otps.length === 0) throw new AppError(401, 'Invalid or expired code');
+    if (otps.length === 0) throw new AppError(400, 'Invalid or expired code');
 
     const otp = otps[0];
 
     // Check attempt limit
     if (otp.attempts >= 5) {
       await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
-      throw new AppError(401, 'Too many attempts. Please request a new code.');
+      throw new AppError(429, 'Too many attempts. Please request a new code.');
     }
 
     // Increment attempts
@@ -477,7 +397,7 @@ router.post(
     // Compare hashes
     const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
     if (submittedHash !== otp.code_hash) {
-      throw new AppError(401, 'Invalid code');
+      throw new AppError(400, 'Invalid code');
     }
 
     // OTP is valid — resolve user (may throw 400 if display_name needed)

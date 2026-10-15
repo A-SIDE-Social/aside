@@ -1,3 +1,5 @@
+import { parsePartnerCampaigns } from './services/partnerOffers';
+
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
 }
@@ -66,6 +68,8 @@ const inviteLinkHost = stripTrailingSlash(
 const inviteLinkHostName = hostnameFromUrl(inviteLinkHost);
 
 export const config = {
+  partnerCampaigns: parsePartnerCampaigns(process.env.PARTNER_OFFERS_JSON || '[]'),
+  appleAppId: /^\d+$/.test(process.env.APPLE_APP_ID || '') ? process.env.APPLE_APP_ID! : '6761619806',
   port: parseInt(process.env.PORT || '3000', 10),
   databaseUrl: process.env.DATABASE_URL || 'postgres://aside:aside_dev_password@localhost:5433/aside',
   jwtSecret: secretOrDefault('JWT_SECRET', 'dev-secret'),

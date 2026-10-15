@@ -1,0 +1,15 @@
+[Unit]
+Description=A/SIDE aggregate performance snapshot
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/aside-performance/performance.py collect
+StateDirectory=aside-performance
+StateDirectoryMode=0700
+UMask=0077
+Nice=10
+TimeoutStartSec=25
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict

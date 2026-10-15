@@ -7,12 +7,15 @@ import { errorHandler } from './middleware/errorHandler';
 import { router } from './routes';
 import { adminRouter } from './routes/admin';
 import { unsubscribeRouter } from './routes/unsubscribe';
+import { newsletterRouter } from './routes/newsletter';
 import { serveOpenApiDocs } from './openapi';
 import { corsOrigin } from './lib/cors';
+import { measureHttp } from './performance';
 
 export const app = express();
 
 app.set('trust proxy', 1);
+app.use(measureHttp);
 app.use(cors({ origin: corsOrigin, credentials: true }));
 // Cookie parser used only by /admin (the API auth uses Bearer
 // headers). Mounted globally so the admin router can read signed
@@ -40,6 +43,7 @@ app.use('/admin', adminRouter);
 // of marketing broadcast emails. Token-signed (HMAC) so anyone
 // with the link can act on it without an active session.
 app.use('/unsubscribe', unsubscribeRouter);
+app.use('/newsletter', newsletterRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });

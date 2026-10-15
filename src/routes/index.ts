@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
+import { deviceRevokeLimit } from '../middleware/rateLimit';
 import authRouter from './auth';
 import usersRouter from './users';
 import followsRouter from './follows';
@@ -18,10 +19,12 @@ import contactsRouter from './contacts';
 import webhooksRouter from './webhooks';
 import subscriptionsRouter from './subscriptions';
 import reactionsRouter from './reactions';
+import partnerOffersRouter from './partnerOffers';
 
 export const router = Router();
 
 // Public routes (no auth)
+router.use('/partner-offers', partnerOffersRouter);
 router.use('/auth', authRouter);
 router.use('/invites', invitesRouter); // has its own auth per-route (validate is public)
 router.use('/webhooks', webhooksRouter); // RevenueCat server-to-server, auth via shared secret
@@ -44,6 +47,7 @@ router.use('/conversations', authenticate, conversationsRouter);
 // handlers; data model stays internally named `groups`.
 router.use('/lists', authenticate, groupsRouter);
 router.use('/groups', authenticate, groupsRouter);
+router.post('/devices/revoke', deviceRevokeLimit);
 router.use('/devices', authenticate, devicesRouter);
 router.use('/dm-attachments', authenticate, dmAttachmentsRouter);
 router.use('/contacts', authenticate, contactsRouter);

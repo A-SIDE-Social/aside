@@ -1,11 +1,29 @@
 import 'dart:ui' show VoidCallback;
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kDebugMode, kIsWeb;
 
 import '../config/env.dart';
 import '../storage/secure_storage.dart';
 import 'api_endpoints.dart';
+
+String get asideClientPlatform {
+  if (kIsWeb) return 'web';
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => 'ios',
+    TargetPlatform.android => 'android',
+    _ => 'other',
+  };
+}
+
+const skipAuthRecoveryExtra = 'skipAuthRecovery';
+
+const _publicAuthPaths = {
+  ApiEndpoints.requestOtp,
+  ApiEndpoints.verifyOtp,
+  ApiEndpoints.refreshToken,
+};
 
 /// Wraps [DioException] with user-friendly messages.
 class ApiException implements Exception {
@@ -34,7 +52,7 @@ class ApiException implements Exception {
       case DioExceptionType.badResponse:
         final serverMessage = response?.data is Map
             ? (response!.data['error'] as String? ??
-                response.data['message'] as String?)
+                  response.data['message'] as String?)
             : null;
         message = serverMessage ?? _defaultMessageForStatus(statusCode);
         break;
@@ -91,8 +109,8 @@ class ApiClient {
     required SecureStorage secureStorage,
     this.onAuthFailure,
     Dio? dio,
-  })  : _secureStorage = secureStorage,
-        dio = dio ?? Dio() {
+  }) : _secureStorage = secureStorage,
+       dio = dio ?? Dio() {
     this.dio.options = BaseOptions(
       baseUrl: Env.apiBaseUrl,
       connectTimeout: const Duration(seconds: 30),
@@ -100,20 +118,24 @@ class ApiClient {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        'X-A-Side-Client-Platform': asideClientPlatform,
+        'X-A-Side-Client-Generation': '2',
+        'X-A-Side-Request-Attempt': 'initial',
       },
     );
 
-    this.dio.interceptors.add(_AuthInterceptor(
-          dio: this.dio,
-          secureStorage: _secureStorage,
-          onAuthFailure: _handleAuthFailure,
-        ));
+    this.dio.interceptors.add(
+      _AuthInterceptor(
+        dio: this.dio,
+        secureStorage: _secureStorage,
+        onAuthFailure: _handleAuthFailure,
+      ),
+    );
 
     if (kDebugMode) {
-      this.dio.interceptors.add(LogInterceptor(
-            requestBody: true,
-            responseBody: true,
-          ));
+      this.dio.interceptors.add(
+        LogInterceptor(requestBody: true, responseBody: true),
+      );
     }
   }
 
@@ -134,9 +156,9 @@ class _AuthInterceptor extends Interceptor {
     required Dio dio,
     required SecureStorage secureStorage,
     required VoidCallback onAuthFailure,
-  })  : _dio = dio,
-        _secureStorage = secureStorage,
-        _onAuthFailure = onAuthFailure;
+  }) : _dio = dio,
+       _secureStorage = secureStorage,
+       _onAuthFailure = onAuthFailure;
 
   @override
   void onRequest(
@@ -152,7 +174,11 @@ class _AuthInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    if (err.response?.statusCode != 401) {
+    final request = err.requestOptions;
+    final skipsAuthRecovery =
+        request.extra[skipAuthRecoveryExtra] == true ||
+        _publicAuthPaths.contains(request.uri.path);
+    if (err.response?.statusCode != 401 || skipsAuthRecovery) {
       handler.next(err);
       return;
     }
@@ -174,21 +200,24 @@ class _AuthInterceptor extends Interceptor {
       }
 
       // Attempt to refresh the token.
-      final response = await Dio(BaseOptions(
-        baseUrl: _dio.options.baseUrl,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      )).post(
-        ApiEndpoints.refreshToken,
-        data: {'refresh_token': refreshToken},
-      );
+      final response = await Dio(
+        BaseOptions(
+          baseUrl: _dio.options.baseUrl,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-A-Side-Client-Platform': asideClientPlatform,
+            'X-A-Side-Client-Generation': '2',
+            'X-A-Side-Request-Attempt': 'initial',
+          },
+        ),
+      ).post(ApiEndpoints.refreshToken, data: {'refresh_token': refreshToken});
 
       final newAuthToken =
           (response.data['access_token'] ?? response.data['token']) as String?;
-      final newRefreshToken = (response.data['refresh_token'] ??
-          response.data['refreshToken']) as String?;
+      final newRefreshToken =
+          (response.data['refresh_token'] ?? response.data['refreshToken'])
+              as String?;
 
       if (newAuthToken == null) {
         _onAuthFailure();
@@ -205,6 +234,7 @@ class _AuthInterceptor extends Interceptor {
       // Retry the original request with the new token.
       final options = err.requestOptions;
       options.headers['Authorization'] = 'Bearer $newAuthToken';
+      options.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
       final retryResponse = await _dio.fetch(options);
       handler.resolve(retryResponse);
 
@@ -224,11 +254,16 @@ class _AuthInterceptor extends Interceptor {
     _pendingRequests.clear();
     for (final p in pending) {
       p.options.headers['Authorization'] = 'Bearer $newToken';
-      _dio.fetch(p.options).then(
+      p.options.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
+      _dio
+          .fetch(p.options)
+          .then(
             (response) => p.handler.resolve(response),
-            onError: (e) => p.handler.next(e is DioException
-                ? e
-                : DioException(requestOptions: p.options, error: e)),
+            onError: (e) => p.handler.next(
+              e is DioException
+                  ? e
+                  : DioException(requestOptions: p.options, error: e),
+            ),
           );
     }
   }

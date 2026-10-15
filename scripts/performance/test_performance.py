@@ -1,0 +1,176 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+import performance as p
+
+KEY = json.dumps(['aside_http_duration_seconds', 'GET', '/v1/feed/', 'ok'], separators=(',', ':'))
+
+def sample(at, count=0, start=1, busy=False):
+    return {'at': at, 'host': {'cpu': [at * 100, at * (5 if busy else 75)], 'memory_pct': 90 if busy else 45,
+            'disk_pct': 30, 'available_mb': 450, 'swap_used_mb': 0},
+            'api': {'start': start, 'gauges': {}, 'hist': {KEY: {'n': count, 'b': {'0.1': count, '+Inf': count}}}}}
+
+
+class PerformanceTests(unittest.TestCase):
+    def test_failure_details_and_stages_are_bounded_and_private(self):
+        def counter(labels, value=2):
+            return {'labels': labels, 'value': value}
+        labels = {'method': 'POST', 'route': '/v1/auth/request-otp', 'status': '503', 'reason': 'email_auth_failure'}
+        context = {'method': 'POST', 'path_class': 'auth', 'client_platform': 'ios', 'auth_present': 'no',
+                   'abort_phase': 'not_aborted', 'status': '503', 'reason': 'email_auth_failure'}
+        investigation = {'method': 'POST', 'path_class': 'auth', 'endpoint': 'auth_request_otp',
+                         'route_state': 'matched', 'client_platform': 'ios', 'client_generation': 'context_v2',
+                         'request_attempt': 'initial', 'auth_kind': 'missing', 'auth_result': 'not_checked',
+                         'body_kind': 'json', 'failure_stage': 'handler', 'abort_phase': 'not_aborted',
+                         'status': '503', 'reason': 'email_auth_failure'}
+        stage = {'stage': 'otp_delivery', 'outcome': 'error'}
+        payload = {'started_at': 1, 'metrics': [
+            {'name': 'aside_http_failures_total', 'values': [counter(labels),
+                counter(dict(labels, email='private@example.com')), counter(dict(labels, reason='private@example.com')),
+                counter(dict(labels, status='secret')), counter(dict(labels, method='UNBOUNDED'))]},
+            {'name': 'aside_http_failure_contexts_total', 'values': [counter(context),
+                counter(dict(context, raw_path='/private')), counter(dict(context, path_class='private')),
+                counter(dict(context, client_platform='private')), counter(dict(context, auth_present='private')),
+                counter(dict(context, abort_phase='private'))]},
+            {'name': 'aside_http_failure_investigations_total', 'values': [counter(investigation),
+                counter(dict(investigation, raw_path='/private')), counter(dict(investigation, endpoint='private')),
+                counter(dict(investigation, client_generation='private')),
+                counter(dict(investigation, request_attempt='private')),
+                counter(dict(investigation, auth_result='private')), counter(dict(investigation, body_kind='private')),
+                counter(dict(investigation, failure_stage='private'))]},
+            {'name': 'aside_operation_stage_seconds', 'values': [
+                dict(counter(stage), metricName='aside_operation_stage_seconds_count'),
+                dict(counter(dict(stage, le='0.25')), metricName='aside_operation_stage_seconds_bucket'),
+                dict(counter(dict(stage, le='+Inf')), metricName='aside_operation_stage_seconds_bucket'),
+                dict(counter(dict(stage, stage='private@example.com')), metricName='aside_operation_stage_seconds_count'),
+                dict(counter(dict(stage, body='secret')), metricName='aside_operation_stage_seconds_count')]},
+        ]}
+        result = p.compact(payload)
+        self.assertEqual(result['failures'], {json.dumps(list(labels.values()), separators=(',', ':')): 2})
+        self.assertEqual(result['contexts'], {json.dumps(list(context.values()), separators=(',', ':')): 2})
+        self.assertEqual(result['investigations'], {
+            json.dumps(list(investigation.values()), separators=(',', ':')): 2})
+        stage_key = json.dumps(['aside_operation_stage_seconds', '', 'otp_delivery', 'error'], separators=(',', ':'))
+        self.assertEqual(result['hist'], {stage_key: {'n': 2, 'b': {'0.25': 2, '+Inf': 2}}})
+        self.assertNotIn('private', json.dumps(result))
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_new_details_do_not_double_count_requests_and_old_history_remains_readable(self):
+        records = [sample(1000), sample(1060, 2), sample(1120, 4)]
+        failure_key = json.dumps(['POST', '/v1/auth/request-otp', '503', 'email_provider_unavailable'])
+        context_key = json.dumps(['POST', 'auth', 'ios', 'no', 'not_aborted', '503', 'email_provider_unavailable'])
+        investigation_values = ['POST', 'auth', 'auth_request_otp', 'matched', 'ios', 'context_v2', 'initial',
+                                'missing', 'not_checked', 'json', 'handler', 'not_aborted', '503',
+                                'email_provider_unavailable']
+        investigation_key = json.dumps(investigation_values)
+        stage_key = json.dumps(['aside_operation_stage_seconds', '', 'otp_delivery', 'error'])
+        http_error = json.dumps(['aside_http_duration_seconds', 'POST', '/v1/auth/request-otp', 'server_error'])
+        for index, row in enumerate(records[1:]):
+            row['api']['failures'] = {failure_key: index + 1}
+            row['api']['contexts'] = {context_key: index + 1}
+            row['api']['investigations'] = {investigation_key: index + 1}
+            row['api']['hist'][stage_key] = {'n': index + 1, 'b': {'0.25': index + 1, '+Inf': index + 1}}
+            row['api']['hist'][http_error] = {'n': index + 1, 'b': {'0.25': index + 1, '+Inf': index + 1}}
+        report = p.summarize(records, 1120, 1)
+        self.assertEqual(report['requests_excluding_health'], 6)
+        self.assertEqual(report['server_errors_or_aborts'], 2)
+        self.assertEqual(report['http_failure_detail_coverage_pct'], 1.7)
+        self.assertEqual(report['http_failure_details'], [{'route': 'POST /v1/auth/request-otp', 'status': '503',
+            'reason': 'email_provider_unavailable', 'requests': 1}])
+        self.assertEqual(report['http_failure_context_coverage_pct'], 1.7)
+        self.assertEqual(report['http_failure_contexts'], [{'method': 'POST', 'path_class': 'auth',
+            'client_platform': 'ios', 'auth_present': 'no', 'abort_phase': 'not_aborted', 'status': '503',
+            'reason': 'email_provider_unavailable', 'requests': 1}])
+        self.assertEqual(report['http_failure_investigation_coverage_pct'], 1.7)
+        self.assertEqual(report['http_failure_investigations'], [dict(zip(
+            ('method', 'path_class', 'endpoint', 'route_state', 'client_platform', 'client_generation',
+             'request_attempt', 'auth_kind', 'auth_result', 'body_kind', 'failure_stage', 'abort_phase',
+             'status', 'reason', 'requests'), investigation_values + [1]))])
+        self.assertEqual(report['http_failure_bursts'][0]['active_minutes'], 1)
+        self.assertEqual(report['http_failure_bursts'][0]['max_per_minute'], 1)
+        self.assertEqual(report['http_failure_bursts'][0]['longest_consecutive_active_minutes'], 1)
+        self.assertEqual(report['operation_stages'], [{'stage': 'otp_delivery', 'outcome': 'error', 'observations': 2, 'p95_ms': 237.5}])
+        self.assertEqual(report['http_error_routes'], [{'route': 'POST /v1/auth/request-otp', 'outcome': 'server_error', 'requests': 2}])
+        old_report = p.summarize([sample(1000), sample(1060, 2)], 1060, 1)
+        self.assertIsNone(old_report['http_failure_details'])
+        self.assertEqual(old_report['http_failure_detail_coverage_pct'], 0)
+        self.assertIsNone(old_report['http_failure_contexts'])
+        self.assertEqual(old_report['http_failure_context_coverage_pct'], 0)
+        self.assertIsNone(old_report['http_failure_investigations'])
+        self.assertIsNone(old_report['http_failure_bursts'])
+        self.assertEqual(old_report['http_failure_investigation_coverage_pct'], 0)
+
+    def test_failure_counter_resets_gaps_and_restarts_are_excluded(self):
+        key = json.dumps(['POST', 'unmatched', '401', 'auth_failure'])
+        records = [sample(1000), sample(1060), sample(1120, start=2), sample(1180, start=2),
+                   sample(1240, start=2), sample(1900, start=2)]
+        for row, count in zip(records, [5, 7, 10, 11, 0, 100]):
+            row['api']['failures'] = {key: count}
+        report = p.summarize(records, 1900, 1)
+        self.assertEqual(report['http_failure_details'][0]['requests'], 3)
+
+    def test_route_tail_counts_show_the_size_of_a_small_sample(self):
+        records = [sample(1000), sample(1060, 22)]
+        records[0]['api']['hist'][KEY]['b'] = {bound: 0 for bound in ('0.25', '1', '2.5', '5', '+Inf')}
+        records[1]['api']['hist'][KEY]['b'] = {'0.25': 20, '1': 20, '2.5': 20, '5': 22, '+Inf': 22}
+        route = p.summarize(records, 1060, 1)['slowest_routes_min_10_requests'][0]
+        self.assertEqual(route['over_1s'], 2)
+        self.assertEqual(route['over_2_5s'], 2)
+        self.assertEqual(route['p95_ms'], 3625)
+
+    def test_combined_histograms_are_not_averaged_percentiles(self):
+        self.assertAlmostEqual(p.quantile({'0.1': 90, '1': 100, '+Inf': 100}, .95), .55)
+        self.assertIsNone(p.quantile({'1': 0, '+Inf': 0}, .95))
+
+    def test_resets_and_gaps_are_not_counted(self):
+        records = [sample(1000, 10), sample(1060, 20), sample(1120, 2, 2), sample(1180, 5, 2), sample(1800, 100, 2)]
+        report = p.summarize(records, 1800, 1)
+        self.assertEqual(report['requests_excluding_health'], 13)
+        self.assertEqual(report['observed_restarts'], 1)
+        self.assertEqual(report['verdict'], 'insufficient_history')
+
+    def test_quiet_window_does_not_claim_capacity(self):
+        report = p.summarize([sample(1000 + i * 60) for i in range(61)], 4600, 1)
+        self.assertEqual(report['api_coverage_pct'], 100)
+        self.assertEqual(report['verdict'], 'low_traffic_no_capacity_conclusion')
+        self.assertIsNone(report['successful_request_latency']['p95_ms'])
+
+    def test_resize_requires_sustained_pressure_and_slowness(self):
+        records = [sample(1000 + i * 60, i * 10, busy=True) for i in range(61)]
+        for row in records:
+            row['api']['hist'][KEY]['b'] = {'0.1': 0, '1': row['api']['hist'][KEY]['n'], '+Inf': row['api']['hist'][KEY]['n']}
+        report = p.summarize(records, 4600, 1)
+        self.assertEqual(report['verdict'], 'consider_resize_after_bottleneck_check')
+        self.assertTrue(report['sustained_pressure_10min']['cpu'])
+        records[-1]['at'] = 4540
+        self.assertEqual(p.summarize(records[:-1], 5000, 1)['verdict'], 'insufficient_history')
+
+    def test_missing_api_and_health_are_explicit(self):
+        records = [sample(1000), sample(1060, 5), sample(1120, 10)]
+        for row in records[:2]:
+            row['api']['hist'] = {KEY.replace('/v1/feed/', '/health'): row['api']['hist'][KEY]}
+        records[2]['api'] = None
+        report = p.summarize(records, 1120, 1)
+        self.assertEqual(report['requests_excluding_health'], 0)
+        self.assertEqual(report['unavailable_api_samples'], 1)
+
+    def test_collector_retains_only_own_recent_files(self):
+        payload = {'started_at': 1, 'metrics': [{'name': 'unapproved_user_info', 'values': [{'value': 1, 'labels': {'email': 'secret'}}]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / '2000-01-01.jsonl.gz').write_bytes(b'old')
+            (directory / 'leave-me.txt').write_text('keep')
+            with patch.object(p, 'host_snapshot', return_value=sample(0)['host']), patch.object(p.subprocess, 'run') as run:
+                run.return_value.stdout = json.dumps(payload).encode()
+                p.collect(directory)
+            records = list(p.read_samples(directory, 0))
+            self.assertEqual(records[0]['api'], {'start': 1, 'hist': {}, 'gauges': {}})
+            self.assertFalse((directory / '2000-01-01.jsonl.gz').exists())
+            self.assertTrue((directory / 'leave-me.txt').exists())
+            self.assertEqual(next(directory.glob('*.gz')).stat().st_mode & 0o777, 0o600)
+
+
+if __name__ == '__main__':
+    unittest.main()

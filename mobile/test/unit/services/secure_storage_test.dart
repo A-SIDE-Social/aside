@@ -65,11 +65,16 @@ void main() {
       verify(() => mockStorage.write(key: 'user_id', value: 'u2')).called(1);
     });
 
-    test('clearAll deletes all stored values', () async {
-      when(() => mockStorage.deleteAll()).thenAnswer((_) async {});
+    test('clearAll deletes session values without wiping E2EE storage', () async {
+      when(() => mockStorage.delete(key: any(named: 'key')))
+          .thenAnswer((_) async {});
 
       await secureStorage.clearAll();
-      verify(() => mockStorage.deleteAll()).called(1);
+
+      verify(() => mockStorage.delete(key: 'auth_token')).called(1);
+      verify(() => mockStorage.delete(key: 'refresh_token')).called(1);
+      verify(() => mockStorage.delete(key: 'user_id')).called(1);
+      verifyNever(() => mockStorage.deleteAll());
     });
   });
 }
