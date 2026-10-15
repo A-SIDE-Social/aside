@@ -17,6 +17,8 @@ void main() {
 
   setUp(() {
     mockApi = MockApiService();
+    when(() => mockApi.validateInvite(any()))
+        .thenAnswer((_) async => {'valid': false});
   });
 
   Widget createApp() {
@@ -124,6 +126,48 @@ void main() {
 
     expect(find.text('This invite link is no longer valid.'), findsOneWidget);
     expect(find.text('Close'), findsOneWidget);
+    verifyNever(() => mockApi.requestFromSlug(any()));
+  });
+  testWidgets('a legacy code previews its owner before redeeming',
+      (tester) async {
+    when(() => mockApi.getUserBySlug(slug)).thenThrow(DioException(
+      requestOptions: RequestOptions(path: '/lookup'),
+      response: Response(
+          requestOptions: RequestOptions(path: '/lookup'), statusCode: 404),
+    ));
+    when(() => mockApi.validateInvite(slug)).thenAnswer((_) async => {
+          'valid': true,
+          'inviter': {'display_name': 'Legacy friend'},
+        });
+    when(() => mockApi.redeemInvite(slug))
+        .thenAnswer((_) async => {'is_mutual': true});
+    await tester.pumpWidget(createApp());
+    await tester.pumpAndSettle();
+    expect(find.text('Legacy friend'), findsOneWidget);
+    verifyNever(() => mockApi.redeemInvite(any()));
+    await tester.tap(find.text('Connect'));
+    await tester.pumpAndSettle();
+    verify(() => mockApi.redeemInvite(slug)).called(1);
+    verifyNever(() => mockApi.requestFromSlug(any()));
+    expect(find.text('Home'), findsOneWidget);
+  });
+
+  testWidgets(
+      'lookup network errors can retry and never fall back to legacy redemption',
+      (tester) async {
+    when(() => mockApi.getUserBySlug(slug)).thenThrow(DioException(
+      requestOptions: RequestOptions(path: '/lookup'),
+      type: DioExceptionType.connectionError,
+    ));
+    await tester.pumpWidget(createApp());
+    await tester.pumpAndSettle();
+    expect(find.text('Could not load this invite link.'), findsOneWidget);
+    verifyNever(() => mockApi.validateInvite(any()));
+    when(() => mockApi.getUserBySlug(slug)).thenAnswer(
+        (_) async => {'id': 'u2', 'display_name': 'Recovered friend'});
+    await tester.tap(find.text('Retry'));
+    await tester.pumpAndSettle();
+    expect(find.text('Recovered friend'), findsOneWidget);
     verifyNever(() => mockApi.requestFromSlug(any()));
   });
 }

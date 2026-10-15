@@ -1,9 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:pin_code_fields/pin_code_fields.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_colors.dart';
 import '../../core/config/constants.dart';
@@ -41,7 +39,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
 
   Future<void> _requestOtp() async {
     final email = _emailController.text.trim();
-    if (email.isEmpty) return;
+    if (_loading || email.isEmpty) return;
 
     setState(() {
       _loading = true;
@@ -65,7 +63,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   }
 
   Future<void> _verifyOtp(String code) async {
-    if (code.length != 6) return;
+    if (_loading || code.length != 6) return;
     _otpCode = code;
 
     setState(() {
@@ -98,7 +96,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     final displayName = _displayNameController.text.trim();
     final inviteCode = _inviteCodeController.text.trim();
 
-    if (displayName.isEmpty) return;
+    if (_loading || displayName.isEmpty) return;
 
     setState(() {
       _loading = true;
@@ -116,13 +114,6 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
             displayName: displayName,
             inviteCode: inviteCode.isNotEmpty ? inviteCode : null,
           );
-      // New registration succeeded — flag the welcome sheet for the feed
-      // screen to pick up, then go to contact sync onboarding.
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('pending_welcome_sheet', true);
-      if (mounted) {
-        context.go('/onboarding/contacts');
-      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -401,7 +392,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
           TextField(
             controller: _inviteCodeController,
             decoration: const InputDecoration(
-              hintText: 'Invite link (optional)',
+              hintText: 'Invite link or code (optional)',
             ),
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _register(),
@@ -412,7 +403,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
             // alphanumeric code on the server side — kept for
             // backwards-compat. The hint just says "link" now to
             // align with how new shares actually happen.
-            'Paste the invite link a friend shared with you.',
+            'Paste a friend’s invite link or enter their code. You can also add friends after signup.',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colors.textTertiary,
             ),

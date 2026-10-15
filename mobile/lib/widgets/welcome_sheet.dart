@@ -10,7 +10,8 @@ const _kWelcomeSubtitle = 'A private space for your real friends.';
 const _kInviteCardTitle = 'Invite your friends';
 const _kInviteCardBody =
     'You have a personal invite link. Share it with anyone you want '
-    'to connect with — find it in Settings.';
+    'to connect with — find it in Settings. Have a friend’s link or code? '
+    'Choose Add friend in Settings or Friends. Contacts are optional.';
 const _kInviteCardButton = 'Open Settings';
 
 const _kWidgetCardTitle = 'Add the home screen widget';

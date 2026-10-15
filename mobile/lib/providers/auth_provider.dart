@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/config/env.dart';
 import '../core/crypto/key_registry_sync.dart';
@@ -17,6 +18,7 @@ import '../core/storage/secure_storage.dart';
 import '../models/user.dart';
 import 'crypto_provider.dart';
 import 'socket_provider.dart';
+import 'feed_updates_provider.dart';
 
 enum AuthStatus { initial, loading, unauthenticated, authenticated }
 
@@ -24,11 +26,13 @@ class AuthState {
   final AuthStatus status;
   final User? user;
   final String? error;
+  final bool isNewRegistration;
 
   const AuthState({
     this.status = AuthStatus.initial,
     this.user,
     this.error,
+    this.isNewRegistration = false,
   });
 
   AuthState copyWith({
@@ -40,6 +44,7 @@ class AuthState {
       status: status ?? this.status,
       user: user ?? this.user,
       error: error,
+      isNewRegistration: isNewRegistration,
     );
   }
 }
@@ -186,6 +191,11 @@ class AuthNotifier extends Notifier<AuthState> {
     _pushService ??= PushNotificationService(
       _apiService,
       onDeepLink: _onDeepLink,
+      onNewPost: (postId) {
+        if (state.status == AuthStatus.authenticated) {
+          ref.read(feedUpdatesProvider.notifier).receive(postId);
+        }
+      },
     );
     _pushService!.initialize();
   }
@@ -292,7 +302,19 @@ class AuthNotifier extends Notifier<AuthState> {
       await AppGroupChannel.setUserId(user.id);
       await AppGroupChannel.reloadWidgets();
 
-      state = AuthState(status: AuthStatus.authenticated, user: user);
+      if (displayName != null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('pending_welcome_sheet', true);
+        } catch (_) {
+          debugPrint('Could not save welcome preference');
+        }
+      }
+      state = AuthState(
+        status: AuthStatus.authenticated,
+        user: user,
+        isNewRegistration: displayName != null,
+      );
 
       // Identify user with RevenueCat.
       RevenueCatService.identify(user.id);

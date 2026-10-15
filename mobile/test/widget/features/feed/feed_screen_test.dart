@@ -6,8 +6,19 @@ import 'package:mocktail/mocktail.dart';
 import 'package:aside/providers/api_provider.dart';
 import 'package:aside/features/feed/feed_screen.dart';
 import 'package:aside/models/post.dart';
+import 'package:aside/models/user.dart';
+import 'package:aside/providers/auth_provider.dart';
+import 'package:aside/providers/feed_updates_provider.dart';
 import '../../../helpers/fixtures.dart';
 import '../../../helpers/mocks.dart';
+
+class _Auth extends AuthNotifier {
+  @override
+  AuthState build() => AuthState(
+        status: AuthStatus.authenticated,
+        user: User.fromJson(userJson(id: 'feed-reader')),
+      );
+}
 
 void main() {
   late MockApiService mockApi;
@@ -22,6 +33,7 @@ void main() {
     return ProviderScope(
       overrides: [
         apiServiceProvider.overrideWithValue(mockApi),
+        authProvider.overrideWith(_Auth.new),
       ],
       child: const MaterialApp(
         home: Scaffold(body: FeedScreen()),
@@ -38,6 +50,53 @@ void main() {
   }
 
   group('FeedScreen', () {
+    testWidgets('new posts wait for a tap and clear after a successful refresh',
+        (tester) async {
+      when(() => mockApi.getFeed(
+            before: any(named: 'before'),
+            groupId: any(named: 'groupId'),
+          )).thenAnswer((_) async => {'posts': <dynamic>[]});
+      stubGroupsEmpty();
+      await tester.pumpWidget(createFeedScreen());
+      await tester.pumpAndSettle();
+      Navigator.of(tester.element(find.byType(FeedScreen))).pop();
+      await tester.pumpAndSettle();
+      verify(() => mockApi.getFeed(before: null, groupId: null)).called(1);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(FeedScreen)),
+      );
+      container.read(feedUpdatesProvider.notifier).receive('friend-post');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('new-posts-button')), findsOneWidget);
+      verifyNever(() => mockApi.getFeed(before: null, groupId: null));
+      await tester.tap(find.byKey(const ValueKey('new-posts-button')));
+      await tester.pumpAndSettle();
+      verify(() => mockApi.getFeed(before: null, groupId: null)).called(1);
+      expect(find.byKey(const ValueKey('new-posts-button')), findsNothing);
+    });
+
+    testWidgets('refresh acknowledges posts received since opening Home',
+        (tester) async {
+      when(() => mockApi.getFeed(
+            before: any(named: 'before'),
+            groupId: any(named: 'groupId'),
+          )).thenAnswer((_) async => {'posts': []});
+      stubGroupsEmpty();
+
+      await tester.pumpWidget(createFeedScreen());
+      await tester.pumpAndSettle();
+      verify(() => mockApi.markFeedSeen()).called(1);
+
+      final indicator = tester.widget<RefreshIndicator>(
+        find.byType(RefreshIndicator),
+      );
+      await indicator.onRefresh();
+      await tester.pumpAndSettle();
+
+      verify(() => mockApi.markFeedSeen()).called(1);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('shows empty state when feed has no posts', (tester) async {
       when(() => mockApi.getFeed(
             before: any(named: 'before'),

@@ -82,11 +82,11 @@ describe('extractSlug', () => {
     expect(extractSlug('  k7m2pq9xj4n6  ')).toBe('k7m2pq9xj4n6'); // trims
   });
 
-  test('rejects uppercase (bare-slug match is lowercase only)', () => {
+  test('normalizes uppercase personal slugs', () => {
     // Strict-lowercase regex is what disambiguates slugs from legacy
     // hex codes when both are 12 chars. A user pasting an uppercase
     // string falls through to legacy-code parsing in the auth route.
-    expect(extractSlug('K7M2PQ9XJ4N6')).toBeNull();
+    expect(extractSlug('K7M2PQ9XJ4N6')).toBe('k7m2pq9xj4n6');
   });
 
   test('rejects wrong-length input', () => {
@@ -151,4 +151,13 @@ describe('extractSlug', () => {
     expect(extractSlug('not a url')).toBeNull();
     expect(extractSlug('http://')).toBeNull();
   });
+});
+
+describe('Strict invite URL parsing', () => {
+  test.each([
+    'ftp://example.com/k7m2pq9xj4n6',
+    'https://user@example.com/k7m2pq9xj4n6',
+    'https://example.com/k7m2pq9xj4n6/extra',
+    'https://example.com//k7m2pq9xj4n6',
+  ])('rejects %s', input => expect(extractSlug(input, ['example.com'])).toBeNull());
 });

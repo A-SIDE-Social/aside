@@ -28,11 +28,14 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>app-1-386588419142-ios-072a1a9dfb99083605d647</string>
+				<string>aside</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<true/>
 	<key>LSRequiresIPhoneOS</key>

@@ -6,9 +6,8 @@
 // makes accidental collisions and brute-force enumeration both
 // negligible.
 //
-// Slugs are never typed by humans — they ride in URLs and QR codes —
-// so the alphabet does not exclude visually-ambiguous characters
-// (0/o/1/l/i). The full lowercase alphanumeric set keeps the keyspace
+// Slugs can be pasted as URLs or entered as codes. The existing
+// alphabet includes visually ambiguous characters (0/o/1/l/i). The full lowercase alphanumeric set keeps the keyspace
 // as large as possible.
 
 import { randomBytes } from 'node:crypto';
@@ -115,10 +114,8 @@ export async function generateUniqueSlug(
 // Returns null if the input doesn't match the slug shape.
 //
 // Used by the signup-field disambiguator in src/routes/auth.ts to
-// figure out whether the user pasted a URL, a slug, or a legacy
-// 12-char alphanumeric invite code. Slug regex is stricter than
-// legacy-code regex (lowercase only vs mixed case), so call this
-// first; if it returns null, fall through to legacy-code parsing.
+// normalize personal links before looking up their owner. Bare codes
+// are ambiguous: resolve a personal slug first, then a legacy code.
 export function extractSlug(
   input: string,
   allowedHosts?: string[],
@@ -126,25 +123,30 @@ export function extractSlug(
   if (!input) return null;
   const trimmed = input.trim();
 
-  // Bare slug
-  if (SLUG_REGEX.test(trimmed)) return trimmed;
+  if (SLUG_REGEX.test(trimmed.toLowerCase())) return trimmed.toLowerCase();
+  const url = inviteUrl(trimmed, allowedHosts);
+  if (!url) return null;
+  const match = /^\/([a-z0-9]{12})\/?$/i.exec(url.pathname);
+  return match ? match[1].toLowerCase() : null;
+}
 
-  // URL — extract the first path segment and test it. When the caller
-  // passes allowed hosts, reject URLs for other domains while still
-  // accepting bare slugs.
+function inviteUrl(input: string, allowedHosts?: string[]): URL | null {
   let url: URL;
   try {
-    url = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+    url = new URL(input.includes('://') ? input : `https://${input}`);
   } catch {
     return null;
   }
-  if (allowedHosts?.length) {
-    const host = url.hostname.toLowerCase();
-    if (!allowedHosts.map((h) => h.toLowerCase()).includes(host)) {
-      return null;
-    }
-  }
-  const firstSegment = url.pathname.split('/').filter(Boolean)[0];
-  if (firstSegment && SLUG_REGEX.test(firstSegment)) return firstSegment;
-  return null;
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+  if (allowedHosts?.length &&
+      !allowedHosts.map(h => h.toLowerCase()).includes(url.hostname.toLowerCase())) return null;
+  return url;
+}
+
+/** Old shares used /join/<code>. Preserve case for the legacy table. */
+export function extractLegacyCode(input: string, allowedHosts?: string[]): string | null {
+  const trimmed = input.trim();
+  if (/^[a-z0-9_-]{1,64}$/i.test(trimmed)) return trimmed;
+  const url = inviteUrl(trimmed, allowedHosts);
+  return url ? /^\/join\/([a-zA-Z0-9]{12})\/?$/.exec(url.pathname)?.[1] ?? null : null;
 }

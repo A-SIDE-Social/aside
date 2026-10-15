@@ -5,6 +5,7 @@ import '../models/post.dart';
 import '../models/post_reaction.dart';
 import 'api_provider.dart';
 import 'auth_provider.dart';
+import 'feed_updates_provider.dart';
 
 /// Currently selected group filter for the feed. `null` means show all.
 ///
@@ -28,6 +29,7 @@ final feedGroupFilterProvider =
 /// than being re-created (which would clear cached data on every
 /// filter change).
 class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
+  int _loadGeneration = 0;
   String? _nextCursor;
   bool _hasMore = true;
 
@@ -56,6 +58,8 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
   bool get hasOlderPosts => _hasOlderPosts;
 
   Future<void> loadInitial() async {
+    final generation = ++_loadGeneration;
+    final pendingAtStart = Set<String>.of(ref.read(feedUpdatesProvider));
     state = const AsyncValue.loading();
     _nextCursor = null;
     _hasMore = true;
@@ -65,6 +69,7 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
       final apiService = ref.read(apiServiceProvider);
       final groupId = ref.read(feedGroupFilterProvider);
       final data = await apiService.getFeed(groupId: groupId);
+      if (!ref.mounted || generation != _loadGeneration) return;
       final list = (data['posts'] as List<dynamic>?) ?? [];
       final posts =
           list.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
@@ -77,11 +82,16 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
       _hasMore = posts.length >= 20; // assume page size of 20
       _hasOlderPosts = data['has_older_posts'] as bool? ?? false;
       state = AsyncValue.data(posts);
+      ref.read(feedUpdatesProvider.notifier).acknowledge(
+            groupId == null ? pendingAtStart : posts.map((post) => post.id),
+          );
 
       // Cache latest friend's photo for iOS widget
       _cacheWidgetImage(posts);
     } catch (e, st) {
-      state = AsyncValue.error(e, st);
+      if (ref.mounted && generation == _loadGeneration) {
+        state = AsyncValue.error(e, st);
+      }
     }
   }
 
@@ -89,11 +99,13 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
     if (!_hasMore || _nextCursor == null) return;
 
     final current = state.value ?? [];
+    final generation = _loadGeneration;
     try {
       final apiService = ref.read(apiServiceProvider);
       final groupId = ref.read(feedGroupFilterProvider);
       final data =
           await apiService.getFeed(before: _nextCursor, groupId: groupId);
+      if (!ref.mounted || generation != _loadGeneration) return;
       final list = (data['posts'] as List<dynamic>?) ?? [];
       final newPosts =
           list.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
@@ -104,7 +116,9 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
       _hasMore = newPosts.length >= 20;
       state = AsyncValue.data([...current, ...newPosts]);
     } catch (e, st) {
-      state = AsyncValue.error(e, st);
+      if (ref.mounted && generation == _loadGeneration) {
+        state = AsyncValue.error(e, st);
+      }
     }
   }
 

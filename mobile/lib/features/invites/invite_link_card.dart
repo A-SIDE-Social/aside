@@ -250,7 +250,7 @@ class _LinkCardBody extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Anyone who taps your link or scans your QR sends you a connection request. You decide whether to accept. Regenerating makes the old link stop working.',
+            'Friends can open or paste your link to request a connection. Accept their request in Friends to share posts and messages. Regenerating makes the old link stop working.',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colors.textTertiary,
             ),

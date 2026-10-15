@@ -83,6 +83,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   showDivider: true,
                 ),
                 _SettingsRow(
+                  title: 'Add friend with a link or code',
+                  onTap: () => context.push('/connections/add'),
+                  showDivider: true,
+                ),
+                _SettingsRow(
                   title: 'Find Friends from Contacts',
                   onTap: () => context.push('/contacts'),
                   showDivider: false,
@@ -94,9 +99,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 16),
 
           // Invite Friends — inline card (no nav row). Personal
-          // invite link + Share / QR / Regenerate. Legacy invite
-          // codes were removed in 1.3.0, so there's nothing to redeem
-          // here either.
+          // invite link + Share / QR / Regenerate.
           const InviteLinkCard(),
 
           const SizedBox(height: 16),

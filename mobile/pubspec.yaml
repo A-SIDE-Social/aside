@@ -1,7 +1,7 @@
 name: aside
 description: "A/SIDE — private photo + video + DM social for the friends who actually know you."
 publish_to: 'none'
-version: 1.4.0+51
+version: 1.5.0+52
 
 environment:
   sdk: ^3.5.0
@@ -22,6 +22,7 @@ dependencies:
   # Storage
   flutter_secure_storage: ^10.0.0
   shared_preferences: ^2.5.3
+  path_provider: ^2.1.5
 
   # Media
   cached_network_image: ^3.4.1

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:aside/models/user.dart';
@@ -17,6 +18,7 @@ void main() {
   late AuthNotifier notifier;
 
   setUp(() {
+    SharedPreferences.setMockInitialValues({});
     mockApi = MockApiService();
     mockStorage = MockSecureStorage();
     container = ProviderContainer(overrides: [

@@ -52,6 +52,14 @@ class SpeechNotifier extends Notifier<SpeechStateData> {
   StreamSubscription<SpeechResult>? _subscription;
   String _finalizedText = '';
 
+  int? get activeSessionId => ref.mounted ? state.sessionId : null;
+
+  void cancelSession(int? sessionId) {
+    if (ref.mounted && sessionId != null && state.sessionId == sessionId) {
+      unawaited(cancelListening());
+    }
+  }
+
   @override
   SpeechStateData build() {
     ref.onDispose(() {
