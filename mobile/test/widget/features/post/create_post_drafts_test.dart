@@ -92,6 +92,7 @@ void main() {
   testWidgets('close saves immediately and reopening resumes the same draft',
       (tester) async {
     await open(tester);
+    expect(find.text('Create a new post'), findsNothing);
     await enterText(tester, 'An unfinished thought');
     await tester.tap(find.byIcon(Icons.close).first);
     await tester.pumpAndSettle();
@@ -160,6 +161,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Home'), findsOneWidget);
     expect(container.read(draftProvider), isEmpty);
+  });
+
+  testWidgets('new-post action is only visible before opening the draft picker',
+      (tester) async {
+    final draft = PostDraft(
+      id: 'saved',
+      caption: 'For later',
+      isTextPost: true,
+      localFilePaths: const [],
+      videoFlags: const [],
+      completedMedia: const [],
+      nextFileIndex: 0,
+      createdAt: DateTime(2026),
+    );
+    SharedPreferences.setMockInitialValues({
+      'post_drafts:composer-user': [draft.encode()],
+    });
+    await open(tester);
+    expect(find.text('Create a new post'), findsOneWidget);
+    await tester.tap(find.text('Create a new post'));
+    await tester.pumpAndSettle();
+    expect(find.text('Text post'), findsOneWidget);
+    expect(find.text('Create a new post'), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('publishing removes the autosaved draft without recreating it',

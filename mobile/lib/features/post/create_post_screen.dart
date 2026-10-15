@@ -89,6 +89,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   bool _allowPop = false;
   bool _closing = false;
   bool _published = false;
+  bool _showingPostTypePicker = false;
   String? _draftError;
 
   static const _maxMedia = AppLimits.maxPhotosPerPost;
@@ -127,6 +128,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   }
 
   void _showPostTypePicker() {
+    if (_showingPostTypePicker) return;
+    setState(() => _showingPostTypePicker = true);
     var didPick = false;
 
     showModalBottomSheet(
@@ -201,6 +204,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
         ),
       ),
     ).then((_) {
+      if (!mounted) return;
+      setState(() => _showingPostTypePicker = false);
       if (!didPick && _media.isEmpty && !_isTextPost && mounted) {
         context.pop();
       }
@@ -1115,6 +1120,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
     final theme = Theme.of(context);
     final hasMedia = _media.isNotEmpty;
     final legacyDrafts = ref.watch(legacyDraftCountProvider).value ?? 0;
+    final hasSavedDrafts = ref.watch(draftProvider).isNotEmpty;
 
     return PopScope(
       canPop: _allowPop || _published,
@@ -1206,7 +1212,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildDraftsBanner(colors, theme),
-                  if (!_isTextPost && !hasMedia) ...[
+                  if (!_isTextPost &&
+                      !hasMedia &&
+                      !_showingPostTypePicker &&
+                      (hasSavedDrafts || legacyDrafts > 0)) ...[
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: FilledButton.icon(
