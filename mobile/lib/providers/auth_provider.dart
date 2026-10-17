@@ -20,7 +20,13 @@ import 'crypto_provider.dart';
 import 'socket_provider.dart';
 import 'feed_updates_provider.dart';
 
-enum AuthStatus { initial, loading, unauthenticated, authenticated }
+enum AuthStatus {
+  initial,
+  loading,
+  recoveryRequired,
+  unauthenticated,
+  authenticated
+}
 
 class AuthState {
   final AuthStatus status;
@@ -67,14 +73,14 @@ class AuthNotifier extends Notifier<AuthState> {
     PushNotificationService? pushService,
     bool autoInitialize = true,
     User? initialUser,
-  }) : _injectedSecureStorage = secureStorage,
-       _injectedApiService = apiService,
-       _injectedOnDeepLink = onDeepLink,
-       _injectedKeyRegistrySync = keyRegistrySync,
-       _injectedSocketService = socketService,
-       _injectedPushService = pushService,
-       _autoInitialize = autoInitialize,
-       _initialUser = initialUser;
+  })  : _injectedSecureStorage = secureStorage,
+        _injectedApiService = apiService,
+        _injectedOnDeepLink = onDeepLink,
+        _injectedKeyRegistrySync = keyRegistrySync,
+        _injectedSocketService = socketService,
+        _injectedPushService = pushService,
+        _autoInitialize = autoInitialize,
+        _initialUser = initialUser;
 
   // Test-injection slots — null in production.
   final SecureStorage? _injectedSecureStorage;
@@ -123,14 +129,12 @@ class AuthNotifier extends Notifier<AuthState> {
       _apiService = ApiService(apiClient);
     }
 
-    _keyRegistrySync =
-        _injectedKeyRegistrySync ??
+    _keyRegistrySync = _injectedKeyRegistrySync ??
         KeyRegistrySync(ref.read(signalClientProvider), _apiService);
     _socketService = _injectedSocketService ?? ref.read(socketServiceProvider);
     _pushService = _injectedPushService;
 
-    _onDeepLink =
-        _injectedOnDeepLink ??
+    _onDeepLink = _injectedOnDeepLink ??
         (route) {
           ref.read(pendingDeepLinkProvider.notifier).set(route);
         };
@@ -245,15 +249,16 @@ class AuthNotifier extends Notifier<AuthState> {
       unawaited(_connectSocket());
     } on DioException catch (e) {
       final status = e.response?.statusCode;
-      if (status == 401 || status == 403) {
+      if (status == 401) {
         await handleAuthFailure();
         return;
       }
-      // For network/server errors, keep tokens so next launch can retry.
-      state = state.copyWith(status: AuthStatus.unauthenticated);
+      // A failed session check is not a sign-out. Let the user retry
+      // with the saved credentials instead of requesting another email code.
+      state = state.copyWith(status: AuthStatus.recoveryRequired);
     } catch (_) {
-      // Keep tokens on unexpected errors.
-      state = state.copyWith(status: AuthStatus.unauthenticated);
+      // Storage and response failures can also be temporary.
+      state = state.copyWith(status: AuthStatus.recoveryRequired);
     }
   }
 
@@ -281,9 +286,8 @@ class AuthNotifier extends Notifier<AuthState> {
       final responseMap = data as Map<String, dynamic>;
       final token =
           (responseMap['access_token'] ?? responseMap['token']) as String;
-      final refreshToken =
-          (responseMap['refresh_token'] ?? responseMap['refreshToken'])
-              as String;
+      final refreshToken = (responseMap['refresh_token'] ??
+          responseMap['refreshToken']) as String;
       final userData = responseMap['user'] as Map<String, dynamic>;
 
       await _secureStorage.setAuthToken(token);
@@ -335,20 +339,21 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Refresh the current auth session using the stored refresh token.
   Future<void> refreshSession() async {
+    String? refreshToken;
     try {
-      final refreshToken = await _secureStorage.getRefreshToken();
+      refreshToken = await _secureStorage.getRefreshToken();
       if (refreshToken == null) {
         await handleAuthFailure();
         return;
       }
 
       final data = await _apiService.refreshToken(refreshToken);
+      if (await _secureStorage.getRefreshToken() != refreshToken) return;
       final responseMap = data as Map<String, dynamic>;
       final newToken =
           (responseMap['access_token'] ?? responseMap['token']) as String;
-      final newRefreshToken =
-          (responseMap['refresh_token'] ?? responseMap['refreshToken'])
-              as String?;
+      final newRefreshToken = (responseMap['refresh_token'] ??
+          responseMap['refreshToken']) as String?;
 
       await _secureStorage.setAuthToken(newToken);
       if (newRefreshToken != null) {
@@ -356,8 +361,15 @@ class AuthNotifier extends Notifier<AuthState> {
       }
       // Keep App Group token in sync
       await AppGroupChannel.setToken(newToken);
-    } catch (_) {
-      await handleAuthFailure();
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 401) {
+        if (await _secureStorage.getRefreshToken() == refreshToken) {
+          await handleAuthFailure();
+        }
+        return;
+      }
+      // Temporary provider/network failures do not invalidate credentials.
+      rethrow;
     }
   }
 
@@ -377,10 +389,10 @@ class AuthNotifier extends Notifier<AuthState> {
     late final Future<void> operation;
     operation = _performSignOut(performServerCleanup: performServerCleanup)
         .whenComplete(() {
-          if (identical(_signOutInFlight, operation)) {
-            _signOutInFlight = null;
-          }
-        });
+      if (identical(_signOutInFlight, operation)) {
+        _signOutInFlight = null;
+      }
+    });
     _signOutInFlight = operation;
     return operation;
   }

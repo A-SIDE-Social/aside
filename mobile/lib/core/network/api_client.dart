@@ -18,6 +18,7 @@ String get asideClientPlatform {
 }
 
 const skipAuthRecoveryExtra = 'skipAuthRecovery';
+const _authRetriedExtra = 'authRetried';
 
 const _publicAuthPaths = {
   ApiEndpoints.requestOtp,
@@ -52,7 +53,7 @@ class ApiException implements Exception {
       case DioExceptionType.badResponse:
         final serverMessage = response?.data is Map
             ? (response!.data['error'] as String? ??
-                  response.data['message'] as String?)
+                response.data['message'] as String?)
             : null;
         message = serverMessage ?? _defaultMessageForStatus(statusCode);
         break;
@@ -109,8 +110,8 @@ class ApiClient {
     required SecureStorage secureStorage,
     this.onAuthFailure,
     Dio? dio,
-  }) : _secureStorage = secureStorage,
-       dio = dio ?? Dio() {
+  })  : _secureStorage = secureStorage,
+        dio = dio ?? Dio() {
     this.dio.options = BaseOptions(
       baseUrl: Env.apiBaseUrl,
       connectTimeout: const Duration(seconds: 30),
@@ -125,17 +126,17 @@ class ApiClient {
     );
 
     this.dio.interceptors.add(
-      _AuthInterceptor(
-        dio: this.dio,
-        secureStorage: _secureStorage,
-        onAuthFailure: _handleAuthFailure,
-      ),
-    );
+          _AuthInterceptor(
+            dio: this.dio,
+            secureStorage: _secureStorage,
+            onAuthFailure: _handleAuthFailure,
+          ),
+        );
 
     if (kDebugMode) {
       this.dio.interceptors.add(
-        LogInterceptor(requestBody: true, responseBody: true),
-      );
+            LogInterceptor(requestBody: true, responseBody: true),
+          );
     }
   }
 
@@ -149,136 +150,221 @@ class _AuthInterceptor extends Interceptor {
   final SecureStorage _secureStorage;
   final VoidCallback _onAuthFailure;
 
-  bool _isRefreshing = false;
-  final List<_PendingRequest> _pendingRequests = [];
+  Future<({String accessToken, String refreshToken})>? _refreshInFlight;
+  // Keep the session marker private and in memory only. Never attach refresh
+  // credentials to request extras or diagnostic metadata.
+  final _requestSessions = Expando<_RequestSession>();
+  String? _lastObservedToken;
+  bool _authFailureNotified = false;
 
   _AuthInterceptor({
     required Dio dio,
     required SecureStorage secureStorage,
     required VoidCallback onAuthFailure,
-  }) : _dio = dio,
-       _secureStorage = secureStorage,
-       _onAuthFailure = onAuthFailure;
+  })  : _dio = dio,
+        _secureStorage = secureStorage,
+        _onAuthFailure = onAuthFailure;
 
   @override
   void onRequest(
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    final token = await _secureStorage.getAuthToken();
-    if (token != null) {
-      options.headers['Authorization'] = 'Bearer $token';
+    try {
+      if (options.extra[skipAuthRecoveryExtra] != true &&
+          !_publicAuthPaths.contains(options.uri.path)) {
+        final refreshToken = await _secureStorage.getRefreshToken();
+        final session = _requestSessions[options];
+        if (session != null && session.refreshToken != refreshToken) {
+          throw const _SessionChanged();
+        }
+        _requestSessions[options] = _RequestSession(refreshToken);
+      }
+      final token = await _secureStorage.getAuthToken();
+      if (token != null) {
+        if (token != _lastObservedToken) {
+          _lastObservedToken = token;
+          _authFailureNotified = false;
+        }
+        options.headers['Authorization'] = 'Bearer $token';
+      } else {
+        options.headers.remove('Authorization');
+      }
+      handler.next(options);
+    } on _SessionChanged {
+      handler.reject(DioException(
+        requestOptions: options,
+        type: DioExceptionType.cancel,
+        message: 'Session changed during authentication recovery.',
+      ));
+    } catch (error, stackTrace) {
+      handler.reject(DioException(
+        requestOptions: options,
+        error: error,
+        stackTrace: stackTrace,
+      ));
     }
-    handler.next(options);
   }
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
     final request = err.requestOptions;
-    final skipsAuthRecovery =
-        request.extra[skipAuthRecoveryExtra] == true ||
+    final skipsAuthRecovery = request.extra[skipAuthRecoveryExtra] == true ||
         _publicAuthPaths.contains(request.uri.path);
     if (err.response?.statusCode != 401 || skipsAuthRecovery) {
       handler.next(err);
       return;
     }
 
-    // If already refreshing, queue this request to retry after refresh.
-    if (_isRefreshing) {
-      _pendingRequests.add(_PendingRequest(err.requestOptions, handler));
-      return;
-    }
-
-    _isRefreshing = true;
     try {
       final refreshToken = await _secureStorage.getRefreshToken();
-      if (refreshToken == null) {
-        _onAuthFailure();
-        _failPending(err);
+      final session = _requestSessions[request];
+      if (session != null && session.refreshToken != refreshToken) {
+        throw const _SessionChanged();
+      }
+      final currentToken = await _secureStorage.getAuthToken();
+      if (request.extra[_authRetriedExtra] == true) {
+        // A retried request must never wait for its own refresh operation.
+        // Also avoid signing out a newer session for a delayed old response.
+        if (request.headers['Authorization'] != 'Bearer $currentToken') {
+          throw const _SessionChanged();
+        }
+        _notifyAuthFailure();
+        handler.next(err);
+        return;
+      }
+      if (_authFailureNotified) {
         handler.next(err);
         return;
       }
 
-      // Attempt to refresh the token.
-      final response = await Dio(
-        BaseOptions(
-          baseUrl: _dio.options.baseUrl,
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'X-A-Side-Client-Platform': asideClientPlatform,
-            'X-A-Side-Client-Generation': '2',
-            'X-A-Side-Request-Attempt': 'initial',
-          },
-        ),
-      ).post(ApiEndpoints.refreshToken, data: {'refresh_token': refreshToken});
-
-      final newAuthToken =
-          (response.data['access_token'] ?? response.data['token']) as String?;
-      final newRefreshToken =
-          (response.data['refresh_token'] ?? response.data['refreshToken'])
-              as String?;
-
-      if (newAuthToken == null) {
-        _onAuthFailure();
-        _failPending(err);
-        handler.next(err);
-        return;
-      }
-
-      await _secureStorage.setAuthToken(newAuthToken);
-      if (newRefreshToken != null) {
-        await _secureStorage.setRefreshToken(newRefreshToken);
-      }
-
-      // Retry the original request with the new token.
-      final options = err.requestOptions;
-      options.headers['Authorization'] = 'Bearer $newAuthToken';
-      options.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
-      final retryResponse = await _dio.fetch(options);
+      // A slow response may have used the old token even though another
+      // request already finished refreshing it. Reuse the current token.
+      final credentials = currentToken != null &&
+              request.headers['Authorization'] != 'Bearer $currentToken'
+          ? (accessToken: currentToken, refreshToken: refreshToken)
+          : await _refreshAuthToken();
+      _requestSessions[request] = _RequestSession(credentials.refreshToken);
+      request.extra[_authRetriedExtra] = true;
+      request.headers['Authorization'] = 'Bearer ${credentials.accessToken}';
+      request.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
+      final retryResponse = await _dio.fetch(request);
       handler.resolve(retryResponse);
-
-      // Retry all queued requests.
-      _retryPending(newAuthToken);
-    } on DioException {
-      _onAuthFailure();
-      _failPending(err);
+    } on _SessionExpired {
+      _notifyAuthFailure();
       handler.next(err);
+    } on _SessionChanged {
+      handler.next(DioException(
+        requestOptions: request,
+        type: DioExceptionType.cancel,
+        message: 'Session changed during authentication recovery.',
+      ));
+    } on DioException catch (error) {
+      // Preserve the actual failure, not the original 401: startup must not
+      // mistake a refresh outage or a retried resource's 404 for session expiry.
+      handler.next(error.copyWith(requestOptions: request));
+    } catch (error, stackTrace) {
+      handler.next(DioException(
+        requestOptions: request,
+        error: error,
+        stackTrace: stackTrace,
+      ));
+    }
+  }
+
+  void _notifyAuthFailure() {
+    if (_authFailureNotified) return;
+    _authFailureNotified = true;
+    _onAuthFailure();
+  }
+
+  Future<({String accessToken, String refreshToken})> _refreshAuthToken() {
+    final pending = _refreshInFlight;
+    if (pending != null) return pending;
+    late final Future<({String accessToken, String refreshToken})> refresh;
+    refresh = _performRefresh().whenComplete(() {
+      if (identical(_refreshInFlight, refresh)) _refreshInFlight = null;
+    });
+    _refreshInFlight = refresh;
+    return refresh;
+  }
+
+  Future<({String accessToken, String refreshToken})> _performRefresh() async {
+    final refreshToken = await _secureStorage.getRefreshToken();
+    if (refreshToken == null || refreshToken.isEmpty) {
+      throw const _SessionExpired();
+    }
+    Duration boundedTimeout(Duration? configured) {
+      const limit = Duration(seconds: 30);
+      return configured == null ||
+              configured <= Duration.zero ||
+              configured > limit
+          ? limit
+          : configured;
+    }
+
+    final refreshDio = Dio(BaseOptions(
+      baseUrl: _dio.options.baseUrl,
+      connectTimeout: boundedTimeout(_dio.options.connectTimeout),
+      sendTimeout: boundedTimeout(_dio.options.sendTimeout),
+      receiveTimeout: boundedTimeout(_dio.options.receiveTimeout),
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-A-Side-Client-Platform': asideClientPlatform,
+        'X-A-Side-Client-Generation': '2',
+        'X-A-Side-Request-Attempt': 'initial',
+      },
+    ));
+    try {
+      final response = await refreshDio.post(
+        ApiEndpoints.refreshToken,
+        data: {'refresh_token': refreshToken},
+      );
+      if (await _secureStorage.getRefreshToken() != refreshToken) {
+        throw const _SessionChanged();
+      }
+      final data = response.data;
+      if (data is! Map) throw const FormatException('Invalid session response');
+      final token = data['access_token'] ?? data['token'];
+      final nextRefreshToken = data['refresh_token'] ?? data['refreshToken'];
+      if (token is! String ||
+          token.isEmpty ||
+          (nextRefreshToken != null &&
+              (nextRefreshToken is! String || nextRefreshToken.isEmpty))) {
+        throw const FormatException('Invalid session response');
+      }
+      await _secureStorage.setAuthToken(token);
+      if (nextRefreshToken != null) {
+        await _secureStorage.setRefreshToken(nextRefreshToken as String);
+      }
+      return (
+        accessToken: token,
+        refreshToken: nextRefreshToken as String? ?? refreshToken
+      );
+    } on DioException catch (error) {
+      if (await _secureStorage.getRefreshToken() != refreshToken) {
+        throw const _SessionChanged();
+      }
+      if (error.response?.statusCode == 401) {
+        throw const _SessionExpired();
+      }
+      rethrow;
     } finally {
-      _isRefreshing = false;
-    }
-  }
-
-  void _retryPending(String newToken) {
-    final pending = List.of(_pendingRequests);
-    _pendingRequests.clear();
-    for (final p in pending) {
-      p.options.headers['Authorization'] = 'Bearer $newToken';
-      p.options.headers['X-A-Side-Request-Attempt'] = 'auth_retry';
-      _dio
-          .fetch(p.options)
-          .then(
-            (response) => p.handler.resolve(response),
-            onError: (e) => p.handler.next(
-              e is DioException
-                  ? e
-                  : DioException(requestOptions: p.options, error: e),
-            ),
-          );
-    }
-  }
-
-  void _failPending(DioException err) {
-    final pending = List.of(_pendingRequests);
-    _pendingRequests.clear();
-    for (final p in pending) {
-      p.handler.next(err);
+      refreshDio.close(force: true);
     }
   }
 }
 
-class _PendingRequest {
-  final RequestOptions options;
-  final ErrorInterceptorHandler handler;
-  _PendingRequest(this.options, this.handler);
+class _SessionExpired implements Exception {
+  const _SessionExpired();
+}
+
+class _SessionChanged implements Exception {
+  const _SessionChanged();
+}
+
+class _RequestSession {
+  final String? refreshToken;
+  const _RequestSession(this.refreshToken);
 }

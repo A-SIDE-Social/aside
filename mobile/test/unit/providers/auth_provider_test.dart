@@ -108,7 +108,8 @@ void main() {
       verify(() => mockStorage.clearAll()).called(1);
     });
 
-    test('sets unauthenticated and clears storage on 403', () async {
+    test('does not erase credentials for a forbidden profile response',
+        () async {
       when(() => mockStorage.getAuthToken()).thenAnswer((_) async => 'token');
       when(
         () => mockStorage.getRefreshToken(),
@@ -125,8 +126,8 @@ void main() {
       when(() => mockStorage.clearAll()).thenAnswer((_) async {});
 
       await notifier.initialize();
-      expect(notifier.state.status, AuthStatus.unauthenticated);
-      verify(() => mockStorage.clearAll()).called(1);
+      expect(notifier.state.status, AuthStatus.recoveryRequired);
+      verifyNever(() => mockStorage.clearAll());
     });
 
     test('preserves tokens on network error', () async {
@@ -142,7 +143,46 @@ void main() {
       );
 
       await notifier.initialize();
-      expect(notifier.state.status, AuthStatus.unauthenticated);
+      expect(notifier.state.status, AuthStatus.recoveryRequired);
+      verifyNever(() => mockStorage.clearAll());
+    });
+  });
+
+  group('startup recovery', () {
+    test('retries the saved session after a temporary outage without an OTP',
+        () async {
+      when(() => mockStorage.getAuthToken()).thenAnswer((_) async => 'token');
+      when(() => mockStorage.getRefreshToken())
+          .thenAnswer((_) async => 'refresh');
+      when(() => mockApi.getMe()).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(path: '/me'),
+          type: DioExceptionType.connectionError,
+        ),
+      );
+
+      await notifier.initialize();
+      expect(notifier.state.status, AuthStatus.recoveryRequired);
+      verifyNever(() => mockStorage.clearAll());
+
+      when(() => mockApi.getMe()).thenAnswer(
+        (_) async => {'user': userJson(id: 'u1', displayName: 'Alice')},
+      );
+      await runZonedGuarded(() => notifier.initialize(), (_, __) {});
+      expect(notifier.state.status, AuthStatus.authenticated);
+      expect(notifier.state.user?.id, 'u1');
+      verify(() => mockApi.getMe()).called(2);
+      verifyNever(() => mockStorage.clearAll());
+      verifyNever(() => mockApi.requestOtp(any()));
+    });
+
+    test('a temporary secure-storage failure offers recovery', () async {
+      when(() => mockStorage.getAuthToken())
+          .thenThrow(StateError('Storage unavailable'));
+
+      await notifier.initialize();
+      expect(notifier.state.status, AuthStatus.recoveryRequired);
+      verifyNever(() => mockApi.getMe());
       verifyNever(() => mockStorage.clearAll());
     });
   });
@@ -273,15 +313,62 @@ void main() {
       expect(notifier.state.status, AuthStatus.unauthenticated);
     });
 
-    test('signs out when refresh API call fails', () async {
+    test('preserves the session when refresh fails unexpectedly', () async {
       when(
         () => mockStorage.getRefreshToken(),
       ).thenAnswer((_) async => 'refresh');
       when(() => mockApi.refreshToken('refresh')).thenThrow(Exception('fail'));
-      when(() => mockStorage.clearAll()).thenAnswer((_) async {});
+      notifier.setUser(User.fromJson(userJson()));
+      await expectLater(notifier.refreshSession(), throwsA(isA<Exception>()));
+      expect(notifier.state.status, AuthStatus.authenticated);
+      verifyNever(() => mockStorage.clearAll());
+    });
 
+    for (final status in [429, 503]) {
+      test('preserves the session on refresh $status', () async {
+        when(() => mockStorage.getRefreshToken())
+            .thenAnswer((_) async => 'refresh');
+        final request = RequestOptions(path: '/fixture');
+        when(() => mockApi.refreshToken('refresh')).thenThrow(DioException(
+          requestOptions: request,
+          response: Response(requestOptions: request, statusCode: status),
+        ));
+        notifier.setUser(User.fromJson(userJson()));
+        await expectLater(
+            notifier.refreshSession(), throwsA(isA<DioException>()));
+        expect(notifier.state.status, AuthStatus.authenticated);
+        verifyNever(() => mockStorage.clearAll());
+      });
+    }
+
+    test('clears the session when refresh credentials are rejected', () async {
+      when(() => mockStorage.getRefreshToken())
+          .thenAnswer((_) async => 'refresh');
+      final request = RequestOptions(path: '/fixture');
+      when(() => mockApi.refreshToken('refresh')).thenThrow(DioException(
+        requestOptions: request,
+        response: Response(requestOptions: request, statusCode: 401),
+      ));
+      when(() => mockStorage.clearAll()).thenAnswer((_) async {});
       await notifier.refreshSession();
       expect(notifier.state.status, AuthStatus.unauthenticated);
+      verify(() => mockStorage.clearAll()).called(1);
+    });
+
+    test('does not restore a session after sign-out during explicit refresh',
+        () async {
+      String? token = 'refresh';
+      when(() => mockStorage.getRefreshToken()).thenAnswer((_) async => token);
+      final response = Completer<Map<String, dynamic>>();
+      when(() => mockApi.refreshToken('refresh'))
+          .thenAnswer((_) => response.future);
+      final pending = notifier.refreshSession();
+      await Future<void>.delayed(Duration.zero);
+      token = null;
+      response.complete({'access_token': 'stale-result'});
+      await pending;
+      verifyNever(() => mockStorage.setAuthToken(any()));
+      verifyNever(() => mockStorage.clearAll());
     });
   });
 

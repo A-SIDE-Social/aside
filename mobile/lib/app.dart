@@ -523,13 +523,19 @@ class _AsideAppState extends ConsumerState<AsideApp>
     // Mounting MaterialApp.router only after auth resolves means the router's
     // initial redirect runs exactly once with a final auth status — no
     // intermediate /splash -> / hop that would animate as a slide.
-    if (authStatus == AuthStatus.initial || authStatus == AuthStatus.loading) {
+    if (authStatus == AuthStatus.initial ||
+        authStatus == AuthStatus.loading ||
+        authStatus == AuthStatus.recoveryRequired) {
       return MaterialApp(
         themeMode: themeMode,
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         debugShowCheckedModeBanner: false,
-        home: const SplashScreen(),
+        home: SplashScreen(
+          onRetry: authStatus == AuthStatus.recoveryRequired
+              ? () => ref.read(authProvider.notifier).initialize()
+              : null,
+        ),
       );
     }
 

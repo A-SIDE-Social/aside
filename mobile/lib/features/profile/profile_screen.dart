@@ -10,6 +10,7 @@ import '../../core/cache/image_cache_manager.dart';
 import '../../core/config/app_colors.dart';
 import '../../core/media/image_compression.dart';
 import '../../core/network/upload_watchdog.dart';
+import '../../core/network/api_retry.dart';
 import '../../widgets/widgets.dart';
 import '../../providers/providers.dart';
 import '../../models/models.dart';
@@ -19,11 +20,14 @@ import 'user_connections_sheet.dart';
 ///
 /// Not auto-disposed: returning to a previously viewed profile feels instant.
 final _userProfileProvider =
-    FutureProvider.family<Map<String, dynamic>, String>((ref, userId) async {
-  final api = ref.watch(apiServiceProvider);
-  final data = await api.getUser(userId);
-  return data as Map<String, dynamic>;
-});
+    FutureProvider.family<Map<String, dynamic>, String>(
+  retry: retryProfileRead,
+  (ref, userId) async {
+    final api = ref.watch(apiServiceProvider);
+    final data = await api.getUser(userId);
+    return data as Map<String, dynamic>;
+  },
+);
 
 class ProfileScreen extends ConsumerStatefulWidget {
   final String? userId;
@@ -219,7 +223,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     required AppColorTokens colors,
     required ThemeData theme,
   }) {
-    final postsAsync = ref.watch(userPostsProvider(user.id));
+    final canViewPosts = isOwnProfile || isMutual;
+    final postsAsync = canViewPosts
+        ? ref.watch(userPostsProvider(user.id))
+        : const AsyncData<List<Post>>([]);
     final dpr = MediaQuery.devicePixelRatioOf(context);
     final gridCachePx = ((MediaQuery.sizeOf(context).width / 3) * dpr).round();
 
@@ -228,7 +235,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         if (!isOwnProfile) {
           ref.invalidate(_userProfileProvider(user.id));
         }
-        ref.invalidate(userPostsProvider(user.id));
+        if (canViewPosts) ref.invalidate(userPostsProvider(user.id));
       },
       child: CustomScrollView(
         slivers: [
