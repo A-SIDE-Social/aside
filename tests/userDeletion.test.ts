@@ -27,7 +27,12 @@ describe('User deletion policy', () => {
         ORDER BY tc.table_name, kcu.column_name`,
     );
 
-    expect(rows).toHaveLength(33);
+    expect(rows).toHaveLength(34);
+    expect(rows).toContainEqual({
+      table_name: 'post_voice_captions',
+      column_name: 'uploaded_by_user_id',
+      delete_rule: 'CASCADE',
+    });
     expect(rows.filter((row) => row.delete_rule === 'NO ACTION')).toEqual([]);
     expect(
       rows

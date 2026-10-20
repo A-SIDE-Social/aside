@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -311,6 +313,182 @@ void main() {
     });
 
     group('cursor pagination', () {
+      test('a full page with an unchanged cursor stops further pagination',
+          () async {
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((_) async => {
+              'posts': List.generate(20, (i) => postJson(id: 'p$i')),
+            });
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+        await Future<void>.delayed(Duration.zero);
+        await notifier.loadMore();
+        await notifier.loadMore();
+        verify(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).called(2);
+        expect(notifier.hasMore, isFalse);
+        expect(container.read(feedNotifierProvider).value, hasLength(20));
+      });
+
+      test('100 overlapping page loads issue one request and keep local edits',
+          () async {
+        final page = Completer<Map<String, dynamic>>();
+        final fullPage = List.generate(20, (i) => postJson(id: 'p$i'));
+        when(() => mockApi.getFeed(
+                  before: any(named: 'before'),
+                  groupId: any(named: 'groupId'),
+                ))
+            .thenAnswer((invocation) async =>
+                invocation.namedArguments[#before] == null
+                    ? {'posts': fullPage}
+                    : page.future);
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+        await Future<void>.delayed(Duration.zero);
+
+        final loads = List.generate(100, (_) => notifier.loadMore());
+        notifier.incrementCommentCount('p0');
+        notifier.removePost('p1');
+        page.complete({
+          'posts': [postJson(id: 'p19'), postJson(id: 'next')]
+        });
+        await Future.wait(loads);
+
+        final calls = verify(() => mockApi.getFeed(
+              before: captureAny(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).captured;
+        expect(calls.where((cursor) => cursor != null), hasLength(1));
+        final posts = container.read(feedNotifierProvider).value!;
+        expect(posts.first.commentCount, 1);
+        expect(posts.any((post) => post.id == 'p1'), isFalse);
+        expect(posts.map((post) => post.id).toSet(), hasLength(posts.length));
+        expect(posts.last.id, 'next');
+      });
+
+      test('overlapping refreshes share one initial request', () async {
+        final response = Completer<Map<String, dynamic>>();
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((_) => response.future);
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+        await Future<void>.delayed(Duration.zero);
+        final refreshes = List.generate(100, (_) => notifier.refresh());
+        response.complete({
+          'posts': [postJson(id: 'fresh')]
+        });
+        await Future.wait(refreshes);
+        verify(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).called(1);
+        expect(container.read(feedNotifierProvider).value!.single.id, 'fresh');
+      });
+
+      test('failed pagination keeps the feed visible and allows a later retry',
+          () async {
+        var failPage = true;
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((invocation) async {
+          if (invocation.namedArguments[#before] == null) {
+            return {'posts': List.generate(20, (i) => postJson(id: 'p$i'))};
+          }
+          if (failPage) throw Exception('Temporary network failure');
+          return {
+            'posts': [postJson(id: 'next')]
+          };
+        });
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+        await Future<void>.delayed(Duration.zero);
+        await notifier.loadMore();
+        expect(container.read(feedNotifierProvider).hasError, isFalse);
+        expect(container.read(feedNotifierProvider).value, hasLength(20));
+        expect(notifier.pageFailed, isTrue);
+        failPage = false;
+        await notifier.loadMore();
+        expect(container.read(feedNotifierProvider).value!.last.id, 'next');
+        expect(notifier.pageFailed, isFalse);
+      });
+
+      test('an old page cannot overwrite a refresh or unlock its pending page',
+          () async {
+        final oldPage = Completer<Map<String, dynamic>>();
+        final newPage = Completer<Map<String, dynamic>>();
+        var initialLoads = 0;
+        var pageLoads = 0;
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((invocation) async {
+          if (invocation.namedArguments[#before] == null) {
+            final prefix = initialLoads++ == 0 ? 'old' : 'fresh';
+            return {
+              'posts': List.generate(20, (i) => postJson(id: '$prefix$i'))
+            };
+          }
+          return pageLoads++ == 0 ? oldPage.future : newPage.future;
+        });
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+        await Future<void>.delayed(Duration.zero);
+        final obsolete = notifier.loadMore();
+        await notifier.refresh();
+        final current = notifier.loadMore();
+        oldPage.complete({
+          'posts': [postJson(id: 'obsolete')]
+        });
+        await obsolete;
+        final repeated = notifier.loadMore();
+        expect(pageLoads, 2);
+        newPage.complete({
+          'posts': [postJson(id: 'next')]
+        });
+        await Future.wait([current, repeated]);
+        final posts = container.read(feedNotifierProvider).value!;
+        expect(posts.first.id, 'fresh0');
+        expect(posts.any((post) => post.id == 'obsolete'), isFalse);
+        expect(posts.last.id, 'next');
+      });
+
+      test(
+          'changing a list while loading never reuses the previous list request',
+          () async {
+        final oldResponse = Completer<Map<String, dynamic>>();
+        final newResponse = Completer<Map<String, dynamic>>();
+        when(() => mockApi.getFeed(
+              before: any(named: 'before'),
+              groupId: any(named: 'groupId'),
+            )).thenAnswer((invocation) => invocation.namedArguments[#groupId] ==
+                null
+            ? oldResponse.future
+            : newResponse.future);
+        container = createContainer();
+        final notifier = container.read(feedNotifierProvider.notifier);
+        await Future<void>.delayed(Duration.zero);
+        container.read(feedGroupFilterProvider.notifier).set('list');
+        final refresh = notifier.refresh();
+        newResponse.complete({
+          'posts': [postJson(id: 'list-post')]
+        });
+        await refresh;
+        oldResponse.complete({
+          'posts': [postJson(id: 'old-post')]
+        });
+        await Future<void>.delayed(Duration.zero);
+        expect(
+            container.read(feedNotifierProvider).value!.single.id, 'list-post');
+        verify(() => mockApi.getFeed(before: null, groupId: 'list')).called(1);
+      });
+
       // Build 25 regression: the cursor used to be `posts.last.id` (a UUID),
       // which the backend then bound to a `$2::timestamptz` parameter and
       // surfaced as a 500 `DateTimeParseError`. The cursor is now the last

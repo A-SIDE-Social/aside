@@ -56,6 +56,7 @@ class PeerIdentityInfo {
 const _prefix = 'e2ee:';
 
 const _identityKey = '${_prefix}identity';
+const _ownerKey = '${_prefix}owner';
 const _signedPreKey = '${_prefix}spk';
 const _otpkPrefix = '${_prefix}otpk:';
 const _kpkPrefix = '${_prefix}kpk:';
@@ -86,6 +87,8 @@ Uint8List _decodeBytes(String s) => base64.decode(s);
 /// Abstract interface so tests can substitute an in-memory store.
 /// Production wires [SecureKeyStorage]; unit tests can swap a fake.
 abstract class KeyStorage {
+  Future<String?> loadOwner();
+  Future<void> saveOwner(String userId);
   Future<void> saveIdentityKeyPair(IdentityKeypair kp);
   Future<IdentityKeypair?> loadIdentityKeyPair();
 
@@ -197,6 +200,13 @@ class SecureKeyStorage implements KeyStorage {
                 accessibility: KeychainAccessibility.first_unlock_this_device,
               ),
             );
+
+  @override
+  Future<String?> loadOwner() => _storage.read(key: _ownerKey);
+
+  @override
+  Future<void> saveOwner(String userId) =>
+      _storage.write(key: _ownerKey, value: userId);
 
   @override
   Future<void> saveIdentityKeyPair(IdentityKeypair kp) async {

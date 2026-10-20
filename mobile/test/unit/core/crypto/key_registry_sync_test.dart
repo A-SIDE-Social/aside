@@ -4,6 +4,8 @@
 // replenishment, rotation, reset.
 
 import 'dart:typed_data';
+import 'dart:async';
+import 'package:dio/dio.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -61,6 +63,13 @@ void main() {
     signal = _MockSignalClient();
     api = _MockApiService();
     sync = KeyRegistrySync(signal, api);
+    when(() => signal.keyOwner()).thenAnswer((_) async => 'owner');
+    when(() => signal.setKeyOwner(any())).thenAnswer((_) async {});
+    when(() => signal.currentPublicBundle())
+        .thenAnswer((_) async => _fakeBundle());
+    when(() => signal.resumeInitialKeys(otpkCount: any(named: 'otpkCount')))
+        .thenAnswer((_) async => _fakeBundle());
+    when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {});
   });
 
   group('ensureKeysInitialized', () {
@@ -71,28 +80,34 @@ void main() {
           .thenAnswer((_) async => bundle);
       when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {});
 
-      final created = await sync.ensureKeysInitialized();
+      final created = await sync.ensureKeysInitialized(ownerUserId: 'owner');
 
       expect(created, isTrue);
-      verify(() => signal.generateInitialKeys(otpkCount: 100)).called(1);
+      verify(() => signal.resumeInitialKeys(otpkCount: 100)).called(1);
       final captured =
           verify(() => api.uploadDeviceKeys(captureAny())).captured;
-      expect(captured.single, bundle.toJson());
+      expect(captured.single, {
+        ...bundle.toJson(),
+        'owner_user_id': 'owner',
+        'existing_only': false
+      });
       verifyNever(() => signal.wipeKeys());
     });
 
-    test('returns false and skips everything when keys exist', () async {
+    test(
+        'reconciles existing keys instead of treating presence as an upload receipt',
+        () async {
       when(() => signal.hasKeys()).thenAnswer((_) async => true);
 
-      final created = await sync.ensureKeysInitialized();
+      final created = await sync.ensureKeysInitialized(ownerUserId: 'owner');
 
       expect(created, isFalse);
       verifyNever(
           () => signal.generateInitialKeys(otpkCount: any(named: 'otpkCount')));
-      verifyNever(() => api.uploadDeviceKeys(any()));
+      verify(() => api.uploadDeviceKeys(any())).called(1);
     });
 
-    test('wipes local keys if upload fails, then rethrows', () async {
+    test('preserves local keys if upload fails, then rethrows', () async {
       when(() => signal.hasKeys()).thenAnswer((_) async => false);
       when(() => signal.generateInitialKeys(otpkCount: any(named: 'otpkCount')))
           .thenAnswer((_) async => _fakeBundle());
@@ -101,10 +116,11 @@ void main() {
       when(() => signal.wipeKeys()).thenAnswer((_) async {});
 
       await expectLater(
-        () => sync.ensureKeysInitialized(),
+        () => sync.ensureKeysInitialized(ownerUserId: 'owner'),
         throwsA(isA<Exception>()),
       );
-      verify(() => signal.wipeKeys()).called(1);
+      verifyNever(() => signal.wipeKeys());
+      verifyNever(() => api.revokeDeviceKeys());
     });
 
     test('custom otpkCount is plumbed through to SignalClient', () async {
@@ -113,9 +129,133 @@ void main() {
           .thenAnswer((_) async => _fakeBundle(otpkCount: 3));
       when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {});
 
-      await sync.ensureKeysInitialized(otpkCount: 25);
+      await sync.ensureKeysInitialized(ownerUserId: 'owner', otpkCount: 25);
 
-      verify(() => signal.generateInitialKeys(otpkCount: 25)).called(1);
+      verify(() => signal.resumeInitialKeys(otpkCount: 25)).called(1);
+    });
+
+    test(
+        'retry after a lost reply reuses the saved bundle without generating an identity',
+        () async {
+      var existed = false;
+      final saved = _fakeBundle();
+      when(() => signal.hasKeys()).thenAnswer((_) async => existed);
+      when(() => signal.resumeInitialKeys(otpkCount: any(named: 'otpkCount')))
+          .thenAnswer((_) async {
+        existed = true;
+        return saved;
+      });
+      when(() => signal.currentPublicBundle()).thenAnswer((_) async => saved);
+      var calls = 0;
+      when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {
+        if (++calls == 1) {
+          throw DioException(
+              requestOptions: RequestOptions(path: '/fixture'),
+              type: DioExceptionType.receiveTimeout);
+        }
+      });
+      await expectLater(sync.ensureKeysInitialized(ownerUserId: 'owner'),
+          throwsA(isA<DioException>()));
+      expect(await sync.ensureKeysInitialized(ownerUserId: 'owner'), isFalse);
+      final sent = verify(() => api.uploadDeviceKeys(captureAny())).captured;
+      expect(sent[0], sent[1]);
+      verify(() => signal.resumeInitialKeys(otpkCount: 100)).called(1);
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test('coalesces concurrent bootstrap calls', () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      final uploaded = Completer<void>();
+      when(() => api.uploadDeviceKeys(any()))
+          .thenAnswer((_) => uploaded.future);
+      final first = sync.ensureKeysInitialized(ownerUserId: 'owner');
+      final second = sync.ensureKeysInitialized(ownerUserId: 'owner');
+      uploaded.complete();
+      await Future.wait([first, second]);
+      verify(() => api.uploadDeviceKeys(any())).called(1);
+    });
+
+    test('two wrappers for the same local client share provisioning work',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      final second = KeyRegistrySync(signal, api);
+      await Future.wait([
+        sync.ensureKeysInitialized(ownerUserId: 'owner'),
+        second.ensureKeysInitialized(ownerUserId: 'owner'),
+      ]);
+      verify(() => api.uploadDeviceKeys(any())).called(1);
+    });
+
+    test('a different local owner fails without publishing or deleting keys',
+        () async {
+      await expectLater(sync.ensureKeysInitialized(ownerUserId: 'someone-else'),
+          throwsA(isA<KeyRecoveryRequired>()));
+      verifyNever(() => api.uploadDeviceKeys(any()));
+      verifyNever(() => signal.setKeyOwner(any()));
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test(
+        'legacy keys are bound only after existing-only reconciliation succeeds',
+        () async {
+      when(() => signal.keyOwner()).thenAnswer((_) async => null);
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      when(() => api.uploadDeviceKeys(any())).thenAnswer((invocation) async {
+        expect((invocation.positionalArguments.single as Map)['existing_only'],
+            isTrue);
+      });
+      await sync.ensureKeysInitialized(ownerUserId: 'owner');
+      verifyInOrder([
+        () => api.uploadDeviceKeys(any()),
+        () => signal.setKeyOwner('owner'),
+      ]);
+    });
+
+    test('a legacy conflict cannot bind, replace, revoke, or wipe an identity',
+        () async {
+      when(() => signal.keyOwner()).thenAnswer((_) async => null);
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      final request = RequestOptions(path: '/fixture');
+      when(() => api.uploadDeviceKeys(any())).thenThrow(DioException(
+          requestOptions: request,
+          response: Response(requestOptions: request, statusCode: 409)));
+      await expectLater(sync.ensureKeysInitialized(ownerUserId: 'owner'),
+          throwsA(isA<DioException>()));
+      verifyNever(() => signal.setKeyOwner(any()));
+      verifyNever(
+          () => signal.resumeInitialKeys(otpkCount: any(named: 'otpkCount')));
+      verifyNever(() => api.revokeDeviceKeys());
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test('owned partial generation resumes without deleting the saved identity',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      when(() => signal.currentPublicBundle()).thenAnswer((_) async => null);
+      await sync.ensureKeysInitialized(ownerUserId: 'owner');
+      verify(() => signal.resumeInitialKeys(otpkCount: 100)).called(1);
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test(
+        'an incomplete unregistered bundle is resumed only on the fixed server code',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      var calls = 0;
+      when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {
+        if (++calls == 1) {
+          final request = RequestOptions(path: '/fixture');
+          throw DioException(
+              requestOptions: request,
+              response: Response(
+                  requestOptions: request,
+                  statusCode: 400,
+                  data: {'code': 'key_bundle_incomplete'}));
+        }
+      });
+      await sync.ensureKeysInitialized(ownerUserId: 'owner');
+      expect(calls, 2);
+      verify(() => signal.resumeInitialKeys(otpkCount: 100)).called(1);
     });
   });
 
@@ -136,6 +276,8 @@ void main() {
       expect(result.otpks, 0);
       expect(result.kyber, 0);
       verifyNever(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
             oneTimePreKeys: any(named: 'oneTimePreKeys'),
             kyberPreKeys: any(named: 'kyberPreKeys'),
           ));
@@ -168,6 +310,8 @@ void main() {
             batchSize: any(named: 'batchSize'),
           )).thenAnswer((_) async => freshKyber);
       when(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
             oneTimePreKeys: any(named: 'oneTimePreKeys'),
             kyberPreKeys: any(named: 'kyberPreKeys'),
           )).thenAnswer((_) async {});
@@ -177,6 +321,8 @@ void main() {
       expect(result.otpks, 2);
       expect(result.kyber, 1);
       final captured = verify(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
             oneTimePreKeys: captureAny(named: 'oneTimePreKeys'),
             kyberPreKeys: captureAny(named: 'kyberPreKeys'),
           )).captured;
@@ -214,6 +360,8 @@ void main() {
             batchSize: any(named: 'batchSize'),
           )).thenAnswer((_) async => const []);
       when(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
             oneTimePreKeys: any(named: 'oneTimePreKeys'),
             kyberPreKeys: any(named: 'kyberPreKeys'),
           )).thenAnswer((_) async {});
@@ -224,6 +372,8 @@ void main() {
       expect(result.kyber, 0);
       // Upload still happens, but with empty kyberPreKeys list.
       final captured = verify(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
             oneTimePreKeys: captureAny(named: 'oneTimePreKeys'),
             kyberPreKeys: captureAny(named: 'kyberPreKeys'),
           )).captured;
@@ -254,7 +404,7 @@ void main() {
           .called(1);
     });
 
-    test('rolls back freshly persisted local prekeys if upload fails',
+    test('retains and retries the same private prekeys after an upload failure',
         () async {
       final freshOtpks = [
         PublicOneTimePreKey(
@@ -278,6 +428,8 @@ void main() {
             batchSize: any(named: 'batchSize'),
           )).thenAnswer((_) async => freshKyber);
       when(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
             oneTimePreKeys: any(named: 'oneTimePreKeys'),
             kyberPreKeys: any(named: 'kyberPreKeys'),
           )).thenThrow(Exception('network down'));
@@ -289,8 +441,21 @@ void main() {
         throwsA(isA<Exception>()),
       );
 
-      verify(() => signal.consumeOneTimePreKey(21)).called(1);
-      verify(() => signal.consumeKyberPreKey(5)).called(1);
+      verifyNever(() => signal.consumeOneTimePreKey(any()));
+      verifyNever(() => signal.consumeKyberPreKey(any()));
+      when(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
+            oneTimePreKeys: any(named: 'oneTimePreKeys'),
+            kyberPreKeys: any(named: 'kyberPreKeys'),
+          )).thenAnswer((_) async {});
+      await sync.replenishIfNeeded();
+      verify(() => signal.replenishOneTimePreKeys(
+          threshold: any(named: 'threshold'),
+          batchSize: any(named: 'batchSize'))).called(1);
+      verify(() => signal.replenishKyberPreKeys(
+          threshold: any(named: 'threshold'),
+          batchSize: any(named: 'batchSize'))).called(1);
     });
   });
 
@@ -314,6 +479,26 @@ void main() {
   });
 
   group('resetKeys', () {
+    test('waits for pending registration before revoking and wiping', () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      final upload = Completer<void>();
+      when(() => api.uploadDeviceKeys(any())).thenAnswer((_) => upload.future);
+      when(() => api.revokeDeviceKeys()).thenAnswer((_) async {});
+      when(() => signal.wipeKeys()).thenAnswer((_) async {});
+      final registration = sync.ensureKeysInitialized(ownerUserId: 'owner');
+      await Future<void>.delayed(Duration.zero);
+      final reset = sync.resetKeys();
+      verifyNever(() => api.revokeDeviceKeys());
+      await expectLater(
+          sync.ensureKeysInitialized(ownerUserId: 'owner'), throwsStateError);
+      upload.complete();
+      await Future.wait([registration, reset]);
+      verifyInOrder([
+        () => api.uploadDeviceKeys(any()),
+        () => api.revokeDeviceKeys(),
+        () => signal.wipeKeys(),
+      ]);
+    });
     test('revokes on server then wipes locally', () async {
       when(() => api.revokeDeviceKeys()).thenAnswer((_) async {});
       when(() => signal.wipeKeys()).thenAnswer((_) async {});

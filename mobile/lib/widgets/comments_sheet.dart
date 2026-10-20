@@ -368,6 +368,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                         child: TextField(
                           controller: _controller,
                           focusNode: _focusNode,
+                          textCapitalization: TextCapitalization.sentences,
                           // Comment field grows with content (1..5 lines)
                           // so a long speech-to-text dictation wraps and
                           // becomes editable line-by-line instead of one

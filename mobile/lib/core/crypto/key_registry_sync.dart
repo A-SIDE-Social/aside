@@ -3,46 +3,116 @@
 // sign-in flow, background OTPK topper-upper, sign-out wipe —
 // interacts with this class rather than hitting both sides itself.
 //
-// Design note: we assume `SignalClient.hasKeys() == true` implies
-// the keys are already uploaded to the server. That saves a no-op
-// re-upload on every sign-in but relies on [ensureKeysInitialized]
-// wiping local state if the server call ever fails mid-flight (see
-// the try/catch in that method). Phase 2 could track a persistent
-// "last_uploaded_version" for stricter reconciliation.
+// Local key presence is not an upload receipt. Reconcile saved public halves
+// on sign-in and retain private material after every ambiguous failure.
 
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import '../network/api_service.dart';
 import 'signal_client.dart';
 
+class KeyRecoveryRequired implements Exception {
+  final String message;
+  const KeyRecoveryRequired(this.message);
+  @override
+  String toString() => message;
+}
+
+class _KeyWork {
+  Future<bool>? initialization;
+  String? owner;
+  Future<void>? reset;
+  Future<({int otpks, int kyber})>? replenishment;
+  ({List<PublicOneTimePreKey> otpks, List<PublicKyberPreKey> kyber})? pending;
+}
+
 class KeyRegistrySync {
+  static final _workBySignal = Expando<_KeyWork>();
   final SignalClient _signal;
   final ApiService _api;
+  final _KeyWork _work;
 
-  KeyRegistrySync(this._signal, this._api);
+  KeyRegistrySync(SignalClient signal, ApiService api)
+      : _signal = signal,
+        _api = api,
+        _work = _workBySignal[signal] ??= _KeyWork();
 
-  /// Bootstrap on sign-in. If no keys exist locally, generate a fresh
-  /// identity + signed prekey + OTPK batch, persist them, and upload
-  /// the public halves. Safe to call on every sign-in — a no-op if
-  /// the device is already provisioned.
-  ///
-  /// Returns true if this call created new keys, false if it found
-  /// existing ones and trusted them as already-uploaded.
-  ///
-  /// If the server upload fails, the just-generated local keys are
-  /// wiped so the next call retries cleanly rather than leaving a
-  /// split-brain state (local has keys, server doesn't).
+  /// Bootstrap or reconcile this account's saved key material. Returns true
+  /// only if a new local identity was needed. Conflicts require manual recovery;
+  /// this method never revokes or wipes keys.
   Future<bool> ensureKeysInitialized({
+    required String ownerUserId,
     int otpkCount = SignalClient.defaultOtpkBatch,
-  }) async {
-    if (await _signal.hasKeys()) return false;
-
-    final bundle = await _signal.generateInitialKeys(otpkCount: otpkCount);
-    try {
-      await _api.uploadDeviceKeys(bundle.toJson());
-    } catch (_) {
-      await _signal.wipeKeys();
-      rethrow;
+  }) {
+    if (_work.reset != null) {
+      return Future.error(StateError('Encryption setup is stopping'));
     }
-    return true;
+    final pending = _work.initialization;
+    if (pending != null) {
+      if (_work.owner != ownerUserId) {
+        return Future.error(const KeyRecoveryRequired(
+            'Encryption keys require account recovery'));
+      }
+      return pending;
+    }
+    _work.owner = ownerUserId;
+    late final Future<bool> operation;
+    operation = _initialize(ownerUserId, otpkCount).whenComplete(() {
+      if (identical(_work.initialization, operation)) {
+        _work.initialization = null;
+        _work.owner = null;
+      }
+    });
+    _work.initialization = operation;
+    return operation;
+  }
+
+  Future<bool> _initialize(String ownerUserId, int otpkCount) async {
+    final replenishment = _work.replenishment;
+    if (replenishment != null) {
+      try {
+        await replenishment;
+      } catch (_) {/* Reconcile the retained material below. */}
+    }
+    final owner = await _signal.keyOwner();
+    if (owner != null && owner != ownerUserId) {
+      throw const KeyRecoveryRequired(
+          'Encryption keys belong to another account; manual recovery is required');
+    }
+    final existed = await _signal.hasKeys();
+    final legacy = existed && owner == null;
+    if (!legacy) await _signal.setKeyOwner(ownerUserId);
+    var bundle = existed ? await _signal.currentPublicBundle() : null;
+    if (bundle == null) {
+      if (legacy) {
+        throw const KeyRecoveryRequired(
+            'Incomplete legacy encryption keys require manual recovery');
+      }
+      bundle = await _signal.resumeInitialKeys(otpkCount: otpkCount);
+    }
+    Future<void> upload(PublicKeyBundle value) => _api.uploadDeviceKeys({
+          ...value.toJson(),
+          'owner_user_id': ownerUserId,
+          'existing_only': legacy,
+        });
+    try {
+      await upload(bundle);
+    } on DioException catch (error) {
+      final data = error.response?.data;
+      if (!legacy &&
+          error.response?.statusCode == 400 &&
+          data is Map &&
+          data['code'] == 'key_bundle_incomplete') {
+        bundle = await _signal.resumeInitialKeys(otpkCount: otpkCount);
+        await upload(bundle);
+      } else {
+        rethrow;
+      }
+    }
+    await _signal.setKeyOwner(ownerUserId);
+    _work.pending = null; // The full saved bundle was reconciled.
+    return !existed;
   }
 
   /// Tops up the OTPK and Kyber prekey pools if either has dropped
@@ -54,34 +124,54 @@ class KeyRegistrySync {
     int otpkBatchSize = SignalClient.defaultOtpkBatch,
     int kyberThreshold = SignalClient.defaultKyberThreshold,
     int kyberBatchSize = SignalClient.defaultKyberBatch,
-  }) async {
-    final freshOtpks = await _signal.replenishOneTimePreKeys(
-      threshold: otpkThreshold,
-      batchSize: otpkBatchSize,
-    );
-    final freshKyber = await _signal.replenishKyberPreKeys(
-      threshold: kyberThreshold,
-      batchSize: kyberBatchSize,
-    );
+  }) {
+    if (_work.reset != null) {
+      return Future.error(StateError('Encryption setup is stopping'));
+    }
+    final pending = _work.replenishment;
+    if (pending != null) return pending;
+    late final Future<({int otpks, int kyber})> operation;
+    operation =
+        _replenish(otpkThreshold, otpkBatchSize, kyberThreshold, kyberBatchSize)
+            .whenComplete(() {
+      if (identical(_work.replenishment, operation)) _work.replenishment = null;
+    });
+    _work.replenishment = operation;
+    return operation;
+  }
+
+  Future<({int otpks, int kyber})> _replenish(int otpkThreshold,
+      int otpkBatchSize, int kyberThreshold, int kyberBatchSize) async {
+    final initialization = _work.initialization;
+    if (initialization != null) await initialization;
+    final owner = await _signal.keyOwner();
+    final bundle = await _signal.currentPublicBundle();
+    if (owner == null || bundle == null) {
+      throw const KeyRecoveryRequired(
+          'Encryption keys must be registered before replenishment');
+    }
+    final freshOtpks = _work.pending?.otpks ??
+        await _signal.replenishOneTimePreKeys(
+          threshold: otpkThreshold,
+          batchSize: otpkBatchSize,
+        );
+    final freshKyber = _work.pending?.kyber ??
+        await _signal.replenishKyberPreKeys(
+          threshold: kyberThreshold,
+          batchSize: kyberBatchSize,
+        );
     if (freshOtpks.isEmpty && freshKyber.isEmpty) {
       return (otpks: 0, kyber: 0);
     }
 
-    try {
-      await _api.replenishPreKeys(
-        oneTimePreKeys:
-            freshOtpks.map((k) => k.toJson()).toList(growable: false),
-        kyberPreKeys: freshKyber.map((k) => k.toJson()).toList(growable: false),
-      );
-    } catch (_) {
-      for (final k in freshOtpks) {
-        await _signal.consumeOneTimePreKey(k.id);
-      }
-      for (final k in freshKyber) {
-        await _signal.consumeKyberPreKey(k.id);
-      }
-      rethrow;
-    }
+    _work.pending = (otpks: freshOtpks, kyber: freshKyber);
+    await _api.replenishPreKeys(
+      ownerUserId: owner,
+      identityKey: base64.encode(bundle.identityPublic),
+      oneTimePreKeys: freshOtpks.map((k) => k.toJson()).toList(growable: false),
+      kyberPreKeys: freshKyber.map((k) => k.toJson()).toList(growable: false),
+    );
+    _work.pending = null;
     return (otpks: freshOtpks.length, kyber: freshKyber.length);
   }
 
@@ -94,7 +184,26 @@ class KeyRegistrySync {
 
   /// Sign-out cleanup: revoke on server + wipe locally. Safe to call
   /// even if no keys exist (the server side is idempotent).
-  Future<void> resetKeys() async {
+  Future<void> resetKeys() {
+    final pending = _work.reset;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _resetKeys().whenComplete(() {
+      if (identical(_work.reset, operation)) _work.reset = null;
+    });
+    _work.reset = operation;
+    return operation;
+  }
+
+  Future<void> _resetKeys() async {
+    // Drain already-started writes before revocation, and block new work while
+    // resetting. A late upload must not run after deliberate sign-out cleanup.
+    try {
+      await _work.initialization;
+    } catch (_) {}
+    try {
+      await _work.replenishment;
+    } catch (_) {}
     // Server first so any stale keys are neutralized even if local
     // wipe somehow fails partway. Always wipe local keys on a deliberate
     // sign-out even if the best-effort server revocation cannot complete.
@@ -102,6 +211,7 @@ class KeyRegistrySync {
       await _api.revokeDeviceKeys();
     } finally {
       await _signal.wipeKeys();
+      _work.pending = null;
     }
   }
 

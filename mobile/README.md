@@ -46,6 +46,29 @@ pipeline.
 pointing at the public source for hosted builds, or your fork for
 self-hosted builds.
 
+## Voice Captions
+
+Version 1.6.0 adds an optional voice caption to posts containing a photo.
+Tap **Add voice caption** to request microphone access and record up to
+one minute. Preview or remove it before sharing. Playback is tap-only;
+captions follow the post’s audience and history limits.
+
+Deploy the backend with migration `030_voice_captions.sql` before releasing
+the mobile build. Uploads use authenticated `POST /v1/posts/voice-captions`
+with an `audio/mp4` body (M4A, at most 2 MiB) and an integer
+`X-Voice-Duration-Ms` header (1–60000). Pass the returned reservation ID as
+`voice_caption_id` when creating the photo post. IDs belong to their uploader
+and can only be attached once. Fetch audio through authenticated
+`GET /v1/posts/{id}/voice-caption`; post responses contain duration metadata,
+not public audio URLs.
+
+Feed audio is server-stored, not end-to-end encrypted. It uses the existing
+private object store in production and the ignored `private-uploads/`
+directory locally. No transcription service is involved. Local drafts retain
+recordings until shared or deleted. Post/account deletion queues stored audio
+for cleanup; abandoned uploads are queued after 24 hours by the existing
+media-deletion worker. Object removal follows the worker’s retry schedule.
+
 ## Firebase And Signing
 
 - iOS needs a real `ios/Runner/GoogleService-Info.plist` for Firebase.

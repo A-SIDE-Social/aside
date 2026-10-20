@@ -18,28 +18,45 @@ import '../core/storage/secure_storage.dart';
 import '../models/user.dart';
 import 'crypto_provider.dart';
 import 'socket_provider.dart';
+import 'feed_updates_provider.dart';
 
-enum AuthStatus { initial, loading, unauthenticated, authenticated }
+enum AuthStatus {
+  initial,
+  loading,
+  recoveryRequired,
+  unauthenticated,
+  authenticated
+}
+
+enum KeyRegistrationStatus { pending, ready, unavailable, recoveryRequired }
 
 class AuthState {
   final AuthStatus status;
   final User? user;
   final String? error;
   final bool isNewRegistration;
+  final KeyRegistrationStatus keyRegistrationStatus;
 
   const AuthState({
     this.status = AuthStatus.initial,
     this.user,
     this.error,
     this.isNewRegistration = false,
+    this.keyRegistrationStatus = KeyRegistrationStatus.pending,
   });
 
-  AuthState copyWith({AuthStatus? status, User? user, String? error}) {
+  AuthState copyWith(
+      {AuthStatus? status,
+      User? user,
+      String? error,
+      KeyRegistrationStatus? keyRegistrationStatus}) {
     return AuthState(
       status: status ?? this.status,
       user: user ?? this.user,
       error: error,
       isNewRegistration: isNewRegistration,
+      keyRegistrationStatus:
+          keyRegistrationStatus ?? this.keyRegistrationStatus,
     );
   }
 }
@@ -66,14 +83,14 @@ class AuthNotifier extends Notifier<AuthState> {
     PushNotificationService? pushService,
     bool autoInitialize = true,
     User? initialUser,
-  }) : _injectedSecureStorage = secureStorage,
-       _injectedApiService = apiService,
-       _injectedOnDeepLink = onDeepLink,
-       _injectedKeyRegistrySync = keyRegistrySync,
-       _injectedSocketService = socketService,
-       _injectedPushService = pushService,
-       _autoInitialize = autoInitialize,
-       _initialUser = initialUser;
+  })  : _injectedSecureStorage = secureStorage,
+        _injectedApiService = apiService,
+        _injectedOnDeepLink = onDeepLink,
+        _injectedKeyRegistrySync = keyRegistrySync,
+        _injectedSocketService = socketService,
+        _injectedPushService = pushService,
+        _autoInitialize = autoInitialize,
+        _initialUser = initialUser;
 
   // Test-injection slots — null in production.
   final SecureStorage? _injectedSecureStorage;
@@ -122,14 +139,12 @@ class AuthNotifier extends Notifier<AuthState> {
       _apiService = ApiService(apiClient);
     }
 
-    _keyRegistrySync =
-        _injectedKeyRegistrySync ??
+    _keyRegistrySync = _injectedKeyRegistrySync ??
         KeyRegistrySync(ref.read(signalClientProvider), _apiService);
     _socketService = _injectedSocketService ?? ref.read(socketServiceProvider);
     _pushService = _injectedPushService;
 
-    _onDeepLink =
-        _injectedOnDeepLink ??
+    _onDeepLink = _injectedOnDeepLink ??
         (route) {
           ref.read(pendingDeepLinkProvider.notifier).set(route);
         };
@@ -169,22 +184,47 @@ class AuthNotifier extends Notifier<AuthState> {
   /// until DM encryption ships (Phase 1e), and a subsequent sign-in
   /// attempt will retry.
   void _bootstrapE2eeKeys() {
+    unawaited(retryKeyRegistration());
+  }
+
+  /// Retry non-destructive reconciliation. Failures never reset encryption keys.
+  Future<void> retryKeyRegistration() async {
     final sync = _keyRegistrySync;
     if (sync == null) return;
-    // Intentionally unawaited.
-    // ignore: discarded_futures
-    sync.ensureKeysInitialized().then(
-      (_) {},
-      onError: (Object e, StackTrace _) {
-        debugPrint('E2EE key bootstrap failed: $e');
-      },
-    );
+    final ownerUserId = state.user?.id;
+    if (ownerUserId == null) return;
+    state =
+        state.copyWith(keyRegistrationStatus: KeyRegistrationStatus.pending);
+    try {
+      await sync.ensureKeysInitialized(ownerUserId: ownerUserId);
+      if (ref.mounted && state.user?.id == ownerUserId) {
+        state =
+            state.copyWith(keyRegistrationStatus: KeyRegistrationStatus.ready);
+      }
+    } catch (error) {
+      if (!ref.mounted || state.user?.id != ownerUserId) return;
+      final conflict = error is KeyRecoveryRequired ||
+          (error is DioException && error.response?.statusCode == 409);
+      state = state.copyWith(
+          keyRegistrationStatus: conflict
+              ? KeyRegistrationStatus.recoveryRequired
+              : KeyRegistrationStatus.unavailable);
+      // Do not print request options or provider errors containing key material.
+      debugPrint(conflict
+          ? 'Encryption key recovery is required'
+          : 'Encryption key registration is temporarily unavailable');
+    }
   }
 
   void _initPush() {
     _pushService ??= PushNotificationService(
       _apiService,
       onDeepLink: _onDeepLink,
+      onNewPost: (postId) {
+        if (state.status == AuthStatus.authenticated) {
+          ref.read(feedUpdatesProvider.notifier).receive(postId);
+        }
+      },
     );
     _pushService!.initialize();
   }
@@ -239,15 +279,16 @@ class AuthNotifier extends Notifier<AuthState> {
       unawaited(_connectSocket());
     } on DioException catch (e) {
       final status = e.response?.statusCode;
-      if (status == 401 || status == 403) {
+      if (status == 401) {
         await handleAuthFailure();
         return;
       }
-      // For network/server errors, keep tokens so next launch can retry.
-      state = state.copyWith(status: AuthStatus.unauthenticated);
+      // A failed session check is not a sign-out. Let the user retry
+      // with the saved credentials instead of requesting another email code.
+      state = state.copyWith(status: AuthStatus.recoveryRequired);
     } catch (_) {
-      // Keep tokens on unexpected errors.
-      state = state.copyWith(status: AuthStatus.unauthenticated);
+      // Storage and response failures can also be temporary.
+      state = state.copyWith(status: AuthStatus.recoveryRequired);
     }
   }
 
@@ -275,9 +316,8 @@ class AuthNotifier extends Notifier<AuthState> {
       final responseMap = data as Map<String, dynamic>;
       final token =
           (responseMap['access_token'] ?? responseMap['token']) as String;
-      final refreshToken =
-          (responseMap['refresh_token'] ?? responseMap['refreshToken'])
-              as String;
+      final refreshToken = (responseMap['refresh_token'] ??
+          responseMap['refreshToken']) as String;
       final userData = responseMap['user'] as Map<String, dynamic>;
 
       await _secureStorage.setAuthToken(token);
@@ -329,20 +369,21 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Refresh the current auth session using the stored refresh token.
   Future<void> refreshSession() async {
+    String? refreshToken;
     try {
-      final refreshToken = await _secureStorage.getRefreshToken();
+      refreshToken = await _secureStorage.getRefreshToken();
       if (refreshToken == null) {
         await handleAuthFailure();
         return;
       }
 
       final data = await _apiService.refreshToken(refreshToken);
+      if (await _secureStorage.getRefreshToken() != refreshToken) return;
       final responseMap = data as Map<String, dynamic>;
       final newToken =
           (responseMap['access_token'] ?? responseMap['token']) as String;
-      final newRefreshToken =
-          (responseMap['refresh_token'] ?? responseMap['refreshToken'])
-              as String?;
+      final newRefreshToken = (responseMap['refresh_token'] ??
+          responseMap['refreshToken']) as String?;
 
       await _secureStorage.setAuthToken(newToken);
       if (newRefreshToken != null) {
@@ -350,8 +391,15 @@ class AuthNotifier extends Notifier<AuthState> {
       }
       // Keep App Group token in sync
       await AppGroupChannel.setToken(newToken);
-    } catch (_) {
-      await handleAuthFailure();
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 401) {
+        if (await _secureStorage.getRefreshToken() == refreshToken) {
+          await handleAuthFailure();
+        }
+        return;
+      }
+      // Temporary provider/network failures do not invalidate credentials.
+      rethrow;
     }
   }
 
@@ -371,10 +419,10 @@ class AuthNotifier extends Notifier<AuthState> {
     late final Future<void> operation;
     operation = _performSignOut(performServerCleanup: performServerCleanup)
         .whenComplete(() {
-          if (identical(_signOutInFlight, operation)) {
-            _signOutInFlight = null;
-          }
-        });
+      if (identical(_signOutInFlight, operation)) {
+        _signOutInFlight = null;
+      }
+    });
     _signOutInFlight = operation;
     return operation;
   }

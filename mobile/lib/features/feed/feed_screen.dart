@@ -10,6 +10,7 @@ import '../../core/config/env.dart';
 import '../../widgets/widgets.dart';
 import '../../models/models.dart';
 import '../../providers/providers.dart';
+import '../../providers/feed_updates_provider.dart';
 
 /// Bumped when the user re-taps the Home tab in the bottom nav while already
 /// on the feed — FeedScreen listens and animates the scroll view to the top.
@@ -32,6 +33,26 @@ class FeedScreen extends ConsumerStatefulWidget {
 
 class _FeedScreenState extends ConsumerState<FeedScreen> {
   final _scrollController = ScrollController();
+  bool _openingNewPosts = false;
+
+  Future<void> _openNewPosts() async {
+    if (_openingNewPosts) return;
+    setState(() => _openingNewPosts = true);
+    try {
+      if (ref.read(feedGroupFilterProvider) != null) {
+        // The arriving post may be outside the currently selected list.
+        ref.read(feedGroupFilterProvider.notifier).set(null);
+      }
+      await ref.read(feedNotifierProvider.notifier).refresh();
+      if (!mounted) return;
+      if (!ref.read(feedNotifierProvider).hasError) {
+        ref.read(apiServiceProvider).markFeedSeen().catchError((_) {});
+        if (_scrollController.hasClients) _scrollController.jumpTo(0);
+      }
+    } finally {
+      if (mounted) setState(() => _openingNewPosts = false);
+    }
+  }
 
   @override
   void initState() {
@@ -126,7 +147,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 200) {
       final notifier = ref.read(feedNotifierProvider.notifier);
-      if (notifier.hasMore) {
+      if (notifier.hasMore && !notifier.pageFailed) {
         notifier.loadMore();
       }
     }
@@ -140,6 +161,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     final groupsWithMembers = ref.watch(groupsWithMembersProvider);
     final selectedGroup = ref.watch(feedGroupFilterProvider);
     final currentUser = ref.watch(authProvider).user;
+    final hasNewPosts = ref.watch(feedUpdatesProvider).isNotEmpty;
 
     // Re-tap of the Home tab: smooth-scroll to top if we have any offset.
     ref.listen<int>(feedScrollToTopSignalProvider, (_, __) {
@@ -167,128 +189,166 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async {
-          ref.invalidate(groupsWithMembersProvider);
-          await ref.read(feedNotifierProvider.notifier).refresh();
-        },
-        child: CustomScrollView(
-          controller: _scrollController,
-          slivers: [
-            // Groups filter bar
-            SliverToBoxAdapter(
-              child: groupsWithMembers.when(
-                data: (list) {
-                  // If selected group was deleted, reset filter
-                  if (selectedGroup != null &&
-                      !list.any((g) => g.group.id == selectedGroup)) {
-                    Future.microtask(() =>
-                        ref.read(feedGroupFilterProvider.notifier).set(null));
-                  }
-                  return _GroupsFilterBar(
-                    groups: list,
-                    selectedGroupId: selectedGroup,
-                    onSelect: (id) =>
-                        ref.read(feedGroupFilterProvider.notifier).set(id),
-                    onCreateGroup: () => _showCreateGroupDialog(context, ref),
-                    onEditGroup: (id) async {
-                      await context.push('/groups/$id');
-                      ref.invalidate(groupsWithMembersProvider);
-                    },
-                  );
-                },
-                loading: () => const SizedBox(height: 106),
-                error: (_, __) => const SizedBox.shrink(),
-              ),
-            ),
-
-            // Feed content
-            feedState.when(
-              data: (posts) {
-                if (posts.isEmpty) {
-                  return SliverFillRemaining(
-                    child: EmptyState(
-                      icon: Icons.photo_library_outlined,
-                      title: 'No posts yet',
-                      subtitle:
-                          'Posts from your friends will appear here.',
-                      actionLabel: 'Add friends',
-                      onAction: () => context.push('/connections'),
-                    ),
-                  );
-                }
-
-                return SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      if (index == posts.length) {
-                        final notifier =
-                            ref.read(feedNotifierProvider.notifier);
-                        if (notifier.hasMore) {
-                          return const Padding(
-                            padding: EdgeInsets.all(24),
-                            child: LoadingIndicator(),
-                          );
-                        }
-                        // Show the paywall banner only when the server
-                        // told us there are actually older posts sitting
-                        // behind the plan gate. Previously we showed the
-                        // banner for every Free user at the end of their
-                        // feed — even brand-new users with nothing past
-                        // the 30-day cutoff — which read as a nag.
-                        final isFree = !AppLimits.isPaid(
-                          currentUser?.subscriptionStatus,
-                        );
-                        if (isFree &&
-                            posts.isNotEmpty &&
-                            notifier.hasOlderPosts) {
-                          return const PaywallBanner();
-                        }
-                        return const SizedBox.shrink();
+      body: Stack(
+        children: [
+          RefreshIndicator(
+            onRefresh: () async {
+              // Refreshing Home also acknowledges posts received since the
+              // last visit, so the next push won't count them again.
+              ref.read(apiServiceProvider).markFeedSeen().catchError((_) {});
+              ref.invalidate(groupsWithMembersProvider);
+              await ref.read(feedNotifierProvider.notifier).refresh();
+            },
+            child: CustomScrollView(
+              controller: _scrollController,
+              slivers: [
+                // Groups filter bar
+                SliverToBoxAdapter(
+                  child: groupsWithMembers.when(
+                    data: (list) {
+                      // If selected group was deleted, reset filter
+                      if (selectedGroup != null &&
+                          !list.any((g) => g.group.id == selectedGroup)) {
+                        Future.microtask(() => ref
+                            .read(feedGroupFilterProvider.notifier)
+                            .set(null));
                       }
-
-                      final post = posts[index];
-                      final isOwn = post.userId == currentUser?.id;
-                      return Column(
-                        children: [
-                          PostCard(
-                            post: post,
-                            isOwn: isOwn,
-                            showCommentButton: true,
-                            onUserTap: () =>
-                                context.push('/profile/${post.userId}'),
-                            onLike: () => ref
-                                .read(feedNotifierProvider.notifier)
-                                .toggleLike(post.id),
-                            onReact: (emoji) => ref
-                                .read(feedNotifierProvider.notifier)
-                                .toggleReaction(post.id, emoji),
-                            onDelete: isOwn ? () => _deletePost(post.id) : null,
-                            onEditCaption: isOwn
-                                ? (caption) => _editCaption(post.id, caption)
-                                : null,
-                          ),
-                          Divider(color: colors.borderSubtle),
-                        ],
+                      return _GroupsFilterBar(
+                        groups: list,
+                        selectedGroupId: selectedGroup,
+                        onSelect: (id) =>
+                            ref.read(feedGroupFilterProvider.notifier).set(id),
+                        onCreateGroup: () =>
+                            _showCreateGroupDialog(context, ref),
+                        onEditGroup: (id) async {
+                          await context.push('/groups/$id');
+                          ref.invalidate(groupsWithMembersProvider);
+                        },
                       );
                     },
-                    childCount: posts.length + 1,
+                    loading: () => const SizedBox(height: 106),
+                    error: (_, __) => const SizedBox.shrink(),
                   ),
-                );
-              },
-              loading: () => const SliverFillRemaining(
-                child: LoadingIndicator(),
-              ),
-              error: (error, _) => SliverFillRemaining(
-                child: ErrorView(
-                  message: error.toString(),
-                  onRetry: () =>
-                      ref.read(feedNotifierProvider.notifier).refresh(),
+                ),
+
+                // Feed content
+                feedState.when(
+                  data: (posts) {
+                    if (posts.isEmpty) {
+                      return SliverFillRemaining(
+                        child: EmptyState(
+                          icon: Icons.photo_library_outlined,
+                          title: 'No posts yet',
+                          subtitle: 'Posts from your friends will appear here.',
+                          actionLabel: 'Add friends',
+                          onAction: () => context.push('/connections'),
+                        ),
+                      );
+                    }
+
+                    return SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          if (index == posts.length) {
+                            final notifier =
+                                ref.read(feedNotifierProvider.notifier);
+                            if (notifier.pageFailed) {
+                              return Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: TextButton.icon(
+                                  onPressed: notifier.loadMore,
+                                  icon: const Icon(Icons.refresh),
+                                  label: const Text('Retry loading posts'),
+                                ),
+                              );
+                            }
+                            if (notifier.hasMore) {
+                              return const Padding(
+                                padding: EdgeInsets.all(24),
+                                child: LoadingIndicator(),
+                              );
+                            }
+                            // Show the paywall banner only when the server
+                            // told us there are actually older posts sitting
+                            // behind the plan gate. Previously we showed the
+                            // banner for every Free user at the end of their
+                            // feed — even brand-new users with nothing past
+                            // the 30-day cutoff — which read as a nag.
+                            final isFree = !AppLimits.isPaid(
+                              currentUser?.subscriptionStatus,
+                            );
+                            if (isFree &&
+                                posts.isNotEmpty &&
+                                notifier.hasOlderPosts) {
+                              return const PaywallBanner();
+                            }
+                            return const SizedBox.shrink();
+                          }
+
+                          final post = posts[index];
+                          final isOwn = post.userId == currentUser?.id;
+                          return Column(
+                            children: [
+                              PostCard(
+                                post: post,
+                                isOwn: isOwn,
+                                showCommentButton: true,
+                                onUserTap: () =>
+                                    context.push('/profile/${post.userId}'),
+                                onLike: () => ref
+                                    .read(feedNotifierProvider.notifier)
+                                    .toggleLike(post.id),
+                                onReact: (emoji) => ref
+                                    .read(feedNotifierProvider.notifier)
+                                    .toggleReaction(post.id, emoji),
+                                onDelete:
+                                    isOwn ? () => _deletePost(post.id) : null,
+                                onEditCaption: isOwn
+                                    ? (caption) =>
+                                        _editCaption(post.id, caption)
+                                    : null,
+                              ),
+                              Divider(color: colors.borderSubtle),
+                            ],
+                          );
+                        },
+                        childCount: posts.length + 1,
+                      ),
+                    );
+                  },
+                  loading: () => const SliverFillRemaining(
+                    child: LoadingIndicator(),
+                  ),
+                  error: (error, _) => SliverFillRemaining(
+                    child: ErrorView(
+                      message: error.toString(),
+                      onRetry: () =>
+                          ref.read(feedNotifierProvider.notifier).refresh(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (hasNewPosts)
+            Positioned(
+              top: 8,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Semantics(
+                  liveRegion: true,
+                  child: FilledButton.icon(
+                    key: const ValueKey('new-posts-button'),
+                    onPressed: _openingNewPosts ? null : _openNewPosts,
+                    icon: const Icon(Icons.arrow_upward, size: 18),
+                    label:
+                        Text(_openingNewPosts ? 'Loading posts…' : 'New posts'),
+                  ),
                 ),
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

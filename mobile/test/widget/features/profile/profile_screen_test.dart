@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -64,6 +65,56 @@ void main() {
   });
 
   group('ProfileScreen — other user', () {
+    testWidgets('a missing profile stops retrying but supports manual recovery',
+        (tester) async {
+      final request = RequestOptions(path: '/fixture');
+      when(() => mockApi.getUser('missing')).thenThrow(DioException(
+        requestOptions: request,
+        type: DioExceptionType.badResponse,
+        response: Response(requestOptions: request, statusCode: 404),
+      ));
+      await tester.pumpWidget(createProfileScreen(userId: 'missing'));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 120; i++) {
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+      verify(() => mockApi.getUser('missing')).called(1);
+      verifyNever(() => mockApi.getUserPosts(any()));
+      when(() => mockApi.getUser('missing')).thenAnswer((_) async => {
+            ...userJson(id: 'missing'),
+            'is_mutual_follow': false,
+          });
+      await tester.tap(find.text('Try Again'));
+      await tester.pumpAndSettle();
+      expect(find.text('Content is private'), findsOneWidget);
+      verify(() => mockApi.getUser('missing')).called(1);
+    });
+
+    testWidgets('a post access denial stops retrying but permits manual retry',
+        (tester) async {
+      when(() => mockApi.getUser('friend')).thenAnswer((_) async => {
+            ...userJson(id: 'friend'),
+            'is_mutual_follow': true,
+          });
+      final request = RequestOptions(path: '/fixture');
+      when(() => mockApi.getUserPosts('friend')).thenThrow(DioException(
+        requestOptions: request,
+        type: DioExceptionType.badResponse,
+        response: Response(requestOptions: request, statusCode: 404),
+      ));
+      await tester.pumpWidget(createProfileScreen(userId: 'friend'));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 120; i++) {
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+      verify(() => mockApi.getUserPosts('friend')).called(1);
+      when(() => mockApi.getUserPosts('friend')).thenAnswer((_) async => []);
+      await tester.tap(find.text('Try Again'));
+      await tester.pumpAndSettle();
+      expect(find.text('No posts yet'), findsOneWidget);
+      verify(() => mockApi.getUserPosts('friend')).called(1);
+    });
+
     testWidgets('shows Connect button for non-connected user', (tester) async {
       when(() => mockApi.getUser('u2')).thenAnswer(
         (_) async => {
@@ -85,6 +136,15 @@ void main() {
       expect(find.text('Connect'), findsOneWidget);
       // Content is private
       expect(find.text('Content is private'), findsOneWidget);
+      for (var i = 0; i < 120; i++) {
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+      verifyNever(() => mockApi.getUserPosts('u2'));
+      await tester
+          .widget<RefreshIndicator>(find.byType(RefreshIndicator))
+          .onRefresh();
+      await tester.pumpAndSettle();
+      verifyNever(() => mockApi.getUserPosts('u2'));
     });
 
     testWidgets('shows Message button for mutual connection', (tester) async {
@@ -104,6 +164,7 @@ void main() {
 
       expect(find.text('Best Friend'), findsOneWidget);
       expect(find.text('Message'), findsOneWidget);
+      verify(() => mockApi.getUserPosts('u3')).called(1);
     });
 
     testWidgets('shows Requested button when already following',
@@ -123,6 +184,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Requested'), findsOneWidget);
+      verifyNever(() => mockApi.getUserPosts('u4'));
     });
 
     testWidgets('shows Accept button when followed by other user',
@@ -142,6 +204,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Accept'), findsOneWidget);
+      verifyNever(() => mockApi.getUserPosts('u5'));
     });
   });
 }

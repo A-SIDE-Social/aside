@@ -6314,14 +6314,14 @@ describe('E2EE key registry', () => {
       expect(otpks.rows.map((r: any) => r.key_id)).toContain(100);
     });
 
-    test('ignores duplicate key_ids via ON CONFLICT', async () => {
+    test('rejects different material reusing an existing key_id', async () => {
       const { token, user } = await createTestUser();
       await request(app)
         .post('/v1/devices/keys/upload')
         .set('Authorization', `Bearer ${token}`)
         .send(makeBundle(2));
 
-      // Submit the same key_id 1 that's already stored — should be ignored.
+      // Reusing an existing ID for different material must reject the batch.
       const res = await request(app)
         .post('/v1/devices/keys/replenish')
         .set('Authorization', `Bearer ${token}`)
@@ -6331,13 +6331,13 @@ describe('E2EE key registry', () => {
             { id: 50, public: rb64(33) },
           ],
         });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
 
       const otpks = await query(
         'SELECT * FROM one_time_prekeys WHERE user_id = $1',
         [user.id],
       );
-      expect(otpks.rows.length).toBe(3); // 2 original + 1 new (id 50); id 1 collision ignored
+      expect(otpks.rows.length).toBe(2); // The conflicting batch is rolled back entirely.
     });
 
     test('404 when no active key set exists', async () => {
@@ -7608,5 +7608,61 @@ describe('Invite journey regression — no contacts required', () => {
     await request(app).post('/v1/auth/request-otp').send({ email });
     expect((await request(app).post('/v1/auth/verify-otp').send({ email, code: '123456', display_name: 'New friend', invite_code: code })).status).toBe(400);
     expect((await query('SELECT id FROM users WHERE email=$1', [email])).rows).toHaveLength(0);
+  });
+});
+
+
+describe('Live feed updates', () => {
+  test('limited posts update only their audience even when push is disabled', async () => {
+    const { user: author, token: authorToken } = await createTestUser();
+    const { user: member, token: memberToken } = await createTestUser();
+    const { user: outsider, token: outsiderToken } = await createTestUser();
+    const { token: strangerToken } = await createTestUser();
+    await createMutualFollow(author.id, member.id);
+    await createMutualFollow(author.id, outsider.id);
+    await query(
+      'INSERT INTO notification_preferences (user_id, posts) VALUES ($1, false)',
+      [member.id],
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing test port');
+    const url = `http://127.0.0.1:${address.port}`;
+    const sockets = [memberToken, outsiderToken, strangerToken].map((token) =>
+      createSocket(url, {
+        auth: { token }, transports: ['websocket'], forceNew: true,
+        reconnection: false, autoConnect: false,
+      }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.all(sockets.map((socket) => new Promise<void>((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('connect_error', reject);
+        socket.connect();
+      })));
+      const excluded: unknown[] = [];
+      sockets[1].on('new_post', (event) => excluded.push(event));
+      sockets[2].on('new_post', (event) => excluded.push(event));
+      const update = new Promise<unknown>((resolve, reject) => {
+        sockets[0].once('new_post', resolve);
+        timer = setTimeout(() => reject(new Error('No live post update')), 3000);
+      });
+      const group = await request(app).post('/v1/groups')
+        .set('Authorization', `Bearer ${authorToken}`)
+        .send({ name: 'Private audience' });
+      await request(app).put(`/v1/groups/${group.body.group.id}/members`)
+        .set('Authorization', `Bearer ${authorToken}`)
+        .send({ user_ids: [member.id] });
+      const post = await request(app).post('/v1/posts')
+        .set('Authorization', `Bearer ${authorToken}`)
+        .send({ caption: 'A private update', group_ids: [group.body.group.id] });
+      expect(post.status).toBe(201);
+      expect(await update).toEqual({ post_id: post.body.post.id });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(excluded).toEqual([]);
+    } finally {
+      clearTimeout(timer);
+      sockets.forEach((socket) => socket.disconnect());
+    }
   });
 });

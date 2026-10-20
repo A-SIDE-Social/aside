@@ -13,6 +13,16 @@ import WidgetKit
   ) -> Bool {
     FirebaseApp.configure()
 
+    // With UIScene, UIKit sends activation to FlutterSceneDelegate instead
+    // of applicationDidBecomeActive. Observe the scene event so returning
+    // from the Home Screen or a notification clears the delivered badge.
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(clearDeliveredNotifications),
+      name: UIScene.didActivateNotification,
+      object: nil
+    )
+
     GeneratedPluginRegistrant.register(with: self)
 
     // Register contacts handler (lightweight platform channel for phone numbers)
@@ -41,10 +51,7 @@ import WidgetKit
     }
 
     // Clear badge on launch
-    if #available(iOS 16.0, *) {
-      UNUserNotificationCenter.current().setBadgeCount(0)
-    }
-    application.applicationIconBadgeNumber = 0
+    clearAppIconBadge()
 
     // Register for remote notifications
     application.registerForRemoteNotifications()
@@ -53,12 +60,20 @@ import WidgetKit
   }
 
   override func applicationDidBecomeActive(_ application: UIApplication) {
-    // Clear badge when app is opened — setBadgeCount is the modern API
-    // (applicationIconBadgeNumber is deprecated in iOS 16+)
+    super.applicationDidBecomeActive(application)
+    clearDeliveredNotifications()
+  }
+
+  private func clearAppIconBadge() {
     if #available(iOS 16.0, *) {
       UNUserNotificationCenter.current().setBadgeCount(0)
+    } else {
+      UIApplication.shared.applicationIconBadgeNumber = 0
     }
-    application.applicationIconBadgeNumber = 0
+  }
+
+  @objc private func clearDeliveredNotifications() {
+    clearAppIconBadge()
     UNUserNotificationCenter.current().removeAllDeliveredNotifications()
   }
 
@@ -107,9 +122,7 @@ import WidgetKit
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    if #available(iOS 16.0, *) {
-      UNUserNotificationCenter.current().setBadgeCount(0)
-    }
+    clearAppIconBadge()
     super.userNotificationCenter(
       center,
       willPresent: notification,

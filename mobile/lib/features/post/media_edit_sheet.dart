@@ -10,6 +10,7 @@ import 'package:photo_view/photo_view.dart';
 import '../../core/media/film_filters.dart';
 import '../../core/media/media_transform.dart';
 import '../../widgets/widgets.dart';
+import '../../widgets/hold_to_compare.dart';
 
 /// Opens a full-sheet media editor for picking filters and applying
 /// simple straighten+crop (pinch-zoom, pan, ±15° rotation) on each
@@ -375,6 +376,13 @@ class _MediaEditSheetState extends State<_MediaEditSheet> {
                 },
               ),
             ),
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text(
+                'Touch and hold photo to compare with original',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ),
             // Straighten slider + reset button. Reset is always
             // available when transform is dirty (not identity), so the
             // user can recover even if they've forgotten what they
@@ -449,36 +457,39 @@ class _EditablePage extends StatelessWidget {
       child: AspectRatio(
         aspectRatio: aspect,
         child: ClipRect(
-          child: PhotoView.customChild(
-            controller: controller,
-            minScale: PhotoViewComputedScale.contained,
-            maxScale: PhotoViewComputedScale.contained * 3.0,
-            initialScale: PhotoViewComputedScale.contained,
-            backgroundDecoration: const BoxDecoration(color: Colors.black),
-            // Rotation is applied INSIDE PhotoView's scale+pan, so
-            // zooming in on a rotated image stays aligned to its
-            // original center. The Transform uses the image's natural
-            // size (via the inner Image.file), and photo_view wraps it
-            // with its own scale/pan matrix on top.
-            child: Transform.rotate(
-              angle: transform.rotation,
-              child: FilteredImage(
-                filter: filter,
-                child: Image.file(
-                  File(file.path),
-                  fit: BoxFit.cover,
+          child: HoldToCompare(
+            enabled: !filter.isNone,
+            builder: (showOriginal) => PhotoView.customChild(
+              controller: controller,
+              minScale: PhotoViewComputedScale.contained,
+              maxScale: PhotoViewComputedScale.contained * 3.0,
+              initialScale: PhotoViewComputedScale.contained,
+              backgroundDecoration: const BoxDecoration(color: Colors.black),
+              // Rotation is applied INSIDE PhotoView's scale+pan, so
+              // zooming in on a rotated image stays aligned to its
+              // original center. The Transform uses the image's natural
+              // size (via the inner Image.file), and photo_view wraps it
+              // with its own scale/pan matrix on top.
+              child: Transform.rotate(
+                angle: transform.rotation,
+                child: FilteredImage(
+                  filter: showOriginal ? FilmFilters.none : filter,
+                  child: Image.file(
+                    File(file.path),
+                    fit: BoxFit.cover,
+                  ),
                 ),
               ),
+              scaleStateChangedCallback: (state) {
+                // photo_view fires this when the user pinches past the
+                // initial scale. We use it to toggle the sheet's swipe
+                // block — zoomed = no PageView swipe, so single-finger
+                // pan works without fighting the carousel.
+                final isZoomed = state != PhotoViewScaleState.initial &&
+                    state != PhotoViewScaleState.covering;
+                onActiveGesture(isZoomed);
+              },
             ),
-            scaleStateChangedCallback: (state) {
-              // photo_view fires this when the user pinches past the
-              // initial scale. We use it to toggle the sheet's swipe
-              // block — zoomed = no PageView swipe, so single-finger
-              // pan works without fighting the carousel.
-              final isZoomed = state != PhotoViewScaleState.initial &&
-                  state != PhotoViewScaleState.covering;
-              onActiveGesture(isZoomed);
-            },
           ),
         ),
       ),

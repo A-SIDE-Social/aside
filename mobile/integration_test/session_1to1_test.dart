@@ -26,6 +26,14 @@ import 'package:aside/src/rust/frb_generated.dart';
 /// coexist in the same test process without clobbering platform
 /// secure storage.
 class _InMemoryKeyStorage implements KeyStorage {
+  String? _owner;
+  @override
+  Future<String?> loadOwner() async => _owner;
+  @override
+  Future<void> saveOwner(String userId) async {
+    _owner = userId;
+  }
+
   IdentityKeypair? _identity;
   SignedPreKey? _signedPreKey;
   final Map<int, OneTimePreKey> _otpks = {};
@@ -190,6 +198,7 @@ class _InMemoryKeyStorage implements KeyStorage {
 
   @override
   Future<void> wipe() async {
+    _owner = null;
     _identity = null;
     _signedPreKey = null;
     _otpks.clear();

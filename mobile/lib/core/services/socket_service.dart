@@ -20,6 +20,7 @@ class SocketService {
   final String _apiBaseUrl;
   io.Socket? _socket;
   final _newMessageStream = StreamController<Map<String, dynamic>>.broadcast();
+  final _newPostStream = StreamController<String>.broadcast();
 
   SocketService(this._apiBaseUrl);
 
@@ -28,6 +29,7 @@ class SocketService {
   /// responsible for filtering by conversation id and decrypting
   /// E2EE envelopes before rendering.
   Stream<Map<String, dynamic>> get newMessages => _newMessageStream.stream;
+  Stream<String> get newPosts => _newPostStream.stream;
 
   bool get isConnected => _socket?.connected ?? false;
 
@@ -66,6 +68,12 @@ class SocketService {
       }
     });
 
+    socket.on('new_post', (data) {
+      if (data is Map && data['post_id'] is String) {
+        _newPostStream.add(data['post_id'] as String);
+      }
+    });
+
     socket.connect();
     _socket = socket;
   }
@@ -82,5 +90,6 @@ class SocketService {
   void dispose() {
     disconnect();
     _newMessageStream.close();
+    _newPostStream.close();
   }
 }

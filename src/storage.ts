@@ -34,6 +34,36 @@ function getS3Client(): S3Client {
   return s3Client;
 }
 
+// Voice captions are private objects. Only the authorized post-content
+// endpoint reads them; never resolve them through the public CDN.
+export async function putVoiceCaption(key: string, bytes: Buffer): Promise<void> {
+  if (config.nodeEnv === 'development' || config.nodeEnv === 'test') {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const directory = path.join(__dirname, '../private-uploads');
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, path.basename(key)), bytes);
+    return;
+  }
+  await getS3Client().send(new PutObjectCommand({
+    Bucket: config.s3Bucket, Key: key, Body: bytes,
+    ContentType: 'audio/mp4', ACL: 'private',
+  }));
+}
+
+export async function readVoiceCaption(key: string): Promise<Buffer> {
+  if (config.nodeEnv === 'development' || config.nodeEnv === 'test') {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    return fs.readFile(path.join(__dirname, '../private-uploads', path.basename(key)));
+  }
+  const result = await getS3Client().send(new GetObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+  if (!result.Body || !result.ContentLength || result.ContentLength > 2097152) {
+    throw new Error('Voice caption unavailable');
+  }
+  return Buffer.from(await result.Body.transformToByteArray());
+}
+
 /**
  * Generate a presigned PUT URL for uploading a file to object storage.
  * Works with AWS S3 and any S3-compatible provider (DO Spaces, MinIO, etc.)
@@ -119,7 +149,9 @@ export async function deleteStorageObjects(keys: string[]): Promise<void> {
     const path = await import('path');
     const uploadsDir = path.join(__dirname, '../uploads');
     for (const key of keys) {
-      const filePath = path.join(uploadsDir, path.basename(key));
+      const directory = key.startsWith('voice-captions/')
+        ? path.join(__dirname, '../private-uploads') : uploadsDir;
+      const filePath = path.join(directory, path.basename(key));
       try { fs.unlinkSync(filePath); } catch {}
       try { fs.unlinkSync(`${filePath}.meta`); } catch {}
     }

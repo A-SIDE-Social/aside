@@ -1,6 +1,7 @@
 # Invite and onboarding incident — 2026-09-19
 
-Priority: high. Existing users who decline contacts can be unable to connect at all. Code fixes are prepared for review; production code and store releases have not been performed. The production API invite-host allowlist was updated on September 19; see the release status below.
+Historical incident record. The invite fixes were subsequently merged on main.
+See the October 14 release follow-up below for the current verification status.
 
 ## Diagnosis
 
@@ -72,3 +73,34 @@ These images render the production widgets with the app theme and fictional test
 ![Manual invite entry](images/invite-add-friend.png)
 
 ![Connection confirmation](images/invite-confirmation.png)
+
+
+## Release follow-up — October 14, 2026
+
+The invite repairs above are already merged on main and are retained in the
+1.5.0 source candidate alongside the newer OTP, auth and subscription fixes. The
+old association-hosting diagnosis no longer describes the live site: all four
+apex/www iOS and Android association endpoints returned HTTP 200 with JSON
+content types during this check. The website build and invite handoff tests
+also pass locally. Do not change the working domain routing based on the
+September diagnosis.
+
+The release also includes scene-based iOS badge clearing, four grain-free photo
+filters, touch-and-hold comparison, account-scoped local drafts, and an in-app
+new-post indicator. Live post events use the same audience query as push
+notifications and are delivered independently of push preferences/throttling.
+The backend change must accompany the app release for unthrottled live updates.
+
+Draft files are copied into application support storage. Drafts retain media
+order, individual edits, the selected private audience, expiry, and uploaded
+items. Older unowned drafts require explicit ownership confirmation before
+recovery into the current account. Failed saves retain the editor for retry;
+successful shares remove the saved draft. A related speech-input unmount error
+was fixed after exercising the actual composer exit flow.
+
+Validation on the current main plus the release changes: 539 backend tests and
+459 mobile tests passed;
+TypeScript and application/test Dart analysis passed; the invite website
+build, its 5 handoff tests, and hosted iOS/Android link overlay checks passed.
+The iOS simulator build passed. Store availability and physical-device invite,
+notification, OTP, and cross-account acceptance remain separate release checks.

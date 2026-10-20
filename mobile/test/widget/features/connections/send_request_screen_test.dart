@@ -8,8 +8,19 @@ import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:aside/features/connections/send_request_screen.dart';
+import 'package:aside/models/user.dart';
 import 'package:aside/providers/api_provider.dart';
+import 'package:aside/providers/auth_provider.dart';
+import '../../../helpers/fixtures.dart';
 import '../../../helpers/mocks.dart';
+
+class _SignedInAuth extends AuthNotifier {
+  @override
+  AuthState build() => AuthState(
+        status: AuthStatus.authenticated,
+        user: User.fromJson(userJson(id: 'me')),
+      );
+}
 
 void main() {
   const slug = 'k7m2pq9xj4n6';
@@ -37,7 +48,10 @@ void main() {
     );
 
     return ProviderScope(
-      overrides: [apiServiceProvider.overrideWithValue(mockApi)],
+      overrides: [
+        apiServiceProvider.overrideWithValue(mockApi),
+        authProvider.overrideWith(_SignedInAuth.new),
+      ],
       child: MaterialApp.router(routerConfig: router),
     );
   }
@@ -65,6 +79,27 @@ void main() {
     verify(() => mockApi.requestFromSlug(slug)).called(1);
     expect(find.text('Home'), findsOneWidget);
   });
+
+  testWidgets('own personal invite cannot send a request', (tester) async {
+    when(() => mockApi.getUserBySlug(slug)).thenAnswer(
+      (_) async => {'id': 'me', 'display_name': 'My Name'},
+    );
+
+    await tester.pumpWidget(createApp());
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('This is your invite link.'), findsOneWidget);
+    expect(find.text('Send Request'), findsNothing);
+    expect(find.text('Connect'), findsNothing);
+    verifyNever(() => mockApi.requestFromSlug(any()));
+    verifyNever(() => mockApi.redeemInvite(any()));
+
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+    expect(find.text('Home'), findsOneWidget);
+  },
+      variant:
+          TargetPlatformVariant({TargetPlatform.iOS, TargetPlatform.macOS}));
 
   testWidgets('guards send from repeated taps while the request is pending',
       (tester) async {

@@ -33,6 +33,7 @@ class _SpeechInputButtonState extends ConsumerState<SpeechInputButton>
   /// Prevents a DM composer's button from picking up stale transcript
   /// from a post composer's session mid-navigation.
   int? _sessionId;
+  SpeechNotifier? _sessionNotifier;
 
   @override
   void initState() {
@@ -48,10 +49,12 @@ class _SpeechInputButtonState extends ConsumerState<SpeechInputButton>
 
   @override
   void dispose() {
-    // Cancel if still listening when widget is removed
-    final speech = ref.read(speechProvider);
-    if (speech.status == SpeechStatus.listening) {
-      ref.read(speechProvider.notifier).cancelListening();
+    final notifier = _sessionNotifier;
+    final sessionId = _sessionId;
+    if (notifier != null && sessionId != null) {
+      // WidgetRef is no longer usable during unmount. Cancel only this
+      // button's session, after the current widget teardown finishes.
+      Future.microtask(() => notifier.cancelSession(sessionId));
     }
     _pulseController.dispose();
     super.dispose();
@@ -59,20 +62,27 @@ class _SpeechInputButtonState extends ConsumerState<SpeechInputButton>
 
   void _toggle() async {
     final notifier = ref.read(speechProvider.notifier);
+    _sessionNotifier = notifier;
     final status = ref.read(speechProvider).status;
 
     if (status == SpeechStatus.listening) {
       await notifier.stopListening();
+      if (!mounted) return;
       _pulseController.stop();
       _pulseController.reset();
     } else {
       _preExistingText = widget.controller.text;
       final started = await notifier.startListening();
       if (started) {
+        final sessionId = notifier.activeSessionId;
+        if (!mounted) {
+          notifier.cancelSession(sessionId);
+          return;
+        }
         // Capture the session id minted by startListening so subsequent
         // builds can distinguish "our session" from stale state left by
         // a different screen's button.
-        _sessionId = ref.read(speechProvider).sessionId;
+        _sessionId = sessionId;
         _pulseController.repeat(reverse: true);
       }
     }

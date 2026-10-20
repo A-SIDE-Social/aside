@@ -19,6 +19,8 @@ import '../../core/network/upload_watchdog.dart';
 import '../../models/models.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
+import '../../core/services/voice_caption_service.dart';
+import '../../widgets/voice_caption_editor.dart';
 import 'media_edit_sheet.dart';
 
 /// Thrown when an upload has made no progress for longer than the stall
@@ -44,7 +46,7 @@ class _ComposerMedia {
   static int _idSeq = 0;
 
   final String id;
-  final XFile file;
+  XFile file;
   final bool isVideo;
   FilmFilter? filter;
   MediaTransform? transform;
@@ -63,12 +65,17 @@ class CreatePostScreen extends ConsumerStatefulWidget {
   ConsumerState<CreatePostScreen> createState() => _CreatePostScreenState();
 }
 
-class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
+class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
+    with WidgetsBindingObserver {
   final _captionController = TextEditingController();
   final _imagePicker = ImagePicker();
   final List<_ComposerMedia> _media = [];
   bool _isPosting = false;
   bool _isTextPost = false;
+  VoiceRecording? _voiceCaption;
+  bool _recordingVoice = false;
+  String? _uploadedVoiceCaptionId;
+  final Set<String> _temporaryVoicePaths = {};
   bool _hideAfter24h = false;
   final Set<String> _selectedAudienceListIds = {};
 
@@ -81,6 +88,15 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   // If the user resumed from a draft, this is its id so we can delete it on
   // successful post.
   String? _resumingDraftId;
+  DateTime? _draftCreatedAt;
+  Timer? _draftTimer;
+  int _draftRevision = 0;
+  bool _draftSaved = false;
+  bool _allowPop = false;
+  bool _closing = false;
+  bool _published = false;
+  bool _showingPostTypePicker = false;
+  String? _draftError;
 
   static const _maxMedia = AppLimits.maxPhotosPerPost;
   static const _maxCaptionLength = AppLimits.maxCaptionLength;
@@ -92,11 +108,16 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _captionController.addListener(_scheduleDraftSave);
     // Only show the post type picker on a fresh Create Post screen. If we
     // have drafts the user may want to resume, skip straight to the banner.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await ref.read(draftProvider.notifier).ready;
+      final legacyCount = await ref.read(legacyDraftCountProvider.future);
+      if (!mounted) return;
       final drafts = ref.read(draftProvider);
-      if (drafts.isEmpty) {
+      if (drafts.isEmpty && legacyCount == 0) {
         _showPostTypePicker();
       }
     });
@@ -104,86 +125,96 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _draftTimer?.cancel();
     _watchdog?.stop();
+    _captionController.removeListener(_scheduleDraftSave);
     _captionController.dispose();
     super.dispose();
   }
 
   void _showPostTypePicker() {
+    if (_showingPostTypePicker) return;
+    setState(() => _showingPostTypePicker = true);
     var didPick = false;
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text('Take photo'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _pickFromCamera().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Choose from library'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _pickFromLibrary().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined),
-              title: Text('Record video (${_maxVideoSeconds}s)'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _recordVideo().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.video_library_outlined),
-              title: Text('Choose video from library (${_maxVideoSeconds}s)'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                _pickVideoFromLibrary().then((_) {
-                  if (_media.isEmpty && mounted) context.pop();
-                });
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.text_fields_outlined),
-              title: const Text('Text post'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                setState(() => _isTextPost = true);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.close),
-              title: const Text('Cancel'),
-              onTap: () {
-                didPick = true;
-                Navigator.pop(ctx);
-                context.pop();
-              },
-            ),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: const Text('Take photo'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _pickFromCamera().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Choose from library'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _pickFromLibrary().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.videocam_outlined),
+                title: Text('Record video (${_maxVideoSeconds}s)'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _recordVideo().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.video_library_outlined),
+                title: Text('Choose video from library (${_maxVideoSeconds}s)'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _pickVideoFromLibrary().then((_) {
+                    if (_media.isEmpty && mounted) context.pop();
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.text_fields_outlined),
+                title: const Text('Text post'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  _edit(() => _isTextPost = true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.close),
+                title: const Text('Cancel'),
+                onTap: () {
+                  didPick = true;
+                  Navigator.pop(ctx);
+                  context.pop();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     ).then((_) {
+      if (!mounted) return;
+      setState(() => _showingPostTypePicker = false);
       if (!didPick && _media.isEmpty && !_isTextPost && mounted) {
         context.pop();
       }
@@ -196,7 +227,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
     final picked = await _imagePicker.pickMultiImage(limit: remaining);
     if (picked.isNotEmpty && mounted) {
-      setState(() {
+      _edit(() {
         for (final x in picked.take(remaining)) {
           _media.add(_ComposerMedia(file: x, isVideo: false));
         }
@@ -209,7 +240,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     while (_media.length < _maxMedia) {
       final photo = await _imagePicker.pickImage(source: ImageSource.camera);
       if (photo == null || !mounted) break;
-      setState(() {
+      _edit(() {
         _media.add(_ComposerMedia(file: photo, isVideo: false));
         _isTextPost = false;
       });
@@ -244,7 +275,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
     if (video == null || !mounted) return;
 
-    setState(() {
+    _edit(() {
       _media.add(_ComposerMedia(file: video, isVideo: true));
       _isTextPost = false;
     });
@@ -257,7 +288,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
     if (video == null || !mounted) return;
 
-    setState(() {
+    _edit(() {
       _media.add(_ComposerMedia(file: video, isVideo: true));
       _isTextPost = false;
     });
@@ -317,7 +348,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   }
 
   void _removeMedia(int index) {
-    setState(() {
+    _edit(() {
       _media.removeAt(index);
     });
   }
@@ -327,7 +358,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   /// mean filter / transform / completed metadata travel with the item
   /// for free — no parallel-map fixup needed.
   void _reorderMedia(int oldIndex, int newIndex) {
-    setState(() {
+    _edit(() {
       final item = _media.removeAt(oldIndex);
       _media.insert(newIndex, item);
     });
@@ -356,19 +387,25 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       filterFor: _filterFor,
       transformFor: _transformFor,
       onFilterChanged: (idx, f) {
-        setState(() {
+        _edit(() {
           _media[idx].filter = f.isNone ? null : f;
+          _media[idx].completed = null;
         });
       },
       onTransformChanged: (idx, t) {
-        setState(() {
+        _edit(() {
           _media[idx].transform = t.isIdentity ? null : t;
+          _media[idx].completed = null;
         });
       },
     );
   }
 
   bool get _canShare {
+    if (_recordingVoice ||
+        (_voiceCaption != null && !_media.any((item) => !item.isVideo))) {
+      return false;
+    }
     if (_isPosting) return false;
     if (_isTextPost) return _captionController.text.trim().isNotEmpty;
     return _media.isNotEmpty;
@@ -532,7 +569,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
 
     if (picked != null && mounted) {
-      setState(() {
+      _edit(() {
         _selectedAudienceListIds
           ..clear()
           ..addAll(picked);
@@ -578,8 +615,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
   Future<void> _share() async {
     if (!_canShare) return;
+    _draftTimer?.cancel();
 
-    setState(() {
+    _edit(() {
       _isPosting = true;
       _uploadTotalFiles = _media.length;
       _uploadingFileIndex = _completedCount;
@@ -599,7 +637,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           final file = item.file;
           final contentType = isVideo ? 'video/mp4' : 'image/jpeg';
 
-          setState(() => _uploadingFileIndex = i);
+          _edit(() => _uploadingFileIndex = i);
 
           // Get upload URL for this file
           final uploadData = await api.getUploadUrls(contentType);
@@ -676,7 +714,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 if (!mounted) return;
                 watchdog.noteProgress();
                 final fileFraction = total > 0 ? sent / total : 0.0;
-                setState(() {
+                _edit(() {
                   _uploadProgress = (i + fileFraction) / _uploadTotalFiles;
                 });
               },
@@ -739,6 +777,16 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               for (var i = 0; i < _media.length; i++)
                 {...?_media[i].completed, 'position': i},
             ];
+      if (_voiceCaption != null && _uploadedVoiceCaptionId == null) {
+        final recording = _voiceCaption!;
+        final bytes = await File(recording.path).readAsBytes();
+        if (bytes.isEmpty || bytes.length > 2097152) {
+          throw const FormatException(
+              'The voice caption is too large. Please record it again.');
+        }
+        _uploadedVoiceCaptionId =
+            await api.uploadVoiceCaption(bytes, recording.durationMs);
+      }
       await api.createPost(
         caption: caption.isNotEmpty ? caption : null,
         media: mediaPayload,
@@ -746,11 +794,23 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             ? null
             : _selectedAudienceListIds.toList(),
         hideAfter24h: _hideAfter24h,
+        voiceCaptionId: _uploadedVoiceCaptionId,
       );
 
+      _published = true;
+      await ref.read(draftProvider.notifier).settled;
+      for (final path in _temporaryVoicePaths.toList()) {
+        await _removeTemporaryVoice(path);
+      }
+      _draftTimer?.cancel();
       // Drop the draft we resumed from, if any.
       if (_resumingDraftId != null) {
-        await ref.read(draftProvider.notifier).deleteDraft(_resumingDraftId!);
+        try {
+          await ref.read(draftProvider.notifier).deleteDraft(_resumingDraftId!);
+        } catch (_) {
+          // The post is already published. Never retry it after a local
+          // draft cleanup failure.
+        }
         _resumingDraftId = null;
       }
 
@@ -761,22 +821,27 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         if (currentUser != null) {
           ref.invalidate(userPostsProvider(currentUser.id));
         }
-        if (mounted) context.pop();
+        if (mounted) {
+          setState(() => _allowPop = true);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) context.pop();
+          });
+        }
       }
     } on _UploadStalled {
       if (mounted) {
-        setState(() => _isPosting = false);
+        _edit(() => _isPosting = false);
         await _showStallDialog();
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isPosting = false);
+        _edit(() => _isPosting = false);
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Failed to share: $e')));
       }
     } finally {
-      if (mounted && _isPosting) setState(() => _isPosting = false);
+      if (mounted && _isPosting) _edit(() => _isPosting = false);
     }
   }
 
@@ -813,45 +878,212 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     }
   }
 
-  Future<void> _saveCurrentAsDraft() async {
-    final id =
-        _resumingDraftId ?? DateTime.now().microsecondsSinceEpoch.toString();
-    // Sort so completed items come first (preserving relative order),
-    // pending items after. This matches the draft schema's invariant
-    // that indices [0..nextFileIndex) in localFilePaths are the
-    // already-uploaded ones.
-    final completed = <_ComposerMedia>[];
-    final pending = <_ComposerMedia>[];
-    for (final m in _media) {
-      (m.completed != null ? completed : pending).add(m);
+  bool get _hasDraftContent =>
+      _media.isNotEmpty ||
+      _captionController.text.trim().isNotEmpty ||
+      _voiceCaption != null;
+
+  Future<void> _removeTemporaryVoice(String path) async {
+    if (!_temporaryVoicePaths.remove(path)) return;
+    await ref.read(draftProvider.notifier).settled;
+    try {
+      await File(path).delete();
+    } on FileSystemException catch (_) {
+      // Temporary files can also be purged by the OS.
     }
-    final ordered = [...completed, ...pending];
-    final filterIds = <int, String>{};
-    final transforms = <int, MediaTransform>{};
-    for (var i = 0; i < ordered.length; i++) {
-      final m = ordered[i];
-      if (m.filter != null) filterIds[i] = m.filter!.id;
-      if (m.transform != null) transforms[i] = m.transform!;
-    }
-    final draft = PostDraft(
-      id: id,
-      caption: _captionController.text,
-      isTextPost: _isTextPost,
-      localFilePaths: ordered.map((m) => m.file.path).toList(),
-      videoFlags: ordered.map((m) => m.isVideo).toList(),
-      completedMedia: completed.map((m) => m.completed!).toList(),
-      nextFileIndex: completed.length,
-      createdAt: DateTime.now(),
-      audienceListIds: _selectedAudienceListIds.toList(),
-      filterIds: filterIds,
-      transforms: transforms,
+  }
+
+  static const _draftStatusMessages = [
+    'Drafts save on this device',
+    'Saving draft…',
+    'Draft saved on this device',
+    'Draft couldn’t be saved. Try again.',
+  ];
+
+  Widget _buildDraftStatus(AppColorTokens colors, ThemeData theme) {
+    final message = _draftError ??
+        (!_hasDraftContent
+            ? _draftStatusMessages[0]
+            : _draftSaved
+                ? _draftStatusMessages[2]
+                : _draftStatusMessages[1]);
+    final style = theme.textTheme.bodySmall?.copyWith(
+      color:
+          _draftError == null ? colors.textSecondary : theme.colorScheme.error,
     );
-    await ref.read(draftProvider.notifier).saveDraft(draft);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      // Reserve the tallest status at the current width and text scale, so
+      // saving, success and errors never move the editor underneath it.
+      child: Stack(
+        children: [
+          for (final status in _draftStatusMessages)
+            Visibility(
+              visible: status == message,
+              maintainSize: true,
+              maintainAnimation: true,
+              maintainState: true,
+              child: Text(status, style: style),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _edit(VoidCallback change) {
+    setState(change);
+    _scheduleDraftSave();
+  }
+
+  void _scheduleDraftSave() {
+    _draftTimer?.cancel();
+    if (_published || _isPosting || _closing) return;
+    _draftRevision++;
+    if (_draftSaved) setState(() => _draftSaved = false);
+    _draftTimer = Timer(const Duration(milliseconds: 700), () {
+      unawaited(_saveDraftSafely());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _draftTimer?.cancel();
+      if (!_isPosting && !_published && !_closing) {
+        unawaited(_saveDraftSafely());
+      }
+    }
+  }
+
+  Future<bool> _saveDraftSafely() async {
+    if (_published) return true;
+    final notifier = ref.read(draftProvider.notifier);
+    final revision = _draftRevision;
+    try {
+      if (!_hasDraftContent) {
+        if (_resumingDraftId != null) {
+          await notifier.deleteDraft(_resumingDraftId!);
+          _resumingDraftId = null;
+        }
+        return true;
+      }
+      final id =
+          _resumingDraftId ??= DateTime.now().microsecondsSinceEpoch.toString();
+      _draftCreatedAt ??= DateTime.now();
+      final items = List<_ComposerMedia>.of(_media);
+      final sourcePaths = items.map((m) => m.file.path).toList();
+      final draft = PostDraft(
+        id: id,
+        caption: _captionController.text,
+        voiceCaptionPath: _voiceCaption?.path,
+        voiceCaptionDurationMs: _voiceCaption?.durationMs,
+        isTextPost: _isTextPost,
+        hideAfter24h: _hideAfter24h,
+        localFilePaths: sourcePaths,
+        videoFlags: items.map((m) => m.isVideo).toList(),
+        completedMedia: const [],
+        completedMediaByIndex: {
+          for (var i = 0; i < items.length; i++)
+            if (items[i].completed != null)
+              i: Map<String, dynamic>.from(items[i].completed!),
+        },
+        nextFileIndex: 0,
+        createdAt: _draftCreatedAt!,
+        audienceListIds: _selectedAudienceListIds.toList(),
+        filterIds: {
+          for (var i = 0; i < items.length; i++)
+            if (items[i].filter != null) i: items[i].filter!.id,
+        },
+        transforms: {
+          for (var i = 0; i < items.length; i++)
+            if (items[i].transform != null) i: items[i].transform!,
+        },
+      );
+      final saved = await notifier.saveDraft(draft);
+      if (!mounted) return true;
+      if (_voiceCaption?.path == draft.voiceCaptionPath &&
+          saved.voiceCaptionPath != null) {
+        _voiceCaption = VoiceRecording(
+            saved.voiceCaptionPath!, saved.voiceCaptionDurationMs!);
+      }
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].file.path == sourcePaths[i]) {
+          items[i].file = XFile(saved.localFilePaths[i]);
+        }
+      }
+      if (revision == _draftRevision) {
+        setState(() {
+          _draftSaved = true;
+          _draftError = null;
+        });
+      }
+      return true;
+    } catch (_) {
+      if (mounted) {
+        setState(() => _draftError = 'Draft couldn’t be saved. Try again.');
+      }
+      return false;
+    }
+  }
+
+  Future<void> _closeComposer() async {
+    if (_closing || _isPosting || _recordingVoice) return;
+    _closing = true;
+    _draftTimer?.cancel();
+    final saved = await _saveDraftSafely();
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Saved as draft')));
-    context.pop();
+    if (!saved) {
+      setState(() => _closing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Couldn’t save draft. Please try again.')),
+      );
+      return;
+    }
+    for (final path in _temporaryVoicePaths.toList()) {
+      await _removeTemporaryVoice(path);
+    }
+    if (!mounted) return;
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.pop();
+    });
+  }
+
+  Future<void> _saveCurrentAsDraft() => _closeComposer();
+
+  Future<void> _recoverOlderDrafts() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Recover older drafts?'),
+        content: const Text(
+          'Older drafts weren’t tied to an account. Recover them to this '
+          'account only if they’re yours.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Recover drafts'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(draftProvider.notifier).recoverLegacyDrafts();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('Some older drafts couldn’t be recovered. Please retry.'),
+        ));
+      }
+    }
   }
 
   Widget _buildDraftsBanner(AppColorTokens colors, ThemeData theme) {
@@ -920,7 +1152,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 ),
                 subtitle: Text(
                   '${d.localFilePaths.length} item${d.localFilePaths.length == 1 ? '' : 's'}'
-                  ' · uploaded ${d.completedMedia.length}/${d.localFilePaths.length}',
+                  ' · uploaded ${d.uploadedMediaCount}/${d.localFilePaths.length}',
                 ),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete_outline),
@@ -939,9 +1171,16 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   }
 
   void _resumeDraft(PostDraft draft) {
-    setState(() {
+    _edit(() {
       _resumingDraftId = draft.id;
+      _draftCreatedAt = draft.createdAt;
+      _hideAfter24h = draft.hideAfter24h;
       _captionController.text = draft.caption;
+      _voiceCaption = draft.voiceCaptionPath == null
+          ? null
+          : VoiceRecording(
+              draft.voiceCaptionPath!, draft.voiceCaptionDurationMs ?? 1000);
+      _uploadedVoiceCaptionId = null;
       _isTextPost = draft.isTextPost;
       _selectedAudienceListIds
         ..clear()
@@ -955,9 +1194,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             isVideo: i < draft.videoFlags.length ? draft.videoFlags[i] : false,
             filter: filterId != null ? FilmFilters.byId(filterId) : null,
             transform: draft.transforms[i],
-            completed: i < draft.completedMedia.length
-                ? Map<String, dynamic>.from(draft.completedMedia[i])
-                : null,
+            completed: draft.uploadedMediaAt(i) == null
+                ? null
+                : Map<String, dynamic>.from(draft.uploadedMediaAt(i)!),
           ),
         );
       }
@@ -973,453 +1212,533 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     final colors = AppColors.of(context);
     final theme = Theme.of(context);
     final hasMedia = _media.isNotEmpty;
+    final legacyDrafts = ref.watch(legacyDraftCountProvider).value ?? 0;
+    final hasSavedDrafts = ref.watch(draftProvider).isNotEmpty;
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => context.pop(),
-        ),
-        title: Text(
-          _isTextPost ? 'New Text Post' : 'New Post',
-          style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w600,
+    return PopScope(
+      canPop: _allowPop || _published,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) unawaited(_closeComposer());
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: _isPosting || _closing || _recordingVoice
+                ? null
+                : _closeComposer,
           ),
-        ),
-        actions: [
-          if (_isPosting && _uploadTotalFiles > 0)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  SizedBox(
-                    width: 90,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(2),
-                      child: LinearProgressIndicator(
-                        value: _uploadProgress,
-                        minHeight: 4,
-                        backgroundColor: colors.textPrimary.withValues(
-                          alpha: 0.15,
-                        ),
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          colors.textPrimary,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Uploading ${_uploadingFileIndex + 1} of '
-                    '$_uploadTotalFiles…',
-                    style: TextStyle(fontSize: 10, color: colors.textTertiary),
-                  ),
-                ],
-              ),
-            )
-          else
-            TextButton(
-              onPressed: _canShare ? _share : null,
-              child: _isPosting
-                  ? SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: colors.textPrimary,
-                      ),
-                    )
-                  : Text(
-                      'Share',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: _canShare
-                            ? colors.textPrimary
-                            : colors.textTertiary,
-                      ),
-                    ),
+          title: Text(
+            _isTextPost ? 'New Text Post' : 'New Post',
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w600,
             ),
-        ],
-      ),
-      // Tap anywhere outside the caption field to dismiss the keyboard.
-      // HitTestBehavior.translucent so taps on inactive areas (between
-      // widgets) still close the keyboard, while taps on inner widgets
-      // with their own gesture handlers still work normally.
-      body: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: () => FocusScope.of(context).unfocus(),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildDraftsBanner(colors, theme),
-              if (_isTextPost) ...[
-                // Text post: large centered input
-                Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: TextField(
-                    controller: _captionController,
-                    autofocus: true,
-                    maxLines: null,
-                    minLines: 6,
-                    maxLength: _maxTextPostLength,
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.w500,
-                      height: 1.4,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: "What's on your mind?",
-                      hintStyle: theme.textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.w500,
-                        height: 1.4,
-                        color: colors.textTertiary.withValues(alpha: 0.4),
+          ),
+          actions: [
+            if (_isPosting && _uploadTotalFiles > 0)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    SizedBox(
+                      width: 90,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: LinearProgressIndicator(
+                          value: _uploadProgress,
+                          minHeight: 4,
+                          backgroundColor: colors.textPrimary.withValues(
+                            alpha: 0.15,
+                          ),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            colors.textPrimary,
+                          ),
+                        ),
                       ),
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      filled: false,
-                      suffixIcon: SpeechInputButton(
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Uploading ${(_uploadingFileIndex + 1).clamp(1, _uploadTotalFiles)} of '
+                      '$_uploadTotalFiles…',
+                      style:
+                          TextStyle(fontSize: 10, color: colors.textTertiary),
+                    ),
+                  ],
+                ),
+              )
+            else
+              TextButton(
+                onPressed: _canShare ? _share : null,
+                child: _isPosting
+                    ? SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: colors.textPrimary,
+                        ),
+                      )
+                    : Text(
+                        'Share',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: _canShare
+                              ? colors.textPrimary
+                              : colors.textTertiary,
+                        ),
+                      ),
+              ),
+          ],
+        ),
+        // Tap anywhere outside the caption field to dismiss the keyboard.
+        // HitTestBehavior.translucent so taps on inactive areas (between
+        // widgets) still close the keyboard, while taps on inner widgets
+        // with their own gesture handlers still work normally.
+        body: AbsorbPointer(
+          absorbing: _closing || _isPosting,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () => FocusScope.of(context).unfocus(),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildDraftsBanner(colors, theme),
+                  if (!_isTextPost &&
+                      !hasMedia &&
+                      !_showingPostTypePicker &&
+                      (hasSavedDrafts || legacyDrafts > 0)) ...[
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: FilledButton.icon(
+                        onPressed: _showPostTypePicker,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Create a new post'),
+                      ),
+                    ),
+                    if (legacyDrafts > 0)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: TextButton.icon(
+                          onPressed: _recoverOlderDrafts,
+                          icon: const Icon(Icons.restore),
+                          label: const Text('Recover older drafts'),
+                        ),
+                      ),
+                  ],
+                  if (_isTextPost || hasMedia) _buildDraftStatus(colors, theme),
+                  if (_isTextPost) ...[
+                    // Text post: large centered input
+                    Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: TextField(
                         controller: _captionController,
+                        textCapitalization: TextCapitalization.sentences,
+                        autofocus: true,
+                        maxLines: null,
+                        minLines: 6,
                         maxLength: _maxTextPostLength,
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          height: 1.4,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: "What's on your mind?",
+                          hintStyle: theme.textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.w500,
+                            height: 1.4,
+                            color: colors.textTertiary.withValues(alpha: 0.4),
+                          ),
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          filled: false,
+                          suffixIcon: SpeechInputButton(
+                            controller: _captionController,
+                            maxLength: _maxTextPostLength,
+                          ),
+                        ),
+                        onChanged: (_) => _edit(() {}),
                       ),
                     ),
-                    onChanged: (_) => setState(() {}),
-                  ),
-                ),
-                // Option to switch to photo post
-                Center(
-                  child: TextButton.icon(
-                    onPressed: _showMediaSourcePicker,
-                    icon: Icon(
-                      Icons.add_photo_alternate_outlined,
-                      color: colors.textTertiary,
-                    ),
-                    label: Text(
-                      'Add photos instead',
-                      style: TextStyle(color: colors.textTertiary),
-                    ),
-                  ),
-                ),
-                // Auto-hide toggle for text posts
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.timer_outlined,
-                        size: 20,
-                        color: colors.textSecondary,
+                    // Option to switch to photo post
+                    Center(
+                      child: TextButton.icon(
+                        onPressed: _showMediaSourcePicker,
+                        icon: Icon(
+                          Icons.add_photo_alternate_outlined,
+                          color: colors.textTertiary,
+                        ),
+                        label: Text(
+                          'Add photos instead',
+                          style: TextStyle(color: colors.textTertiary),
+                        ),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Hide after 24 hours',
-                          style: theme.textTheme.bodyMedium?.copyWith(
+                    ),
+                    // Auto-hide toggle for text posts
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.timer_outlined,
+                            size: 20,
                             color: colors.textSecondary,
                           ),
-                        ),
-                      ),
-                      Switch.adaptive(
-                        value: _hideAfter24h,
-                        onChanged: (v) => setState(() => _hideAfter24h = v),
-                      ),
-                    ],
-                  ),
-                ),
-              ] else if (hasMedia) ...[
-                // Photo post: media strip + caption
-                Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: colors.surfaceAlt,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: colors.border, width: 0.5),
-                  ),
-                  child: Column(
-                    children: [
-                      SizedBox(
-                        height: 200,
-                        // Strip is a horizontal ReorderableListView so users
-                        // can long-press a thumbnail and drag to reposition
-                        // it. Each child uses the stable [_ComposerMedia.id]
-                        // as a Key — filter, transform, and upload state
-                        // travel with the item across reorders for free.
-                        child: ReorderableListView.builder(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.all(8),
-                          buildDefaultDragHandles: false,
-                          proxyDecorator: (child, index, animation) => Material(
-                            elevation: 6,
-                            color: Colors.transparent,
-                            shadowColor: Colors.black54,
-                            borderRadius: BorderRadius.circular(10),
-                            child: child,
-                          ),
-                          // Reorder is disabled mid-upload — the share/upload
-                          // path indexes into _media by position and the
-                          // stall-resume path assumes ordering is stable.
-                          onReorderItem:
-                              _isPosting ? (_, __) {} : _reorderMedia,
-                          itemCount: _media.length,
-                          itemBuilder: (context, index) {
-                            final item = _media[index];
-                            return Padding(
-                              // Spacing between items (replaces the old
-                              // ListView.separated separator).
-                              key: ValueKey(item.id),
-                              padding: EdgeInsets.only(
-                                right: index == _media.length - 1 ? 0 : 8,
-                              ),
-                              child: ReorderableDelayedDragStartListener(
-                                index: index,
-                                enabled: !_isPosting,
-                                child: GestureDetector(
-                                  onTap: item.isVideo
-                                      ? null
-                                      : () => _showFilterOverlay(index),
-                                  child: Stack(
-                                    children: [
-                                      ClipRRect(
-                                        borderRadius: BorderRadius.circular(10),
-                                        child: item.isVideo
-                                            ? _VideoFilePreview(
-                                                path: item.file.path,
-                                                width: 150,
-                                                height: 200,
-                                              )
-                                            : FilteredImage(
-                                                filter: _filterFor(index),
-                                                width: 150,
-                                                height: 200,
-                                                // Apply rotation + scale from
-                                                // the user's edit so the
-                                                // thumbnail in this strip
-                                                // matches what the post will
-                                                // look like in the feed.
-                                                // ClipRect keeps the rotated/
-                                                // zoomed image inside the
-                                                // 150×200 tile. Offset (pan)
-                                                // is skipped: its units
-                                                // (preview-container px) don't
-                                                // translate cleanly to a 150px
-                                                // tile, and typical pans are
-                                                // small enough that omitting
-                                                // them is visually fine.
-                                                child: ClipRect(
-                                                  child: Transform.scale(
-                                                    scale: _transformFor(
-                                                      index,
-                                                    ).scale,
-                                                    child: Transform.rotate(
-                                                      angle: _transformFor(
-                                                        index,
-                                                      ).rotation,
-                                                      child: Image.file(
-                                                        File(item.file.path),
-                                                        width: 150,
-                                                        height: 200,
-                                                        fit: BoxFit.cover,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                      ),
-                                      if (item.isVideo)
-                                        Positioned.fill(
-                                          child: Center(
-                                            child: Container(
-                                              width: 36,
-                                              height: 36,
-                                              decoration: const BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                color: Colors.black54,
-                                              ),
-                                              child: const Icon(
-                                                Icons.videocam,
-                                                size: 18,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      Positioned(
-                                        top: 4,
-                                        right: 4,
-                                        child: GestureDetector(
-                                          onTap: () => _removeMedia(index),
-                                          child: Container(
-                                            width: 24,
-                                            height: 24,
-                                            decoration: const BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              color: Colors.black54,
-                                            ),
-                                            child: const Icon(
-                                              Icons.close,
-                                              size: 14,
-                                              color: Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                          // Trailing "+" affordance lives outside the
-                          // reorderable list because ReorderableListView
-                          // expects every child to be reorderable. Wrapping
-                          // the strip in a Row keeps the add button visually
-                          // adjacent without breaking that contract.
-                        ),
-                      ),
-                      if (_media.length < _maxMedia)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: GestureDetector(
-                              onTap: _showMediaSourcePicker,
-                              child: Container(
-                                width: 150,
-                                height: 60,
-                                decoration: BoxDecoration(
-                                  color: colors.card,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                    color: colors.border,
-                                    width: 0.5,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.add,
-                                      color: colors.textTertiary,
-                                      size: 18,
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      'Add',
-                                      style: TextStyle(
-                                        color: colors.textTertiary,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Hide after 24 hours',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: colors.textSecondary,
                               ),
                             ),
                           ),
-                        ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                        child: Text(
-                          '${_media.length}/$_maxMedia items'
-                          '${_media.length > 1 ? "  ·  Long-press a photo to reorder" : ""}',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // Filter picker (applies to all photos at once; tap a
-                // thumbnail above for per-image control in the overlay).
-                // Driven off the first photo in the strip — its filter is
-                // the "shared" selection users see highlighted.
-                if (_media.any((m) => !m.isVideo))
-                  Builder(
-                    builder: (_) {
-                      final firstPhotoIdx = _media.indexWhere(
-                        (m) => !m.isVideo,
-                      );
-                      return Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                        child: FilterPicker(
-                          imagePath: _media[firstPhotoIdx].file.path,
-                          selectedFilter: _filterFor(firstPhotoIdx),
-                          onFilterChanged: (f) {
-                            setState(() {
-                              // Apply filter to ALL photos
-                              for (var i = 0; i < _media.length; i++) {
-                                if (!_media[i].isVideo) {
-                                  _media[i].filter = f.isNone ? null : f;
-                                }
-                              }
-                            });
-                          },
-                        ),
-                      );
-                    },
-                  ),
-
-                // Caption
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: TextField(
-                    controller: _captionController,
-                    maxLines: 5,
-                    minLines: 3,
-                    maxLength: _maxCaptionLength,
-                    decoration: InputDecoration(
-                      hintText: 'Write a caption...',
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      counterText: '',
-                      suffixIcon: SpeechInputButton(
-                        controller: _captionController,
-                        maxLength: _maxCaptionLength,
+                          Switch.adaptive(
+                            value: _hideAfter24h,
+                            onChanged: (v) => _edit(() => _hideAfter24h = v),
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                ),
-
-                // Auto-hide toggle
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.timer_outlined,
-                        size: 20,
-                        color: colors.textSecondary,
+                  ] else if (hasMedia) ...[
+                    // Photo post: media strip + caption
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: colors.surfaceAlt,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: colors.border, width: 0.5),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Hide after 24 hours',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: colors.textSecondary,
+                      child: Column(
+                        children: [
+                          SizedBox(
+                            height: 200,
+                            // Strip is a horizontal ReorderableListView so users
+                            // can long-press a thumbnail and drag to reposition
+                            // it. Each child uses the stable [_ComposerMedia.id]
+                            // as a Key — filter, transform, and upload state
+                            // travel with the item across reorders for free.
+                            child: ReorderableListView.builder(
+                              scrollDirection: Axis.horizontal,
+                              padding: const EdgeInsets.all(8),
+                              buildDefaultDragHandles: false,
+                              proxyDecorator: (child, index, animation) =>
+                                  Material(
+                                elevation: 6,
+                                color: Colors.transparent,
+                                shadowColor: Colors.black54,
+                                borderRadius: BorderRadius.circular(10),
+                                child: child,
+                              ),
+                              // Reorder is disabled mid-upload — the share/upload
+                              // path indexes into _media by position and the
+                              // stall-resume path assumes ordering is stable.
+                              onReorderItem:
+                                  _isPosting ? (_, __) {} : _reorderMedia,
+                              itemCount: _media.length,
+                              itemBuilder: (context, index) {
+                                final item = _media[index];
+                                return Padding(
+                                  // Spacing between items (replaces the old
+                                  // ListView.separated separator).
+                                  key: ValueKey(item.id),
+                                  padding: EdgeInsets.only(
+                                    right: index == _media.length - 1 ? 0 : 8,
+                                  ),
+                                  child: ReorderableDelayedDragStartListener(
+                                    index: index,
+                                    enabled: !_isPosting,
+                                    child: GestureDetector(
+                                      onTap: item.isVideo
+                                          ? null
+                                          : () => _showFilterOverlay(index),
+                                      child: Stack(
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                            child: item.isVideo
+                                                ? _VideoFilePreview(
+                                                    path: item.file.path,
+                                                    width: 150,
+                                                    height: 200,
+                                                  )
+                                                : FilteredImage(
+                                                    filter: _filterFor(index),
+                                                    width: 150,
+                                                    height: 200,
+                                                    // Apply rotation + scale from
+                                                    // the user's edit so the
+                                                    // thumbnail in this strip
+                                                    // matches what the post will
+                                                    // look like in the feed.
+                                                    // ClipRect keeps the rotated/
+                                                    // zoomed image inside the
+                                                    // 150×200 tile. Offset (pan)
+                                                    // is skipped: its units
+                                                    // (preview-container px) don't
+                                                    // translate cleanly to a 150px
+                                                    // tile, and typical pans are
+                                                    // small enough that omitting
+                                                    // them is visually fine.
+                                                    child: ClipRect(
+                                                      child: Transform.scale(
+                                                        scale: _transformFor(
+                                                          index,
+                                                        ).scale,
+                                                        child: Transform.rotate(
+                                                          angle: _transformFor(
+                                                            index,
+                                                          ).rotation,
+                                                          child: Image.file(
+                                                            File(
+                                                                item.file.path),
+                                                            width: 150,
+                                                            height: 200,
+                                                            fit: BoxFit.cover,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                          ),
+                                          if (item.isVideo)
+                                            Positioned.fill(
+                                              child: Center(
+                                                child: Container(
+                                                  width: 36,
+                                                  height: 36,
+                                                  decoration:
+                                                      const BoxDecoration(
+                                                    shape: BoxShape.circle,
+                                                    color: Colors.black54,
+                                                  ),
+                                                  child: const Icon(
+                                                    Icons.videocam,
+                                                    size: 18,
+                                                    color: Colors.white,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          Positioned(
+                                            top: 4,
+                                            right: 4,
+                                            child: GestureDetector(
+                                              onTap: () => _removeMedia(index),
+                                              child: Container(
+                                                width: 24,
+                                                height: 24,
+                                                decoration: const BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: Colors.black54,
+                                                ),
+                                                child: const Icon(
+                                                  Icons.close,
+                                                  size: 14,
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                              // Trailing "+" affordance lives outside the
+                              // reorderable list because ReorderableListView
+                              // expects every child to be reorderable. Wrapping
+                              // the strip in a Row keeps the add button visually
+                              // adjacent without breaking that contract.
+                            ),
+                          ),
+                          if (_media.length < _maxMedia)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: GestureDetector(
+                                  onTap: _showMediaSourcePicker,
+                                  child: Container(
+                                    width: 150,
+                                    height: 60,
+                                    decoration: BoxDecoration(
+                                      color: colors.card,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: colors.border,
+                                        width: 0.5,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.add,
+                                          color: colors.textTertiary,
+                                          size: 18,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Add',
+                                          style: TextStyle(
+                                            color: colors.textTertiary,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                            child: Text(
+                              '${_media.length}/$_maxMedia items'
+                              '${_media.length > 1 ? "  ·  Long-press a photo to reorder" : ""}',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Filter picker (applies to all photos at once; tap a
+                    // thumbnail above for per-image control in the overlay).
+                    // Driven off the first photo in the strip — its filter is
+                    // the "shared" selection users see highlighted.
+                    if (_media.any((m) => !m.isVideo))
+                      Builder(
+                        builder: (_) {
+                          final firstPhotoIdx = _media.indexWhere(
+                            (m) => !m.isVideo,
+                          );
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                            child: FilterPicker(
+                              imagePath: _media[firstPhotoIdx].file.path,
+                              selectedFilter: _filterFor(firstPhotoIdx),
+                              onFilterChanged: (f) {
+                                _edit(() {
+                                  // Apply filter to ALL photos
+                                  for (var i = 0; i < _media.length; i++) {
+                                    if (!_media[i].isVideo) {
+                                      _media[i].filter = f.isNone ? null : f;
+                                      _media[i].completed = null;
+                                    }
+                                  }
+                                });
+                              },
+                            ),
+                          );
+                        },
+                      ),
+
+                    // Caption
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: TextField(
+                        controller: _captionController,
+                        textCapitalization: TextCapitalization.sentences,
+                        maxLines: 5,
+                        minLines: 3,
+                        maxLength: _maxCaptionLength,
+                        decoration: InputDecoration(
+                          hintText: 'Write a caption...',
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          counterText: '',
+                          suffixIcon: SpeechInputButton(
+                            controller: _captionController,
+                            maxLength: _maxCaptionLength,
                           ),
                         ),
                       ),
-                      Switch.adaptive(
-                        value: _hideAfter24h,
-                        onChanged: (v) => setState(() => _hideAfter24h = v),
+                    ),
+
+                    // Auto-hide toggle
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
                       ),
-                    ],
-                  ),
-                ),
-              ],
-              if (_isTextPost || hasMedia)
-                _buildAudienceSelector(colors, theme),
-            ],
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.timer_outlined,
+                            size: 20,
+                            color: colors.textSecondary,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Hide after 24 hours',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: colors.textSecondary,
+                              ),
+                            ),
+                          ),
+                          Switch.adaptive(
+                            value: _hideAfter24h,
+                            onChanged: (v) => _edit(() => _hideAfter24h = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (_media.any((item) => !item.isVideo) ||
+                      _voiceCaption != null)
+                    Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: VoiceCaptionEditor(
+                          value: _voiceCaption,
+                          enabled: !_isPosting,
+                          onChanged: (recording) {
+                            final previousPath = _voiceCaption?.path;
+                            if (recording?.temporary == true) {
+                              _temporaryVoicePaths.add(recording!.path);
+                            }
+                            _edit(() {
+                              _voiceCaption = recording;
+                              _uploadedVoiceCaptionId = null;
+                            });
+                            if (previousPath != null &&
+                                previousPath != recording?.path) {
+                              unawaited(_removeTemporaryVoice(previousPath));
+                            }
+                            if (WidgetsBinding.instance.lifecycleState !=
+                                AppLifecycleState.resumed) {
+                              unawaited(_saveDraftSafely());
+                            }
+                          },
+                          onRecordingChanged: (recording) =>
+                              setState(() => _recordingVoice = recording),
+                        )),
+                  if (_voiceCaption != null &&
+                      !_media.any((item) => !item.isVideo))
+                    const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                            'Add a photo or remove the voice caption to share.')),
+                  if (_isTextPost || hasMedia)
+                    _buildAudienceSelector(colors, theme),
+                ],
+              ),
+            ),
           ),
         ),
       ),

@@ -1,5 +1,6 @@
 import admin from 'firebase-admin';
 import { query } from './db/pool';
+import { getIO } from './socket';
 
 // Initialize Firebase Admin — uses GOOGLE_APPLICATION_CREDENTIALS env var
 // or a service account JSON file path via FIREBASE_SERVICE_ACCOUNT_PATH
@@ -468,6 +469,12 @@ export async function notifyNewPost(
     let recipientIds = await getNewPostRecipientIds(posterId, postId);
 
     if (recipientIds.length === 0) return;
+
+    // In-app updates follow the same audience snapshot as feed access.
+    // They are independent of push permissions, preferences and throttling.
+    getIO()?.to(recipientIds.map((id) => `user:${id}`)).emit('new_post', {
+      post_id: postId,
+    });
 
     // Filter by notification preferences
     recipientIds = await filterByPreference(recipientIds, 'posts');

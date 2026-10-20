@@ -112,8 +112,24 @@ void main() {
   });
 
   group('FilmFilters presets', () {
-    test('all returns 8 filters', () {
-      expect(FilmFilters.all.length, 8);
+    test('all filters have stable unique IDs for draft restoration', () {
+      expect(FilmFilters.all.map((f) => f.id).toSet().length,
+          FilmFilters.all.length);
+      for (final filter in FilmFilters.all) {
+        expect(FilmFilters.byId(filter.id), same(filter));
+      }
+    });
+
+    test('new clean looks add no grain', () {
+      for (final filter in [
+        FilmFilters.daylight,
+        FilmFilters.softPortrait,
+        FilmFilters.slate,
+        FilmFilters.cleanMono,
+      ]) {
+        expect(filter.grain, 0);
+        expect(filter.toColorMatrix(), isNot(FilmFilters.none.toColorMatrix()));
+      }
     });
 
     test('B&W filters are last in the list', () {

@@ -20,6 +20,7 @@ import webhooksRouter from './webhooks';
 import subscriptionsRouter from './subscriptions';
 import reactionsRouter from './reactions';
 import partnerOffersRouter from './partnerOffers';
+import { voiceCaptionsRouter } from './voiceCaptions';
 
 export const router = Router();
 
@@ -38,6 +39,7 @@ router.use('/follows', authenticate, followsRouter);
 // flow can call POST /request as soon as the user is authenticated.
 router.use('/invite-link', inviteLinkRouter);
 router.use('/feed', authenticate, feedRouter);
+router.use('/posts', authenticate, voiceCaptionsRouter);
 router.use('/posts', authenticate, postsRouter);
 router.use('/stories', authenticate, storiesRouter);
 router.use('/conversations', authenticate, conversationsRouter);

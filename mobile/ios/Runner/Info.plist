@@ -45,7 +45,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>A/SIDE needs camera access to take photos for posts and stories.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>A/SIDE needs microphone access to record videos and use voice-to-text input.</string>
+	<string>A/SIDE uses the microphone when you record a voice caption, record a video, or dictate text.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>A/SIDE uses on-device speech recognition to convert your voice to text. Audio never leaves your device.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

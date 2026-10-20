@@ -13,6 +13,7 @@ import 'feed_pinch_zoom.dart';
 import 'likes_sheet.dart';
 import 'linkified_text.dart';
 import 'reactions_strip.dart';
+import 'voice_caption_player.dart';
 
 class PostCard extends StatefulWidget {
   final Post post;
@@ -337,6 +338,14 @@ class _PostCardState extends State<PostCard>
               ],
             ),
           ),
+
+        if (post.voiceCaptionDurationMs != null)
+          Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: VoiceCaptionPlayer(
+                  key: ValueKey(post.id),
+                  postId: post.id,
+                  durationMs: post.voiceCaptionDurationMs!)),
 
         // Caption — full-width row below the action row (media posts only;
         // text-only posts already render their caption as the main content).

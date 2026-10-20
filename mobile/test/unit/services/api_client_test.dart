@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -22,6 +23,38 @@ Future<HttpServer> unauthorizedServer() async {
 }
 
 void main() {
+  test('voice upload sends exact binary bytes and suppresses payload logs',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final received = Completer<List<int>>();
+    server.listen((request) async {
+      received.complete(await request
+          .fold<List<int>>([], (bytes, chunk) => bytes..addAll(chunk)));
+      request.response
+        ..headers.contentType = ContentType.json
+        ..statusCode = HttpStatus.created
+        ..write('{"voice_caption":{"id":"test-recording"}}');
+      await request.response.close();
+    });
+    final storage = MockSecureStorage();
+    when(() => storage.getAuthToken()).thenAnswer((_) async => 'test-session');
+    when(() => storage.getRefreshToken()).thenAnswer((_) async => null);
+    final client = ApiClient(secureStorage: storage);
+    addTearDown(() => client.dio.close(force: true));
+    client.dio.options.baseUrl = 'http://127.0.0.1:${server.port}';
+    final logs = <String>[];
+    final bytes = [0, 255, 128, 70, 84, 89, 80];
+    await runZoned(() async {
+      expect(await ApiService(client).uploadVoiceCaption(bytes, 12000),
+          'test-recording');
+    },
+        zoneSpecification:
+            ZoneSpecification(print: (_, __, ___, line) => logs.add(line)));
+    expect(await received.future, bytes);
+    expect(logs.join('\n'), isNot(contains('test-recording')));
+    expect(logs.join('\n'), isNot(contains('/voice-captions')));
+  });
   group('ApiException', () {
     test('fromDioException maps connectionTimeout', () {
       final e = DioException(

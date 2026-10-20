@@ -39,6 +39,7 @@ import 'providers/attachment_cache_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/draft_provider.dart';
 import 'providers/feed_provider.dart';
+import 'providers/feed_updates_provider.dart';
 import 'providers/group_members_provider.dart';
 import 'providers/invite_link_provider.dart';
 import 'providers/subscription_provider.dart';
@@ -514,19 +515,27 @@ class _AsideAppState extends ConsumerState<AsideApp>
   @override
   Widget build(BuildContext context) {
     final themeMode = ref.watch(themeModeProvider);
+    // Keep the socket listener alive while any screen is visible.
+    ref.watch(feedUpdatesProvider);
     final authStatus = ref.watch(authProvider.select((s) => s.status));
 
     // While auth is resolving on cold start, show the splash above the router.
     // Mounting MaterialApp.router only after auth resolves means the router's
     // initial redirect runs exactly once with a final auth status — no
     // intermediate /splash -> / hop that would animate as a slide.
-    if (authStatus == AuthStatus.initial || authStatus == AuthStatus.loading) {
+    if (authStatus == AuthStatus.initial ||
+        authStatus == AuthStatus.loading ||
+        authStatus == AuthStatus.recoveryRequired) {
       return MaterialApp(
         themeMode: themeMode,
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         debugShowCheckedModeBanner: false,
-        home: const SplashScreen(),
+        home: SplashScreen(
+          onRetry: authStatus == AuthStatus.recoveryRequired
+              ? () => ref.read(authProvider.notifier).initialize()
+              : null,
+        ),
       );
     }
 
@@ -566,6 +575,7 @@ class MainScaffold extends ConsumerWidget {
           data: (convos) => convos.any((c) => c.unreadCount > 0),
           orElse: () => false,
         );
+    final hasNewPosts = ref.watch(feedUpdatesProvider).isNotEmpty;
     return Scaffold(
       body: _constrained(navigationShell),
       bottomNavigationBar: Container(
@@ -599,9 +609,15 @@ class MainScaffold extends ConsumerWidget {
             navigationShell.goBranch(index, initialLocation: isSameTab);
           },
           destinations: [
-            const NavigationDestination(
-              icon: Icon(Icons.home_outlined),
-              selectedIcon: Icon(Icons.home_rounded),
+            NavigationDestination(
+              icon: Badge(
+                isLabelVisible: hasNewPosts,
+                child: const Icon(Icons.home_outlined),
+              ),
+              selectedIcon: Badge(
+                isLabelVisible: hasNewPosts,
+                child: const Icon(Icons.home_rounded),
+              ),
               label: 'Home',
             ),
             NavigationDestination(

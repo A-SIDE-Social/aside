@@ -205,6 +205,45 @@ class FilmFilters {
     name: 'Original',
   );
 
+  /// Light, clean color without added film texture.
+  static const daylight = FilmFilter(
+    id: 'daylight',
+    name: 'Daylight',
+    brightness: 0.015,
+    contrast: 1.04,
+    saturation: 1.04,
+    temperature: 0.025,
+  );
+
+  /// Gentle contrast and restrained warm color for portraits.
+  static const softPortrait = FilmFilter(
+    id: 'soft_portrait',
+    name: 'Soft Portrait',
+    brightness: 0.025,
+    contrast: 0.94,
+    saturation: 0.94,
+    temperature: 0.07,
+    tint: 0.015,
+  );
+
+  /// Muted, cool color with a little shadow lift.
+  static const slate = FilmFilter(
+    id: 'slate',
+    name: 'Slate',
+    contrast: 1.07,
+    saturation: 0.78,
+    temperature: -0.14,
+    fade: 0.025,
+  );
+
+  /// Crisp monochrome with clean blacks and no grain.
+  static const cleanMono = FilmFilter(
+    id: 'clean_mono',
+    name: 'Clean Mono',
+    contrast: 1.18,
+    saturation: 0,
+  );
+
   /// Punchy warm color — vivid greens, rich skin tones, holiday feel.
   /// Inspired by consumer color negative stocks.
   static const summerPunch = FilmFilter(
@@ -296,11 +335,15 @@ class FilmFilters {
   /// to coolest), B&W at the end.
   static List<FilmFilter> get all => [
         none,
+        daylight,
+        softPortrait,
         summerPunch,
         warmFade,
         instantWarm,
         coolVivid,
         instantCool,
+        slate,
+        cleanMono,
         hardMono,
         softMono,
       ];
