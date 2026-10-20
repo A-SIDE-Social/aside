@@ -50,22 +50,27 @@ class DraftStorage {
       );
 
   Future<PostDraft> preserveMedia(String owner, PostDraft draft) async {
-    if (draft.localFilePaths.isEmpty) return draft;
+    if (draft.localFilePaths.isEmpty && draft.voiceCaptionPath == null) {
+      return draft;
+    }
     final directory = await _draftDirectory(owner, draft.id);
     await directory.create(recursive: true);
     final paths = <String>[];
-    for (final path in draft.localFilePaths) {
+    for (final path in [
+      ...draft.localFilePaths,
+      if (draft.voiceCaptionPath != null) draft.voiceCaptionPath!,
+    ]) {
       final source = File(path);
       if (source.parent.path == directory.path) {
         if (!await source.exists()) {
-          throw const FileSystemException('A draft photo or video is missing');
+          throw const FileSystemException('A draft attachment is missing');
         }
         paths.add(path);
         continue;
       }
       final stat = await source.stat();
       if (stat.type != FileSystemEntityType.file) {
-        throw const FileSystemException('A draft photo or video is missing');
+        throw const FileSystemException('A draft attachment is missing');
       }
       final name = sha256.convert(utf8.encode(
         '$path:${stat.size}:${stat.modified.microsecondsSinceEpoch}',
@@ -80,7 +85,9 @@ class DraftStorage {
       }
       paths.add(destination.path);
     }
-    return draft.withLocalFiles(paths);
+    return draft.withLocalFiles(
+        paths.take(draft.localFilePaths.length).toList(),
+        voicePath: draft.voiceCaptionPath == null ? null : paths.last);
   }
 
   Future<void> removeMedia(String owner, String id) async {
@@ -118,6 +125,7 @@ class DraftNotifier extends Notifier<List<PostDraft>> {
   }
 
   Future<void> get ready => _ready;
+  Future<void> get settled => _pending;
 
   Future<T> _serialize<T>(Future<T> Function() operation) {
     final result = _pending.then((_) => operation());

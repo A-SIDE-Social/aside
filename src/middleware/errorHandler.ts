@@ -6,6 +6,7 @@ export class AppError extends Error {
     public statusCode: number,
     message: string,
     public reason?: FailureReason,
+    public code?: 'key_bundle_incomplete' | 'key_bundle_conflict' | 'key_recovery_required',
   ) {
     super(message);
     this.name = 'AppError';
@@ -16,7 +17,7 @@ export function errorHandler(err: Error, _req: Request, res: Response, next: Nex
   if (res.headersSent) { next(err); return; }
   if (err instanceof AppError) {
     res.locals.failureReason = err.reason;
-    res.status(err.statusCode).json({ error: err.message });
+    res.status(err.statusCode).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     return;
   }
 

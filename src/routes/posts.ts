@@ -59,7 +59,13 @@ router.post(
   writeLimit,
   asyncHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
-    const { caption, media, group_ids, hide_after_24h } = req.body;
+    const { caption, media, group_ids, hide_after_24h, voice_caption_id } = req.body;
+
+    if (voice_caption_id != null &&
+        (typeof voice_caption_id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(voice_caption_id) ||
+         !Array.isArray(media) || !media.some((m: any) => m?.media_type === 'photo'))) {
+      throw new AppError(400, 'Voice captions can be attached to photo posts only');
+    }
 
     // Type-check caption FIRST. The downstream "must have caption or media"
     // guard calls `caption.trim()`, which throws a TypeError on non-strings
@@ -98,6 +104,16 @@ router.post(
         [userId, caption || null, audience.type],
       );
       post = posts[0];
+
+      if (voice_caption_id != null) {
+        const { rows } = await client.query(`UPDATE post_voice_captions SET post_id = $1
+          WHERE id = $2 AND uploaded_by_user_id = $3 AND post_id IS NULL
+          RETURNING duration_ms`, [post.id, voice_caption_id, userId]);
+        if (!rows.length) throw new AppError(400, 'Voice caption is unavailable. Please record it again.');
+        post.voice_caption_duration_ms = rows[0].duration_ms;
+        await client.query('UPDATE posts SET voice_caption_duration_ms = $2 WHERE id = $1',
+          [post.id, post.voice_caption_duration_ms]);
+      }
 
       // Create post_media records. `thumbnail_url` is the key of a
       // first-frame JPEG extracted client-side and uploaded alongside the

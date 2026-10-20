@@ -203,6 +203,49 @@ class SignalClient {
 
   SignalClient(this._storage);
 
+  Future<String?> keyOwner() => _storage.loadOwner();
+  Future<void> setKeyOwner(String userId) => _storage.saveOwner(userId);
+
+  /// Complete an interrupted first-run write without replacing any saved key.
+  /// Only provisioning recovery calls this; it is not a rotation operation.
+  Future<PublicKeyBundle> resumeInitialKeys({
+    int otpkCount = defaultOtpkBatch,
+    int kyberCount = defaultKyberBatch,
+  }) async {
+    await initialize();
+    var identity = await _storage.loadIdentityKeyPair();
+    if (identity == null) {
+      identity = generateIdentityKeypair();
+      await _storage.saveIdentityKeyPair(identity);
+    }
+    if (await _storage.loadSignedPreKey() == null) {
+      await _storage.saveSignedPreKey(generateSignedPrekey(
+        identitySerialized: identity.serialized,
+        keyId: 1,
+      ));
+    }
+    final otpkIds = await _storage.listOneTimePreKeyIds();
+    if (otpkIds.length < otpkCount) {
+      final start = otpkIds.isEmpty ? 1 : otpkIds.reduce(math.max) + 1;
+      for (final key in generatePrekeyBatch(
+          startId: start, count: otpkCount - otpkIds.length)) {
+        await _storage.saveOneTimePreKey(key);
+      }
+    }
+    final kyberIds = await _storage.listKyberPreKeyIds();
+    if (kyberIds.length < kyberCount) {
+      final start = kyberIds.isEmpty ? 1 : kyberIds.reduce(math.max) + 1;
+      for (final key in generateKyberPrekeyBatch(
+        identitySerialized: identity.serialized,
+        startId: start,
+        count: kyberCount - kyberIds.length,
+      )) {
+        await _storage.saveKyberPreKey(key);
+      }
+    }
+    return (await currentPublicBundle())!;
+  }
+
   /// Default batch size for OTPK generation. Signal's reference spec
   /// uses 100 — enough to establish sessions with ~100 new peers
   /// before a replenishment round-trip is needed.

@@ -89,6 +89,7 @@ class Post {
   final String id;
   final String userId;
   final String? caption;
+  final int? voiceCaptionDurationMs;
   final DateTime createdAt;
   final DateTime? updatedAt;
   final DateTime? deletedAt;
@@ -116,6 +117,7 @@ class Post {
     required this.id,
     required this.userId,
     this.caption,
+    this.voiceCaptionDurationMs,
     required this.createdAt,
     this.updatedAt,
     this.deletedAt,
@@ -136,6 +138,7 @@ class Post {
       id: json['id'] as String,
       userId: json['user_id'] as String,
       caption: json['caption'] as String?,
+      voiceCaptionDurationMs: json['voice_caption_duration_ms'] as int?,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: json['updated_at'] != null
           ? DateTime.parse(json['updated_at'] as String)
@@ -172,6 +175,8 @@ class Post {
       'id': id,
       'user_id': userId,
       'caption': caption,
+      if (voiceCaptionDurationMs != null)
+        'voice_caption_duration_ms': voiceCaptionDurationMs,
       'created_at': createdAt.toIso8601String(),
       'deleted_at': deletedAt?.toIso8601String(),
       'media': media.map((e) => e.toJson()).toList(),
@@ -200,6 +205,7 @@ class Post {
     String? id,
     String? userId,
     String? caption,
+    int? voiceCaptionDurationMs,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? deletedAt,
@@ -218,6 +224,8 @@ class Post {
       id: id ?? this.id,
       userId: userId ?? this.userId,
       caption: caption ?? this.caption,
+      voiceCaptionDurationMs:
+          voiceCaptionDurationMs ?? this.voiceCaptionDurationMs,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       deletedAt: deletedAt ?? this.deletedAt,

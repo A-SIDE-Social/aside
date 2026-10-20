@@ -74,6 +74,7 @@ export const openApiSpec = {
           id: { type: 'string', format: 'uuid' },
           user_id: { type: 'string', format: 'uuid' },
           caption: { type: 'string', nullable: true },
+          voice_caption_duration_ms: { type: 'integer', nullable: true, minimum: 1, maximum: 60000, description: 'Optional voice caption; fetch through the authenticated post endpoint' },
           audience_type: {
             type: 'string',
             enum: ['all_connections', 'lists'],
@@ -820,6 +821,42 @@ export const openApiSpec = {
         },
       },
     },
+    '/posts/voice-captions': {
+      post: {
+        tags: ['Posts'], summary: 'Upload a private voice caption for a photo post',
+        security: [{ BearerAuth: [] }],
+        parameters: [{ in: 'header', name: 'X-Voice-Duration-Ms', required: true,
+          schema: { type: 'integer', minimum: 1, maximum: 60000 } }],
+        requestBody: { required: true, content: { 'audio/mp4': {
+          schema: { type: 'string', format: 'binary', description: 'M4A recording, at most 2 MiB' },
+        } } },
+        responses: {
+          '201': { description: 'Uploader-owned, single-use reservation', content: { 'application/json': {
+            schema: { type: 'object', properties: { voice_caption: { type: 'object', properties: {
+              id: { type: 'string', format: 'uuid' }, duration_ms: { type: 'integer' },
+            } } } },
+          } } },
+          '400': { description: 'Invalid duration or recording' },
+          '401': { description: 'Authentication required' },
+          '413': { description: 'Recording exceeds 2 MiB' },
+          '429': { description: 'Upload limit reached' },
+        },
+      },
+    },
+    '/posts/{id}/voice-caption': {
+      get: {
+        tags: ['Posts'], summary: 'Read audio after checking the post audience and history limits',
+        security: [{ BearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string', format: 'uuid' } }],
+        responses: {
+          '200': { description: 'Private audio; Cache-Control: private, no-store', content: {
+            'audio/mp4': { schema: { type: 'string', format: 'binary' } },
+          } },
+          '401': { description: 'Authentication required' },
+          '404': { description: 'Post or audio unavailable to this viewer' },
+        },
+      },
+    },
     '/posts': {
       post: {
         tags: ['Posts'],
@@ -834,6 +871,7 @@ export const openApiSpec = {
                 required: ['media'],
                 properties: {
                   caption: { type: 'string', maxLength: 2200 },
+                  voice_caption_id: { type: 'string', format: 'uuid', description: 'Optional uploader-owned reservation; requires at least one photo' },
                   media: { type: 'array', items: { $ref: '#/components/schemas/MediaInput' }, minItems: 1, maxItems: 5 },
                   group_ids: {
                     type: 'array',

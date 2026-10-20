@@ -65,8 +65,12 @@ class SendRequestScreen extends ConsumerStatefulWidget {
 class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
   bool _sending = false;
 
-  Future<void> _send(bool legacy) async {
-    if (_sending) return;
+  Future<void> _send(bool legacy, String? inviteOwnerId) async {
+    if (_sending ||
+        (inviteOwnerId != null &&
+            inviteOwnerId == ref.read(authProvider).user?.id)) {
+      return;
+    }
     setState(() => _sending = true);
     try {
       final api = ref.read(apiServiceProvider);
@@ -108,6 +112,8 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     final theme = Theme.of(context);
+    final currentUserId =
+        ref.watch(authProvider.select((auth) => auth.user?.id));
     final userAsync =
         ref.watch(_userBySlugProvider((widget.slug, widget.legacy)));
 
@@ -173,6 +179,9 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
               (user['display_name'] as String?) ?? 'this person';
           final avatarUrl = user['avatar_url'] as String?;
           final legacy = user['legacy'] == true;
+          final inviteOwnerId = user['id'] as String?;
+          final isOwnLink =
+              currentUserId != null && inviteOwnerId == currentUserId;
           return SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
             child: Column(
@@ -191,34 +200,38 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  legacy
-                      ? 'Use this invite to connect? You’ll be able to see each other’s posts.'
-                      : 'Send a connection request? They’ll need to accept in Friends before you can see each other’s posts.',
+                  isOwnLink
+                      ? 'This is your invite link.'
+                      : legacy
+                          ? 'Use this invite to connect? You’ll be able to see each other’s posts.'
+                          : 'Send a connection request? They’ll need to accept in Friends before you can see each other’s posts.',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: colors.textSecondary,
                   ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _sending ? null : () => _send(legacy),
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size(0, 48),
+                if (!isOwnLink)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed:
+                          _sending ? null : () => _send(legacy, inviteOwnerId),
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
+                      child: _sending
+                          ? SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: colors.surface,
+                              ),
+                            )
+                          : Text(legacy ? 'Connect' : 'Send Request'),
                     ),
-                    child: _sending
-                        ? SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: colors.surface,
-                            ),
-                          )
-                        : Text(legacy ? 'Connect' : 'Send Request'),
                   ),
-                ),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
@@ -227,7 +240,7 @@ class _SendRequestScreenState extends ConsumerState<SendRequestScreen> {
                     style: TextButton.styleFrom(
                       minimumSize: const Size(0, 48),
                     ),
-                    child: const Text('Cancel'),
+                    child: Text(isOwnLink ? 'Close' : 'Cancel'),
                   ),
                 ),
                 const SizedBox(height: 32),

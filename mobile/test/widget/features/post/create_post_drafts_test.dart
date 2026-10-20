@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:aside/features/post/create_post_screen.dart';
+import 'package:aside/core/services/voice_caption_service.dart';
 import 'package:aside/models/user.dart';
 import 'package:aside/models/post_draft.dart';
 import 'package:aside/providers/api_provider.dart';
@@ -16,6 +17,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../helpers/fixtures.dart';
 import '../../../helpers/mocks.dart';
+import '../../../helpers/voice_fakes.dart';
 
 class _Auth extends AuthNotifier {
   @override
@@ -28,7 +30,9 @@ class _Auth extends AuthNotifier {
 class _TextDraftStorage extends DraftStorage {
   _TextDraftStorage(Directory directory)
       : super(directory: () async => directory);
-  // These journeys contain no media; filesystem cleanup has separate coverage.
+  // File preservation and cleanup have separate unit coverage.
+  @override
+  Future<PostDraft> preserveMedia(String owner, PostDraft draft) async => draft;
   @override
   Future<void> removeMedia(String owner, String id) async {}
   bool failWrites = false;
@@ -47,11 +51,13 @@ void main() {
   late GoRouter router;
   late MockApiService api;
   late _TextDraftStorage storage;
+  late FakeVoiceRecorder recorder;
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     directory = Directory.systemTemp.createTempSync('aside-composer-');
     api = MockApiService();
+    recorder = FakeVoiceRecorder();
     storage = _TextDraftStorage(directory);
     when(() => api.getLists()).thenAnswer((_) async => []);
     when(() => api.getFeed(
@@ -62,6 +68,7 @@ void main() {
       authProvider.overrideWith(_Auth.new),
       apiServiceProvider.overrideWithValue(api),
       draftStorageProvider.overrideWithValue(storage),
+      voiceRecorderFactoryProvider.overrideWithValue(() => recorder),
     ]);
     router = GoRouter(routes: [
       GoRoute(
@@ -99,6 +106,43 @@ void main() {
     await tester.enterText(find.byType(TextField).first, text);
   }
 
+  testWidgets('new text posts request sentence capitalization', (tester) async {
+    await open(tester);
+    await enterText(tester, 'A thought');
+    expect(
+      tester.widget<TextField>(find.byType(TextField).first).textCapitalization,
+      TextCapitalization.sentences,
+    );
+    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('photo captions request sentence capitalization', (tester) async {
+    final draft = PostDraft(
+      id: 'photo-caption',
+      caption: 'Photo draft',
+      isTextPost: false,
+      localFilePaths: [File('assets/images/logo_mark.png').absolute.path],
+      videoFlags: const [false],
+      completedMedia: const [],
+      nextFileIndex: 0,
+      createdAt: DateTime(2026),
+    );
+    SharedPreferences.setMockInitialValues({
+      'post_drafts:composer-user': [draft.encode()],
+    });
+    await open(tester);
+    await tester.tap(find.text('You have 1 unfinished post. Tap to resume.'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Photo draft'));
+    await tester.pumpAndSettle();
+    final field = find.widgetWithText(TextField, 'Write a caption...');
+    expect(tester.widget<TextField>(field).textCapitalization,
+        TextCapitalization.sentences);
+    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('close saves immediately and reopening resumes the same draft',
       (tester) async {
     await open(tester);
@@ -123,6 +167,107 @@ void main() {
     await tester.pumpAndSettle();
     expect(container.read(draftProvider), hasLength(1));
     expect(container.read(draftProvider).single.caption, 'A revised thought');
+  });
+
+  testWidgets('resumed photo draft uploads its voice caption when shared',
+      (tester) async {
+    final voice = File('${directory.path}/voice.m4a')
+      ..writeAsBytesSync([1, 2, 3]);
+    final draft = PostDraft(
+      id: 'voice-photo',
+      caption: 'A memory',
+      isTextPost: false,
+      localFilePaths: [File('assets/images/logo_mark.png').absolute.path],
+      videoFlags: const [false],
+      completedMedia: const [
+        {'key': 'photo.jpg', 'media_type': 'photo', 'position': 0}
+      ],
+      nextFileIndex: 1,
+      createdAt: DateTime(2026),
+      voiceCaptionPath: voice.path,
+      voiceCaptionDurationMs: 12000,
+    );
+    SharedPreferences.setMockInitialValues({
+      'post_drafts:composer-user': [draft.encode()]
+    });
+    when(() => api.uploadVoiceCaption(any(), any()))
+        .thenAnswer((_) async => 'voice-id');
+    when(() => api.createPost(
+            caption: any(named: 'caption'),
+            media: any(named: 'media'),
+            groupIds: any(named: 'groupIds'),
+            hideAfter24h: any(named: 'hideAfter24h'),
+            voiceCaptionId: any(named: 'voiceCaptionId')))
+        .thenAnswer((_) async => {});
+    await open(tester);
+    await tester.tap(find.text('You have 1 unfinished post. Tap to resume.'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('A memory'));
+    await tester.pumpAndSettle();
+    expect(find.text('Voice caption · 0:12'), findsOneWidget);
+    await tester.tap(find.text('Share'));
+    // The recording is read from a real file. Pump frames between IO turns
+    // so draft cleanup and the subsequent feed refresh can both complete.
+    for (var attempt = 0;
+        attempt < 30 && find.text('Home').evaluate().isEmpty;
+        attempt++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pumpAndSettle();
+    }
+    verify(() => api.uploadVoiceCaption([1, 2, 3], 12000)).called(1);
+    verify(() => api.createPost(
+        caption: 'A memory',
+        media: any(named: 'media'),
+        groupIds: null,
+        hideAfter24h: false,
+        voiceCaptionId: 'voice-id')).called(1);
+    expect(find.text('Home'), findsOneWidget);
+    expect(container.read(draftProvider), isEmpty);
+  });
+
+  testWidgets('recording blocks share and Back without losing the composer',
+      (tester) async {
+    final draft = PostDraft(
+      id: 'record-photo',
+      caption: 'A photo',
+      isTextPost: false,
+      localFilePaths: [File('assets/images/logo_mark.png').absolute.path],
+      videoFlags: const [false],
+      completedMedia: const [],
+      nextFileIndex: 0,
+      createdAt: DateTime(2026),
+    );
+    SharedPreferences.setMockInitialValues({
+      'post_drafts:composer-user': [draft.encode()]
+    });
+    await open(tester);
+    await tester.tap(find.text('You have 1 unfinished post. Tap to resume.'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('A photo'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Add voice caption'));
+    await tester.tap(find.text('Add voice caption'));
+    await tester.pump();
+    expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Share'))
+            .onPressed,
+        isNull);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(find.text('New Post'), findsOneWidget);
+    expect(recorder.stops, 0);
+    await tester.tap(find.byIcon(Icons.stop_circle_outlined));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Remove voice caption'));
+    await tester.pump();
+    expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Share'))
+            .onPressed,
+        isNotNull);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('backgrounding saves text and expiry without leaving the editor',
@@ -253,6 +398,7 @@ void main() {
           media: any(named: 'media'),
           groupIds: any(named: 'groupIds'),
           hideAfter24h: any(named: 'hideAfter24h'),
+          voiceCaptionId: any(named: 'voiceCaptionId'),
         )).thenAnswer((_) async => {'post': <String, dynamic>{}});
     await open(tester);
     await enterText(tester, 'Ready to share');
@@ -270,6 +416,7 @@ void main() {
           media: null,
           groupIds: null,
           hideAfter24h: false,
+          voiceCaptionId: null,
         )).called(1);
   });
 }

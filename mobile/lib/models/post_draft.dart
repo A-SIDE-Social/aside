@@ -10,6 +10,8 @@ import '../core/media/media_transform.dart';
 class PostDraft {
   final String id;
   final String caption;
+  final String? voiceCaptionPath;
+  final int? voiceCaptionDurationMs;
   final bool isTextPost;
   final bool hideAfter24h;
 
@@ -52,6 +54,8 @@ class PostDraft {
   const PostDraft({
     required this.id,
     required this.caption,
+    this.voiceCaptionPath,
+    this.voiceCaptionDurationMs,
     required this.isTextPost,
     this.hideAfter24h = false,
     required this.localFilePaths,
@@ -68,6 +72,9 @@ class PostDraft {
   Map<String, dynamic> toJson() => {
         'id': id,
         'caption': caption,
+        if (voiceCaptionPath != null) 'voice_caption_path': voiceCaptionPath,
+        if (voiceCaptionDurationMs != null)
+          'voice_caption_duration_ms': voiceCaptionDurationMs,
         'is_text_post': isTextPost,
         'hide_after_24h': hideAfter24h,
         'local_file_paths': localFilePaths,
@@ -91,6 +98,8 @@ class PostDraft {
   factory PostDraft.fromJson(Map<String, dynamic> json) => PostDraft(
         id: json['id'] as String,
         caption: (json['caption'] as String?) ?? '',
+        voiceCaptionPath: json['voice_caption_path'] as String?,
+        voiceCaptionDurationMs: json['voice_caption_duration_ms'] as int?,
         isTextPost: (json['is_text_post'] as bool?) ?? false,
         hideAfter24h: (json['hide_after_24h'] as bool?) ?? false,
         localFilePaths: (json['local_file_paths'] as List<dynamic>? ?? [])
@@ -142,9 +151,12 @@ class PostDraft {
         ...completedMediaByIndex.keys,
       }.length;
 
-  PostDraft withLocalFiles(List<String> paths) => PostDraft(
+  PostDraft withLocalFiles(List<String> paths, {String? voicePath}) =>
+      PostDraft(
         id: id,
         caption: caption,
+        voiceCaptionPath: voicePath ?? voiceCaptionPath,
+        voiceCaptionDurationMs: voiceCaptionDurationMs,
         isTextPost: isTextPost,
         hideAfter24h: hideAfter24h,
         localFilePaths: paths,

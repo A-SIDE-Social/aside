@@ -4,6 +4,13 @@ import 'package:aside/models/post.dart';
 import '../../helpers/fixtures.dart';
 
 void main() {
+  test('voice metadata survives serialization and optimistic updates', () {
+    final post =
+        Post.fromJson({...postJson(), 'voice_caption_duration_ms': 12345});
+    expect(Post.fromJson(post.toJson()).voiceCaptionDurationMs, 12345);
+    expect(post.copyWith(isLiked: true).voiceCaptionDurationMs, 12345);
+    expect(Post.fromJson(postJson()).voiceCaptionDurationMs, isNull);
+  });
   group('PostMedia', () {
     test('fromJson parses all fields', () {
       final json = postMediaJson(

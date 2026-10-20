@@ -139,6 +139,32 @@ void main() {
     expect(container.read(draftProvider).single.id, 'alice-draft');
   });
 
+  test(
+      'voice files survive cache removal, stay account-scoped, and delete with drafts',
+      () async {
+    final voice = File('${directory.path}/recording.m4a')
+      ..writeAsBytesSync([1, 2, 3]);
+    final notifier = open();
+    final saved = await notifier.saveDraft(PostDraft.fromJson({
+      ..._draft('voice').toJson(),
+      'voice_caption_path': voice.path,
+      'voice_caption_duration_ms': 12000,
+    }));
+    expect(saved.voiceCaptionPath, isNot(voice.path));
+    await voice.delete();
+    expect(await File(saved.voiceCaptionPath!).readAsBytes(), [1, 2, 3]);
+    auth.switchTo('bob');
+    container.read(draftProvider);
+    await container.read(draftProvider.notifier).ready;
+    expect(container.read(draftProvider), isEmpty);
+    auth.switchTo('alice');
+    container.read(draftProvider);
+    await container.read(draftProvider.notifier).ready;
+    expect(container.read(draftProvider).single.voiceCaptionDurationMs, 12000);
+    await container.read(draftProvider.notifier).deleteDraft('voice');
+    expect(await File(saved.voiceCaptionPath!).exists(), false);
+  });
+
   test('a failed save does not poison later saves', () async {
     final notifier = open(storage: _FailOnceStorage(directory));
     await expectLater(notifier.saveDraft(_draft('retry')),

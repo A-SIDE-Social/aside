@@ -7,6 +7,7 @@ import 'package:aside/features/post/post_detail_screen.dart';
 import 'package:aside/models/user.dart';
 import 'package:aside/providers/api_provider.dart';
 import 'package:aside/providers/auth_provider.dart';
+import 'package:aside/widgets/comments_sheet.dart';
 import '../../../helpers/fixtures.dart';
 import '../../../helpers/mocks.dart';
 
@@ -17,7 +18,7 @@ void main() {
     mockApi = MockApiService();
   });
 
-  Widget createScreen() {
+  Widget createScreen({Widget? home}) {
     final user = User.fromJson(userJson(
       id: 'me-1',
       displayName: 'My Name',
@@ -34,11 +35,44 @@ void main() {
               initialUser: user,
             )),
       ],
-      child: const MaterialApp(
-        home: PostDetailScreen(postId: 'p1'),
+      child: MaterialApp(
+        home: home ?? const PostDetailScreen(postId: 'p1'),
       ),
     );
   }
+
+  testWidgets('post detail comments request sentence capitalization',
+      (tester) async {
+    when(() => mockApi.getPost('p1')).thenAnswer(
+      (_) async => postJson(id: 'p1', media: []),
+    );
+    when(() => mockApi.getComments('p1')).thenAnswer((_) async => []);
+    await tester.pumpWidget(createScreen());
+    await tester.pumpAndSettle();
+    final field = find.widgetWithText(TextField, 'Add a comment...');
+    expect(tester.widget<TextField>(field).textCapitalization,
+        TextCapitalization.sentences);
+  });
+
+  testWidgets('Home comment sheet requests sentence capitalization',
+      (tester) async {
+    when(() => mockApi.getComments('p1')).thenAnswer((_) async => []);
+    await tester.pumpWidget(createScreen(
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(
+            onPressed: () => showCommentsSheet(context, 'p1'),
+            child: const Text('Open comments'),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('Open comments'));
+    await tester.pumpAndSettle();
+    final field = find.widgetWithText(TextField, 'Add a comment...');
+    expect(tester.widget<TextField>(field).textCapitalization,
+        TextCapitalization.sentences);
+  });
 
   group('PostDetailScreen reactions', () {
     testWidgets('tapping an existing reaction sends one toggle request',

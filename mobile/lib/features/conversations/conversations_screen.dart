@@ -231,11 +231,32 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     final theme = Theme.of(context);
     final conversations = ref.watch(conversationsProvider);
     final currentUserId = ref.watch(authProvider).user?.id;
+    final keyStatus = ref.watch(authProvider).keyRegistrationStatus;
+    final needsKeyRecovery =
+        keyStatus == KeyRegistrationStatus.recoveryRequired ||
+            keyStatus == KeyRegistrationStatus.unavailable;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Messages'),
       ),
+      bottomNavigationBar: needsKeyRecovery
+          ? SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(children: [
+                  const Expanded(
+                      child: Text(
+                          'Encrypted messaging needs attention. Your keys have been kept. Retry or contact support before changing devices.')),
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(authProvider.notifier).retryKeyRegistration(),
+                    child: const Text('Retry setup'),
+                  ),
+                ]),
+              ),
+            )
+          : null,
       floatingActionButton: FloatingActionButton(
         onPressed: _showNewConversationSheet,
         child: const Icon(Icons.edit_outlined, size: 20),

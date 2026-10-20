@@ -379,6 +379,7 @@ class ApiService {
     List<Map<String, dynamic>>? media,
     List<String>? groupIds,
     bool hideAfter24h = false,
+    String? voiceCaptionId,
   }) async {
     final response = await _dio.post(
       ApiEndpoints.posts,
@@ -387,6 +388,7 @@ class ApiService {
         if (media != null) 'media': media,
         if (groupIds != null) 'group_ids': groupIds,
         if (hideAfter24h) 'hide_after_24h': true,
+        if (voiceCaptionId != null) 'voice_caption_id': voiceCaptionId,
       },
     );
     return response.data['post'];
@@ -395,6 +397,32 @@ class ApiService {
   Future<dynamic> getPost(String id) async {
     final response = await _dio.get(ApiEndpoints.post(id));
     return response.data['post'];
+  }
+
+  Future<String> uploadVoiceCaption(List<int> bytes, int durationMs) async {
+    final response = await _dio.post(
+      '${ApiEndpoints.posts}/voice-captions',
+      data: Uint8List.fromList(bytes),
+      options: Options(
+          sendTimeout: const Duration(seconds: 30),
+          contentType: 'audio/mp4',
+          headers: {
+            'Content-Length': bytes.length,
+            'X-Voice-Duration-Ms': durationMs
+          },
+          extra: {
+            'sensitiveMedia': true
+          }),
+    );
+    return response.data['voice_caption']['id'] as String;
+  }
+
+  Future<List<int>> downloadVoiceCaption(String postId) async {
+    final response = await _dio.get<List<int>>(
+        '${ApiEndpoints.post(postId)}/voice-caption',
+        options: Options(
+            responseType: ResponseType.bytes, extra: {'sensitiveMedia': true}));
+    return response.data!;
   }
 
   Future<dynamic> deletePost(String id) async {
@@ -824,8 +852,8 @@ class ApiService {
   // SignalClient side) so ApiService stays a thin transport layer —
   // no crypto knowledge leaks into it.
 
-  /// First-run bundle upload. Server 409s if an active key set
-  /// already exists (caller should revokeKeys() before re-uploading).
+  /// Upload or reconcile saved public keys. A different active identity remains
+  /// a conflict; never automatically revoke it to make an upload succeed.
   Future<void> uploadDeviceKeys(Map<String, dynamic> bundleJson) async {
     await _dio.post(ApiEndpoints.deviceKeysUpload, data: bundleJson);
   }
@@ -835,9 +863,13 @@ class ApiService {
   Future<void> replenishPreKeys({
     List<Map<String, dynamic>> oneTimePreKeys = const [],
     List<Map<String, dynamic>> kyberPreKeys = const [],
+    String? ownerUserId,
+    String? identityKey,
   }) async {
     if (oneTimePreKeys.isEmpty && kyberPreKeys.isEmpty) return;
     final body = <String, dynamic>{};
+    if (ownerUserId != null) body['owner_user_id'] = ownerUserId;
+    if (identityKey != null) body['identity_key_pub'] = identityKey;
     if (oneTimePreKeys.isNotEmpty) {
       body['one_time_prekeys'] = oneTimePreKeys;
     }

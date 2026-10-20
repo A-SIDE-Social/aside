@@ -3,6 +3,21 @@ import 'package:aside/core/media/media_transform.dart';
 import 'package:aside/models/post_draft.dart';
 
 void main() {
+  test('voice caption metadata survives draft storage and file relocation', () {
+    final draft = PostDraft.fromJson({
+      'id': 'voice',
+      'voice_caption_path': '/temporary/voice.m4a',
+      'voice_caption_duration_ms': 12000,
+    });
+    final restored = PostDraft.decode(draft.encode());
+    expect(restored.voiceCaptionPath, '/temporary/voice.m4a');
+    expect(restored.voiceCaptionDurationMs, 12000);
+    final relocated =
+        restored.withLocalFiles([], voicePath: '/draft/voice.m4a');
+    expect(relocated.voiceCaptionPath, '/draft/voice.m4a');
+    expect(relocated.voiceCaptionDurationMs, 12000);
+    expect(PostDraft.fromJson({'id': 'legacy'}).voiceCaptionPath, isNull);
+  });
   PostDraft makeDraft({
     List<String>? audienceListIds,
     Map<int, String>? filterIds,

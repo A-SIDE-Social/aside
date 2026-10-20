@@ -6314,14 +6314,14 @@ describe('E2EE key registry', () => {
       expect(otpks.rows.map((r: any) => r.key_id)).toContain(100);
     });
 
-    test('ignores duplicate key_ids via ON CONFLICT', async () => {
+    test('rejects different material reusing an existing key_id', async () => {
       const { token, user } = await createTestUser();
       await request(app)
         .post('/v1/devices/keys/upload')
         .set('Authorization', `Bearer ${token}`)
         .send(makeBundle(2));
 
-      // Submit the same key_id 1 that's already stored — should be ignored.
+      // Reusing an existing ID for different material must reject the batch.
       const res = await request(app)
         .post('/v1/devices/keys/replenish')
         .set('Authorization', `Bearer ${token}`)
@@ -6331,13 +6331,13 @@ describe('E2EE key registry', () => {
             { id: 50, public: rb64(33) },
           ],
         });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
 
       const otpks = await query(
         'SELECT * FROM one_time_prekeys WHERE user_id = $1',
         [user.id],
       );
-      expect(otpks.rows.length).toBe(3); // 2 original + 1 new (id 50); id 1 collision ignored
+      expect(otpks.rows.length).toBe(2); // The conflicting batch is rolled back entirely.
     });
 
     test('404 when no active key set exists', async () => {

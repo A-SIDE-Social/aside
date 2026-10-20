@@ -3,6 +3,8 @@ PODS:
     - Flutter
   - aside_crypto (0.0.1):
     - Flutter
+  - audio_session (0.0.1):
+    - Flutter
   - emoji_picker_flutter (0.0.1):
     - Flutter
   - Firebase/CoreOnly (12.12.0):
@@ -79,6 +81,9 @@ PODS:
     - Flutter
   - integration_test (0.0.1):
     - Flutter
+  - just_audio (0.0.1):
+    - Flutter
+    - FlutterMacOS
   - libwebp (1.5.0):
     - libwebp/demux (= 1.5.0)
     - libwebp/mux (= 1.5.0)
@@ -107,6 +112,8 @@ PODS:
     - PurchasesHybridCommon (= 18.37.0)
   - PurchasesHybridCommon (18.37.0):
     - RevenueCat (= 5.88.0)
+  - record_ios (2.0.0):
+    - Flutter
   - RevenueCat (5.88.0)
   - SDWebImage (5.21.7):
     - SDWebImage/Core (= 5.21.7)
@@ -136,6 +143,7 @@ PODS:
 DEPENDENCIES:
   - app_links (from `.symlinks/plugins/app_links/ios`)
   - aside_crypto (from `.symlinks/plugins/aside_crypto/ios`)
+  - audio_session (from `.symlinks/plugins/audio_session/ios`)
   - emoji_picker_flutter (from `.symlinks/plugins/emoji_picker_flutter/ios`)
   - firebase_core (from `.symlinks/plugins/firebase_core/ios`)
   - firebase_messaging (from `.symlinks/plugins/firebase_messaging/ios`)
@@ -145,8 +153,10 @@ DEPENDENCIES:
   - flutter_secure_storage_darwin (from `.symlinks/plugins/flutter_secure_storage_darwin/darwin`)
   - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
+  - just_audio (from `.symlinks/plugins/just_audio/darwin`)
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - purchases_flutter (from `.symlinks/plugins/purchases_flutter/ios`)
+  - record_ios (from `.symlinks/plugins/record_ios/ios`)
   - share_plus (from `.symlinks/plugins/share_plus/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
   - sqflite_darwin (from `.symlinks/plugins/sqflite_darwin/darwin`)
@@ -178,6 +188,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/app_links/ios"
   aside_crypto:
     :path: ".symlinks/plugins/aside_crypto/ios"
+  audio_session:
+    :path: ".symlinks/plugins/audio_session/ios"
   emoji_picker_flutter:
     :path: ".symlinks/plugins/emoji_picker_flutter/ios"
   firebase_core:
@@ -196,10 +208,14 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/image_picker_ios/ios"
   integration_test:
     :path: ".symlinks/plugins/integration_test/ios"
+  just_audio:
+    :path: ".symlinks/plugins/just_audio/darwin"
   package_info_plus:
     :path: ".symlinks/plugins/package_info_plus/ios"
   purchases_flutter:
     :path: ".symlinks/plugins/purchases_flutter/ios"
+  record_ios:
+    :path: ".symlinks/plugins/record_ios/ios"
   share_plus:
     :path: ".symlinks/plugins/share_plus/ios"
   shared_preferences_foundation:
@@ -218,6 +234,7 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   app_links: 3dbc685f76b1693c66a6d9dd1e9ab6f73d97dc0a
   aside_crypto: 3d0922277b9208db407f4b6e192816dc1930de86
+  audio_session: 9bb7f6c970f21241b19f5a3658097ae459681ba0
   emoji_picker_flutter: ece213fc274bdddefb77d502d33080dc54e616cc
   Firebase: aa154fee4e9b8eac17aa42344988865b3e857d33
   firebase_core: 9156a152117c843440b0b990c785aa0259bc5447
@@ -234,6 +251,7 @@ SPEC CHECKSUMS:
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
   image_picker_ios: e0ece4aa2a75771a7de3fa735d26d90817041326
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
+  just_audio: 4e391f57b79cad2b0674030a00453ca5ce817eed
   libwebp: 02b23773aedb6ff1fd38cec7a77b81414c6842a8
   Mantle: c5aa8794a29a022dfbbfc9799af95f477a69b62d
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
@@ -241,6 +259,7 @@ SPEC CHECKSUMS:
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
   purchases_flutter: 2b5d794e1a67c6e200a2c9c623598055dcc3751c
   PurchasesHybridCommon: 2e72564d3393d480ca126d4d057737435dd7ccba
+  record_ios: 390a30c7caaf8b5d0fb1cb1d2fd5064b48b4520c
   RevenueCat: 96e12da1f3de201c65f337ff661506ac28ee1514
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   SDWebImageWebPCoder: 0e06e365080397465cc73a7a9b472d8a3bd0f377

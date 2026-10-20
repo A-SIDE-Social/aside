@@ -20,3 +20,4 @@ firebase-service-account.json
 
 # Runtime artifacts
 uploads/
+private-uploads/

@@ -19,6 +19,8 @@ import '../../core/network/upload_watchdog.dart';
 import '../../models/models.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
+import '../../core/services/voice_caption_service.dart';
+import '../../widgets/voice_caption_editor.dart';
 import 'media_edit_sheet.dart';
 
 /// Thrown when an upload has made no progress for longer than the stall
@@ -70,6 +72,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   final List<_ComposerMedia> _media = [];
   bool _isPosting = false;
   bool _isTextPost = false;
+  VoiceRecording? _voiceCaption;
+  bool _recordingVoice = false;
+  String? _uploadedVoiceCaptionId;
+  final Set<String> _temporaryVoicePaths = {};
   bool _hideAfter24h = false;
   final Set<String> _selectedAudienceListIds = {};
 
@@ -396,6 +402,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   }
 
   bool get _canShare {
+    if (_recordingVoice ||
+        (_voiceCaption != null && !_media.any((item) => !item.isVideo))) {
+      return false;
+    }
     if (_isPosting) return false;
     if (_isTextPost) return _captionController.text.trim().isNotEmpty;
     return _media.isNotEmpty;
@@ -767,6 +777,16 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
               for (var i = 0; i < _media.length; i++)
                 {...?_media[i].completed, 'position': i},
             ];
+      if (_voiceCaption != null && _uploadedVoiceCaptionId == null) {
+        final recording = _voiceCaption!;
+        final bytes = await File(recording.path).readAsBytes();
+        if (bytes.isEmpty || bytes.length > 2097152) {
+          throw const FormatException(
+              'The voice caption is too large. Please record it again.');
+        }
+        _uploadedVoiceCaptionId =
+            await api.uploadVoiceCaption(bytes, recording.durationMs);
+      }
       await api.createPost(
         caption: caption.isNotEmpty ? caption : null,
         media: mediaPayload,
@@ -774,9 +794,14 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
             ? null
             : _selectedAudienceListIds.toList(),
         hideAfter24h: _hideAfter24h,
+        voiceCaptionId: _uploadedVoiceCaptionId,
       );
 
       _published = true;
+      await ref.read(draftProvider.notifier).settled;
+      for (final path in _temporaryVoicePaths.toList()) {
+        await _removeTemporaryVoice(path);
+      }
       _draftTimer?.cancel();
       // Drop the draft we resumed from, if any.
       if (_resumingDraftId != null) {
@@ -854,7 +879,19 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   }
 
   bool get _hasDraftContent =>
-      _media.isNotEmpty || _captionController.text.trim().isNotEmpty;
+      _media.isNotEmpty ||
+      _captionController.text.trim().isNotEmpty ||
+      _voiceCaption != null;
+
+  Future<void> _removeTemporaryVoice(String path) async {
+    if (!_temporaryVoicePaths.remove(path)) return;
+    await ref.read(draftProvider.notifier).settled;
+    try {
+      await File(path).delete();
+    } on FileSystemException catch (_) {
+      // Temporary files can also be purged by the OS.
+    }
+  }
 
   static const _draftStatusMessages = [
     'Drafts save on this device',
@@ -939,6 +976,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
       final draft = PostDraft(
         id: id,
         caption: _captionController.text,
+        voiceCaptionPath: _voiceCaption?.path,
+        voiceCaptionDurationMs: _voiceCaption?.durationMs,
         isTextPost: _isTextPost,
         hideAfter24h: _hideAfter24h,
         localFilePaths: sourcePaths,
@@ -963,6 +1002,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
       );
       final saved = await notifier.saveDraft(draft);
       if (!mounted) return true;
+      if (_voiceCaption?.path == draft.voiceCaptionPath &&
+          saved.voiceCaptionPath != null) {
+        _voiceCaption = VoiceRecording(
+            saved.voiceCaptionPath!, saved.voiceCaptionDurationMs!);
+      }
       for (var i = 0; i < items.length; i++) {
         if (items[i].file.path == sourcePaths[i]) {
           items[i].file = XFile(saved.localFilePaths[i]);
@@ -984,7 +1028,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   }
 
   Future<void> _closeComposer() async {
-    if (_closing || _isPosting) return;
+    if (_closing || _isPosting || _recordingVoice) return;
     _closing = true;
     _draftTimer?.cancel();
     final saved = await _saveDraftSafely();
@@ -996,6 +1040,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
       );
       return;
     }
+    for (final path in _temporaryVoicePaths.toList()) {
+      await _removeTemporaryVoice(path);
+    }
+    if (!mounted) return;
     setState(() => _allowPop = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) context.pop();
@@ -1128,6 +1176,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
       _draftCreatedAt = draft.createdAt;
       _hideAfter24h = draft.hideAfter24h;
       _captionController.text = draft.caption;
+      _voiceCaption = draft.voiceCaptionPath == null
+          ? null
+          : VoiceRecording(
+              draft.voiceCaptionPath!, draft.voiceCaptionDurationMs ?? 1000);
+      _uploadedVoiceCaptionId = null;
       _isTextPost = draft.isTextPost;
       _selectedAudienceListIds
         ..clear()
@@ -1171,7 +1224,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
         appBar: AppBar(
           leading: IconButton(
             icon: const Icon(Icons.close),
-            onPressed: _isPosting || _closing ? null : _closeComposer,
+            onPressed: _isPosting || _closing || _recordingVoice
+                ? null
+                : _closeComposer,
           ),
           title: Text(
             _isTextPost ? 'New Text Post' : 'New Post',
@@ -1206,7 +1261,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Uploading ${_uploadingFileIndex + 1} of '
+                      'Uploading ${(_uploadingFileIndex + 1).clamp(1, _uploadTotalFiles)} of '
                       '$_uploadTotalFiles…',
                       style:
                           TextStyle(fontSize: 10, color: colors.textTertiary),
@@ -1281,6 +1336,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                       padding: const EdgeInsets.all(24),
                       child: TextField(
                         controller: _captionController,
+                        textCapitalization: TextCapitalization.sentences,
                         autofocus: true,
                         maxLines: null,
                         minLines: 6,
@@ -1596,6 +1652,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: TextField(
                         controller: _captionController,
+                        textCapitalization: TextCapitalization.sentences,
                         maxLines: 5,
                         minLines: 3,
                         maxLength: _maxCaptionLength,
@@ -1643,6 +1700,40 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                       ),
                     ),
                   ],
+                  if (_media.any((item) => !item.isVideo) ||
+                      _voiceCaption != null)
+                    Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: VoiceCaptionEditor(
+                          value: _voiceCaption,
+                          enabled: !_isPosting,
+                          onChanged: (recording) {
+                            final previousPath = _voiceCaption?.path;
+                            if (recording?.temporary == true) {
+                              _temporaryVoicePaths.add(recording!.path);
+                            }
+                            _edit(() {
+                              _voiceCaption = recording;
+                              _uploadedVoiceCaptionId = null;
+                            });
+                            if (previousPath != null &&
+                                previousPath != recording?.path) {
+                              unawaited(_removeTemporaryVoice(previousPath));
+                            }
+                            if (WidgetsBinding.instance.lifecycleState !=
+                                AppLifecycleState.resumed) {
+                              unawaited(_saveDraftSafely());
+                            }
+                          },
+                          onRecordingChanged: (recording) =>
+                              setState(() => _recordingVoice = recording),
+                        )),
+                  if (_voiceCaption != null &&
+                      !_media.any((item) => !item.isVideo))
+                    const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                            'Add a photo or remove the voice caption to share.')),
                   if (_isTextPost || hasMedia)
                     _buildAudienceSelector(colors, theme),
                 ],

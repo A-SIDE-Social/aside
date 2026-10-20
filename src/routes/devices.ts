@@ -2,8 +2,55 @@ import { Router } from 'express';
 import { query, getClient } from '../db/pool';
 import { asyncHandler } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
+import type { PoolClient } from 'pg';
 
 const router = Router();
+
+function keyConflict(): AppError {
+  return new AppError(409, 'An active encryption key set differs from this device. Recovery requires an explicit device change.', undefined, 'key_bundle_conflict');
+}
+
+async function lockRegistry(client: PoolClient, userId: string): Promise<void> {
+  // Lock even when no registry row exists yet. Upload and revocation must not
+  // interleave and leave a newly uploaded identity without its prekeys.
+  await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+}
+
+async function storePrekeys(
+  client: PoolClient,
+  userId: string,
+  table: 'one_time_prekeys' | 'kyber_prekeys',
+  keys: { id: number; pub: Buffer; sig?: Buffer }[],
+): Promise<void> {
+  if (!keys.length) return;
+  if (new Set(keys.map(key => key.id)).size !== keys.length) {
+    throw new AppError(400, 'Prekey IDs must be unique within a batch');
+  }
+  const kyber = table === 'kyber_prekeys';
+  const { rows } = await client.query(
+    `SELECT key_id, key_pub${kyber ? ', signature' : ''} FROM ${table}
+     WHERE user_id = $1 AND key_id = ANY($2::int[])`,
+    [userId, keys.map(key => key.id)],
+  );
+  const existing = new Map<number, any>(rows.map(row => [row.key_id, row]));
+  // Account-level locking serializes material changes. Do not lock prekey rows:
+  // peer fetches must remain free to consume them with SKIP LOCKED.
+  for (const key of keys) {
+    const old = existing.get(key.id);
+    if (old && (!old.key_pub.equals(key.pub) || (kyber && !old.signature.equals(key.sig!)))) {
+      throw keyConflict();
+    }
+  }
+  const missing = keys.filter(key => !existing.has(key.id));
+  if (!missing.length) return;
+  await client.query(
+    `INSERT INTO ${table} (user_id, key_id, key_pub${kyber ? ', signature' : ''})
+     SELECT $1, batch.* FROM unnest($2::int[], $3::bytea[]${kyber ? ', $4::bytea[]' : ''}) AS batch`,
+    [userId, missing.map(key => key.id), missing.map(key => key.pub),
+      ...(kyber ? [missing.map(key => key.sig!)] : [])],
+  );
+  // Existing rows, including consumed_at, are never updated or resurrected.
+}
 
 // ---------- Push-notification tokens (pre-existing) ----------
 
@@ -121,15 +168,20 @@ function decodeKyberPub(value: unknown, name: string): Buffer {
 //     one_time_prekeys: [{ id, public: "b64" }, ...],
 //     kyber_prekeys:    [{ id, public: "b64", signature: "b64" }, ...] }
 //
-// Fails with 409 if the user already has an active (non-revoked) key
-// set — client must POST /revoke first to reset before re-uploading.
-// Kyber prekeys are required: libsignal's PreKeyBundle won't build
-// without one, so a user with no Kyber in the registry can never
-// receive new E2EE sessions.
+// Reconciles an identical active identity and signed prekey without replacing
+// either. Conflicting material remains a 409; retries never revoke keys.
+// New registrations require Kyber prekeys. An existing identity may reconcile
+// a depleted local bundle without resetting any consumed rows.
 router.post(
   '/keys/upload',
   asyncHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
+    if (req.body.owner_user_id !== undefined && req.body.owner_user_id !== userId) {
+      throw new AppError(403, 'Encryption keys belong to a different account');
+    }
+    if (req.body.existing_only !== undefined && typeof req.body.existing_only !== 'boolean') {
+      throw new AppError(400, 'existing_only must be a boolean');
+    }
     const {
       identity_key_pub,
       signed_prekey,
@@ -157,10 +209,10 @@ router.post(
       pub: decodeBytes(k?.public, 33, `one_time_prekeys[${i}].public`),
     }));
 
-    if (!Array.isArray(kyber_prekeys) || kyber_prekeys.length === 0) {
+    if (!Array.isArray(kyber_prekeys)) {
       throw new AppError(
         400,
-        'kyber_prekeys is required and must contain at least 1 entry',
+        'kyber_prekeys must be an array',
       );
     }
     if (kyber_prekeys.length > 100) {
@@ -175,49 +227,38 @@ router.post(
     const client = await getClient();
     try {
       await client.query('BEGIN');
+      await lockRegistry(client, userId);
 
-      // Reject if an active key set exists. Client must explicitly
-      // revoke first — this prevents accidental overwrite on a
-      // re-login that would invalidate existing sessions.
       const existing = await client.query(
-        `SELECT id FROM device_keys
-         WHERE user_id = $1 AND revoked_at IS NULL`,
+        `SELECT identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig
+         FROM device_keys WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE`,
         [userId],
       );
       if (existing.rows.length > 0) {
-        await client.query('ROLLBACK');
-        throw new AppError(
-          409,
-          'active key set already exists for this user; revoke before re-uploading',
-        );
-      }
-
-      await client.query(
-        `INSERT INTO device_keys
-           (user_id, identity_key_pub,
-            signed_prekey_id, signed_prekey_pub, signed_prekey_sig)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [userId, identityPub, spkId, spkPub, spkSig],
-      );
-
-      // Bulk-insert OTPKs. Separate INSERT per row keeps the code
-      // simple; pg pipelining makes this fast enough for our ~100.
-      for (const otpk of otpks) {
+        const old = existing.rows[0];
+        if (!old.identity_key_pub.equals(identityPub) || old.signed_prekey_id !== spkId ||
+            !old.signed_prekey_pub.equals(spkPub) || !old.signed_prekey_sig.equals(spkSig)) {
+          throw keyConflict();
+        }
+      } else {
+        // A legacy local identity has no recorded owner. It may only reconcile
+        // with this account's existing registry, not silently register elsewhere.
+        if (req.body.existing_only === true) {
+          throw new AppError(409, 'Existing local keys require manual account recovery', undefined, 'key_recovery_required');
+        }
+        if (!kpks.length) {
+          throw new AppError(400, 'Initial upload requires Kyber prekeys', undefined, 'key_bundle_incomplete');
+        }
         await client.query(
-          `INSERT INTO one_time_prekeys (user_id, key_id, key_pub)
-           VALUES ($1, $2, $3)`,
-          [userId, otpk.id, otpk.pub],
+          `INSERT INTO device_keys
+             (user_id, identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [userId, identityPub, spkId, spkPub, spkSig],
         );
       }
 
-      // Bulk-insert Kyber prekeys.
-      for (const kpk of kpks) {
-        await client.query(
-          `INSERT INTO kyber_prekeys (user_id, key_id, key_pub, signature)
-           VALUES ($1, $2, $3, $4)`,
-          [userId, kpk.id, kpk.pub, kpk.sig],
-        );
-      }
+      await storePrekeys(client, userId, 'one_time_prekeys', otpks);
+      await storePrekeys(client, userId, 'kyber_prekeys', kpks);
 
       await client.query('COMMIT');
       res.json({
@@ -245,6 +286,11 @@ router.post(
   asyncHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
     const { one_time_prekeys, kyber_prekeys } = req.body;
+    if (req.body.owner_user_id !== undefined && req.body.owner_user_id !== userId) {
+      throw new AppError(403, 'Encryption keys belong to a different account');
+    }
+    const expectedIdentity = req.body.identity_key_pub === undefined ? null
+      : decodeBytes(req.body.identity_key_pub, 33, 'identity_key_pub');
 
     const hasOtpks = Array.isArray(one_time_prekeys) && one_time_prekeys.length > 0;
     const hasKpks = Array.isArray(kyber_prekeys) && kyber_prekeys.length > 0;
@@ -282,9 +328,10 @@ router.post(
     const client = await getClient();
     try {
       await client.query('BEGIN');
+      await lockRegistry(client, userId);
 
       const keysRow = await client.query(
-        `SELECT id FROM device_keys
+        `SELECT id, identity_key_pub FROM device_keys
          WHERE user_id = $1 AND revoked_at IS NULL`,
         [userId],
       );
@@ -295,23 +342,12 @@ router.post(
           'no active key set; POST /keys/upload before replenishing',
         );
       }
+      if (expectedIdentity && !keysRow.rows[0].identity_key_pub.equals(expectedIdentity)) {
+        throw keyConflict();
+      }
 
-      for (const otpk of otpks) {
-        await client.query(
-          `INSERT INTO one_time_prekeys (user_id, key_id, key_pub)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (user_id, key_id) DO NOTHING`,
-          [userId, otpk.id, otpk.pub],
-        );
-      }
-      for (const kpk of kpks) {
-        await client.query(
-          `INSERT INTO kyber_prekeys (user_id, key_id, key_pub, signature)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (user_id, key_id) DO NOTHING`,
-          [userId, kpk.id, kpk.pub, kpk.sig],
-        );
-      }
+      await storePrekeys(client, userId, 'one_time_prekeys', otpks);
+      await storePrekeys(client, userId, 'kyber_prekeys', kpks);
 
       await client.query('COMMIT');
       res.json({
@@ -382,6 +418,7 @@ router.post(
     const client = await getClient();
     try {
       await client.query('BEGIN');
+      await lockRegistry(client, userId);
 
       const { rowCount } = await client.query(
         `UPDATE device_keys

@@ -134,8 +134,22 @@ class ApiClient {
         );
 
     if (kDebugMode) {
+      final logger = LogInterceptor(requestBody: true, responseBody: true);
       this.dio.interceptors.add(
-            LogInterceptor(requestBody: true, responseBody: true),
+            InterceptorsWrapper(
+              onRequest: (request, handler) =>
+                  request.extra['sensitiveMedia'] == true
+                      ? handler.next(request)
+                      : logger.onRequest(request, handler),
+              onResponse: (response, handler) =>
+                  response.requestOptions.extra['sensitiveMedia'] == true
+                      ? handler.next(response)
+                      : logger.onResponse(response, handler),
+              onError: (error, handler) =>
+                  error.requestOptions.extra['sensitiveMedia'] == true
+                      ? handler.next(error)
+                      : logger.onError(error, handler),
+            ),
           );
     }
   }

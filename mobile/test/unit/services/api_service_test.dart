@@ -31,6 +31,43 @@ void main() {
     registerFallbackValue(Options());
   });
 
+  test('voice upload is replayable binary and excludes payload logging',
+      () async {
+    when(() => mockDio.post(any(),
+            data: any(named: 'data'), options: any(named: 'options')))
+        .thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ''),
+            data: {
+              'voice_caption': {'id': 'voice-id'}
+            },
+            statusCode: 201));
+    expect(await apiService.uploadVoiceCaption([1, 2, 3], 12000), 'voice-id');
+    final captured = verify(() => mockDio.post(
+        '${ApiEndpoints.posts}/voice-captions',
+        data: captureAny(named: 'data'),
+        options: captureAny(named: 'options'))).captured;
+    expect(captured.first, [1, 2, 3]);
+    final options = captured.last as Options;
+    expect(options.contentType, 'audio/mp4');
+    expect(options.headers!['X-Voice-Duration-Ms'], 12000);
+    expect(options.extra!['sensitiveMedia'], true);
+  });
+
+  test('voice download uses authenticated API without payload logging',
+      () async {
+    when(() => mockDio.get<List<int>>(any(), options: any(named: 'options')))
+        .thenAnswer((_) async => Response<List<int>>(
+            requestOptions: RequestOptions(path: ''),
+            data: [1, 2, 3],
+            statusCode: 200));
+    expect(await apiService.downloadVoiceCaption('post-id'), [1, 2, 3]);
+    final options = verify(() => mockDio.get<List<int>>(
+        '${ApiEndpoints.post('post-id')}/voice-caption',
+        options: captureAny(named: 'options'))).captured.single as Options;
+    expect(options.responseType, ResponseType.bytes);
+    expect(options.extra!['sensitiveMedia'], true);
+  });
+
   group('ApiService Auth', () {
     test('verifyOtp sends email and code in body', () async {
       when(() => mockDio.post(

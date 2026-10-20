@@ -28,25 +28,35 @@ enum AuthStatus {
   authenticated
 }
 
+enum KeyRegistrationStatus { pending, ready, unavailable, recoveryRequired }
+
 class AuthState {
   final AuthStatus status;
   final User? user;
   final String? error;
   final bool isNewRegistration;
+  final KeyRegistrationStatus keyRegistrationStatus;
 
   const AuthState({
     this.status = AuthStatus.initial,
     this.user,
     this.error,
     this.isNewRegistration = false,
+    this.keyRegistrationStatus = KeyRegistrationStatus.pending,
   });
 
-  AuthState copyWith({AuthStatus? status, User? user, String? error}) {
+  AuthState copyWith(
+      {AuthStatus? status,
+      User? user,
+      String? error,
+      KeyRegistrationStatus? keyRegistrationStatus}) {
     return AuthState(
       status: status ?? this.status,
       user: user ?? this.user,
       error: error,
       isNewRegistration: isNewRegistration,
+      keyRegistrationStatus:
+          keyRegistrationStatus ?? this.keyRegistrationStatus,
     );
   }
 }
@@ -174,16 +184,36 @@ class AuthNotifier extends Notifier<AuthState> {
   /// until DM encryption ships (Phase 1e), and a subsequent sign-in
   /// attempt will retry.
   void _bootstrapE2eeKeys() {
+    unawaited(retryKeyRegistration());
+  }
+
+  /// Retry non-destructive reconciliation. Failures never reset encryption keys.
+  Future<void> retryKeyRegistration() async {
     final sync = _keyRegistrySync;
     if (sync == null) return;
-    // Intentionally unawaited.
-    // ignore: discarded_futures
-    sync.ensureKeysInitialized().then(
-      (_) {},
-      onError: (Object e, StackTrace _) {
-        debugPrint('E2EE key bootstrap failed: $e');
-      },
-    );
+    final ownerUserId = state.user?.id;
+    if (ownerUserId == null) return;
+    state =
+        state.copyWith(keyRegistrationStatus: KeyRegistrationStatus.pending);
+    try {
+      await sync.ensureKeysInitialized(ownerUserId: ownerUserId);
+      if (ref.mounted && state.user?.id == ownerUserId) {
+        state =
+            state.copyWith(keyRegistrationStatus: KeyRegistrationStatus.ready);
+      }
+    } catch (error) {
+      if (!ref.mounted || state.user?.id != ownerUserId) return;
+      final conflict = error is KeyRecoveryRequired ||
+          (error is DioException && error.response?.statusCode == 409);
+      state = state.copyWith(
+          keyRegistrationStatus: conflict
+              ? KeyRegistrationStatus.recoveryRequired
+              : KeyRegistrationStatus.unavailable);
+      // Do not print request options or provider errors containing key material.
+      debugPrint(conflict
+          ? 'Encryption key recovery is required'
+          : 'Encryption key registration is temporarily unavailable');
+    }
   }
 
   void _initPush() {

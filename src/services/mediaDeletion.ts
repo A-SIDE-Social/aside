@@ -2,6 +2,10 @@ import { query } from '../db/pool';
 import { deleteStorageObjects } from '../storage';
 
 export async function processMediaDeletionQueue(limit = 500): Promise<number> {
+  // Failed or abandoned uploads are never kept indefinitely. Deleting the
+  // reservation queues its private object through the same durable trigger.
+  await query(`DELETE FROM post_voice_captions
+    WHERE post_id IS NULL AND created_at < NOW() - INTERVAL '24 hours'`);
   const { rows } = await query<{ object_key: string }>(
     `UPDATE media_deletion_queue
         SET attempts = attempts + 1,
