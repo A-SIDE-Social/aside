@@ -391,6 +391,56 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  for (final draftCount in [1, 2]) {
+    testWidgets(
+        'deleting a draft out of $draftCount still allows creating a new post',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({
+        'post_drafts:composer-user': List.generate(
+          draftCount,
+          (i) => PostDraft(
+            id: 'saved-$i',
+            caption: 'For later $i',
+            isTextPost: true,
+            localFilePaths: const [],
+            videoFlags: const [],
+            completedMedia: const [],
+            nextFileIndex: 0,
+            createdAt: DateTime(2026),
+          ).encode(),
+        ),
+      });
+      await open(tester);
+      await tester.tap(find.text(draftCount == 1
+          ? 'You have 1 unfinished post. Tap to resume.'
+          : 'You have 2 unfinished posts. Tap to resume.'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.delete_outline).first);
+      await tester.pumpAndSettle();
+
+      expect(container.read(draftProvider), hasLength(draftCount - 1));
+      expect(find.text('Resume draft'), findsNothing);
+      expect(find.text('Create a new post').hitTestable(), findsOneWidget);
+      await tester.tap(find.text('Create a new post'));
+      await tester.pumpAndSettle();
+      await enterText(tester, 'A fresh start');
+      await tester.pump();
+      expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Share'))
+            .onPressed,
+        isNotNull,
+      );
+      await tester.tap(find.byIcon(Icons.close).first);
+      await tester.pumpAndSettle();
+      expect(find.text('Home'), findsOneWidget);
+      final drafts = container.read(draftProvider);
+      expect(drafts, hasLength(draftCount));
+      expect(drafts.any((draft) => draft.id == 'saved-0'), isFalse);
+      expect(drafts.any((draft) => draft.caption == 'A fresh start'), isTrue);
+    });
+  }
+
   testWidgets('publishing removes the autosaved draft without recreating it',
       (tester) async {
     when(() => api.createPost(

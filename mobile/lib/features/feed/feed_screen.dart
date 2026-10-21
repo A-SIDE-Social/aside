@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/config/app_colors.dart';
 import '../../core/config/constants.dart';
 import '../../core/config/env.dart';
+import '../../core/network/api_client.dart';
 import '../../widgets/widgets.dart';
 import '../../models/models.dart';
 import '../../providers/providers.dart';
@@ -321,7 +323,12 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                   ),
                   error: (error, _) => SliverFillRemaining(
                     child: ErrorView(
-                      message: error.toString(),
+                      title: "Couldn't load your feed",
+                      message: error is DioException
+                          ? ApiException.fromDioException(error).message
+                          : error is ApiException
+                              ? error.message
+                              : 'Please try again in a moment.',
                       onRetry: () =>
                           ref.read(feedNotifierProvider.notifier).refresh(),
                     ),

@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -51,6 +52,44 @@ void main() {
   }
 
   group('FeedScreen', () {
+    testWidgets('timeout shows a readable message and retry reloads the feed',
+        (tester) async {
+      var calls = 0;
+      when(() => mockApi.getFeed(
+            before: any(named: 'before'),
+            groupId: any(named: 'groupId'),
+          )).thenAnswer((_) async {
+        if (++calls == 1) {
+          throw DioException(
+            requestOptions: RequestOptions(path: '/v1/feed'),
+            type: DioExceptionType.receiveTimeout,
+            message: 'Internal receiveTimeout details',
+          );
+        }
+        return {'posts': <dynamic>[]};
+      });
+      stubGroupsEmpty();
+      await tester.pumpWidget(createFeedScreen());
+      await tester.pumpAndSettle();
+
+      // Dismiss the first-launch widget tip before interacting with the feed.
+      Navigator.of(tester.element(find.byType(FeedScreen))).pop();
+      await tester.pumpAndSettle();
+
+      expect(find.text("Couldn't load your feed"), findsOneWidget);
+      expect(
+        find.text(
+            'Connection timed out. Please check your internet and try again.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('DioException'), findsNothing);
+      expect(find.textContaining('receiveTimeout'), findsNothing);
+      await tester.tap(find.text('Try Again'));
+      await tester.pumpAndSettle();
+      expect(calls, 2);
+      expect(find.text('No posts yet'), findsOneWidget);
+    });
+
     testWidgets('failed pagination keeps posts and retries only after a tap',
         (tester) async {
       var pageCalls = 0;

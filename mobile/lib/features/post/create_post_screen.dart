@@ -1213,7 +1213,6 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
     final theme = Theme.of(context);
     final hasMedia = _media.isNotEmpty;
     final legacyDrafts = ref.watch(legacyDraftCountProvider).value ?? 0;
-    final hasSavedDrafts = ref.watch(draftProvider).isNotEmpty;
 
     return PopScope(
       canPop: _allowPop || _published,
@@ -1307,10 +1306,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildDraftsBanner(colors, theme),
-                  if (!_isTextPost &&
-                      !hasMedia &&
-                      !_showingPostTypePicker &&
-                      (hasSavedDrafts || legacyDrafts > 0)) ...[
+                  if (!_isTextPost && !hasMedia && !_showingPostTypePicker) ...[
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: FilledButton.icon(
