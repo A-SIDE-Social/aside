@@ -5,7 +5,8 @@ import { measureStage } from './performance';
 
 export class OtpDeliveryError extends AppError {
   constructor(status: number, message: string, reason: FailureReason, public readonly definitelyRejected: boolean) {
-    super(status, message, reason);
+    super(status, message, reason,
+      definitelyRejected ? 'otp_delivery_failed' : 'otp_delivery_uncertain', 30);
   }
 }
 

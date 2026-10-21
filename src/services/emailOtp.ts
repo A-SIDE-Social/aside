@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { PoolClient } from 'pg';
 import { config } from '../config';
 import { getClient, query } from '../db/pool';
 import { OtpDeliveryError, sendOtpEmail } from '../email';
@@ -20,10 +21,13 @@ export async function requestEmailOtp(email: string): Promise<void> {
     // The transaction ends before Postmark is called; network delays hold no lock.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('email-otp:' || $1::text, 0))", [email]);
     const { rows: recent } = await client.query(
-      `SELECT 1 FROM email_otps WHERE email = $1
+      `SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM
+         created_at + INTERVAL '30 seconds' - clock_timestamp())))::int AS retry_after_seconds
+       FROM email_otps WHERE email = $1
        AND created_at > clock_timestamp() - INTERVAL '30 seconds'`, [email],
     );
-    if (recent.length) throw new AppError(429, 'Please wait before requesting another code', 'rate_limited');
+    if (recent.length) throw new AppError(429, 'Please wait before requesting another code',
+      'rate_limited', 'otp_cooldown', recent[0].retry_after_seconds);
     await client.query('DELETE FROM email_otps WHERE email = $1', [email]);
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO email_otps (email, code_hash, expires_at, created_at)
@@ -54,5 +58,50 @@ export async function requestEmailOtp(email: string): Promise<void> {
     // A timeout/connection loss may happen after acceptance. Preserve that code
     // until normal expiry and never automatically resend an ambiguous request.
     throw error;
+  }
+}
+
+/** Serialize issuance, guesses, and consumption on the same address lock.
+ * Account creation and session issuance use this client so a rejected form or
+ * failed write leaves the valid code intact without keeping another pool slot.
+ */
+export async function verifyEmailOtp<T>(
+  email: string,
+  code: string,
+  complete: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await getClient();
+  let inTransaction = false;
+  try {
+    await client.query('BEGIN');
+    inTransaction = true;
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('email-otp:' || $1::text, 0))", [email]);
+    const { rows } = await client.query(
+      `SELECT * FROM email_otps WHERE email = $1 AND expires_at > clock_timestamp()
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [email],
+    );
+    const otp = rows[0];
+    if (!otp) throw new AppError(400, 'Invalid or expired code', 'validation_failure', 'otp_invalid');
+    if (otp.attempts >= 5) {
+      // Keep the row so exhausting guesses cannot bypass the resend cooldown.
+      throw new AppError(429, 'Too many attempts. Please request a new code.',
+        'rate_limited', 'otp_attempt_limit');
+    }
+    const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
+    if (submittedHash !== otp.code_hash) {
+      await client.query('UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1', [otp.id]);
+      await client.query('COMMIT');
+      inTransaction = false;
+      throw new AppError(400, 'Invalid code', 'validation_failure', 'otp_invalid');
+    }
+    const result = await complete(client);
+    await client.query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    if (inTransaction) await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 }

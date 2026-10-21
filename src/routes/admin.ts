@@ -22,7 +22,7 @@ import { config } from '../config';
 import { authLimit, writeLimit } from '../middleware/rateLimit';
 import { asyncHandler } from '../helpers';
 import { generateAccessToken } from '../middleware/auth';
-import { requestEmailOtp } from '../services/emailOtp';
+import { requestEmailOtp, verifyEmailOtp } from '../services/emailOtp';
 import { normalizeEmail } from '../lib/emailAddress';
 import { AppError } from '../middleware/errorHandler';
 import { permanentlyDeleteUser } from '../services/userDeletion';
@@ -224,56 +224,29 @@ adminRouter.post(
       return res.redirect('/admin/login');
     }
 
-    // Look up + verify OTP exactly like /v1/auth/verify-otp does,
-    // but without resolveUser (admin must already exist).
-    const { rows: otps } = await query(
-      `SELECT * FROM email_otps WHERE email = $1 AND expires_at > NOW()
-         ORDER BY created_at DESC LIMIT 1`,
-      [email],
-    );
-    if (otps.length === 0) {
+    let userId: string | null;
+    try {
+      userId = await verifyEmailOtp(email, code, async (client) => {
+        const { rows } = await client.query(
+          'SELECT id FROM users WHERE LOWER(email) = $1 AND deleted_at IS NULL', [email],
+        );
+        return rows.length && config.adminUserIds.includes(rows[0].id) ? rows[0].id : null;
+      });
+    } catch (error) {
+      if (!(error instanceof AppError) || !['otp_invalid', 'otp_attempt_limit'].includes(error.code ?? '')) throw error;
       return res.status(401).type('html').send(layout({
         title: 'Sign in',
-        body: '<p>Code expired or not found. <a href="/admin/login">Try again</a>.</p>',
+        body: '<p>Invalid, expired, or exhausted code. <a href="/admin/login">Try again</a>.</p>',
       }));
     }
-    const otp = otps[0];
-    if (otp.attempts >= 5) {
-      await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
-      return res.status(401).type('html').send(layout({
-        title: 'Sign in',
-        body: '<p>Too many attempts. <a href="/admin/login">Request a new code</a>.</p>',
-      }));
-    }
-    await query(
-      'UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1',
-      [otp.id],
-    );
-    const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
-    if (submittedHash !== otp.code_hash) {
-      return res.status(401).type('html').send(layout({
-        title: 'Sign in',
-        body: `<p>Invalid code. <a href="/admin/login">Try again</a>.</p>`,
-      }));
-    }
-
-    // Resolve the user + check admin allowlist.
-    const { rows: users } = await query(
-      `SELECT id FROM users WHERE LOWER(email) = $1 AND deleted_at IS NULL`,
-      [email],
-    );
-    if (users.length === 0 || !config.adminUserIds.includes(users[0].id)) {
-      // Still consume the OTP so it can't be reused.
-      await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
+    if (!userId) {
       return res.status(403).type('html').send(layout({
         title: 'Sign in',
         body: '<p>Account not authorised for admin access.</p>',
       }));
     }
 
-    // Success — consume OTP, issue JWT, set cookie, redirect.
-    await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
-    const token = generateAccessToken(users[0].id);
+    const token = generateAccessToken(userId);
     res.cookie(ADMIN_COOKIE, token, adminCookieOptions);
     // Rotate the CSRF token on login so a pre-login token can't be
     // smuggled into a post-login session.

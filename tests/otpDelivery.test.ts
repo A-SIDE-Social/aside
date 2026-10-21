@@ -45,6 +45,70 @@ test('a successfully sent code can complete registration and is consumed', async
   expect(await otpRows()).toHaveLength(0);
 });
 
+test('correct-code registration handoffs and form corrections do not spend wrong-code attempts', async () => {
+  await requestOtp().expect(200);
+  const code = sentCode();
+  for (let i = 0; i < 6; i++) {
+    await request(app).post('/v1/auth/verify-otp').send({ email, code }).expect(400);
+    await request(app).post('/v1/auth/verify-otp').send({ email, code, display_name: '   ' }).expect(400);
+  }
+  expect((await otpRows())[0].attempts).toBe(0);
+  await request(app).post('/v1/auth/verify-otp').send({ email, code, display_name: 'Ready' }).expect(200);
+});
+
+test('concurrent verification consumes a code once and issues only one session', async () => {
+  await requestOtp().expect(200);
+  const responses = await Promise.all(Array.from({ length: 12 }, () =>
+    request(app).post('/v1/auth/verify-otp').send({ email, code: sentCode(), display_name: 'One account' })));
+  expect(responses.filter(response => response.status === 200)).toHaveLength(1);
+  expect(responses.filter(response => response.status === 400)).toHaveLength(11);
+  const { rows } = await query('SELECT COUNT(*)::int AS count FROM refresh_tokens rt JOIN users u ON u.id = rt.user_id WHERE u.email = $1', [email]);
+  expect(rows[0].count).toBe(1);
+});
+
+test('concurrent wrong guesses stop at five and cannot unlock the correct code', async () => {
+  await requestOtp().expect(200);
+  const wrong = sentCode() === '111111' ? '222222' : '111111';
+  const responses = await Promise.all(Array.from({ length: 10 }, () =>
+    request(app).post('/v1/auth/verify-otp').send({ email, code: wrong })));
+  expect(responses.filter(response => response.status === 400)).toHaveLength(5);
+  expect(responses.filter(response => response.status === 429)).toHaveLength(5);
+  expect((await otpRows())[0].attempts).toBe(5);
+  await request(app).post('/v1/auth/verify-otp').send({ email, code: sentCode(), display_name: 'Blocked' }).expect(429);
+  await requestOtp().expect(429);
+});
+
+test('replacement invalidates the old code and expiry prevents consumption', async () => {
+  await requestOtp().expect(200);
+  const old = sentCode();
+  await query("UPDATE email_otps SET created_at = clock_timestamp() - INTERVAL '31 seconds' WHERE email = $1", [email]);
+  await requestOtp().expect(200);
+  // Exclude the unlikely random collision so this regression is deterministic.
+  const replacement = old === '654321' ? '654322' : '654321';
+  await query('UPDATE email_otps SET code_hash = $1 WHERE email = $2', [hash(replacement), email]);
+  await request(app).post('/v1/auth/verify-otp').send({ email, code: old, display_name: 'Stale' }).expect(400);
+  await query('UPDATE email_otps SET expires_at = clock_timestamp() WHERE email = $1', [email]);
+  await request(app).post('/v1/auth/verify-otp').send({ email, code: replacement, display_name: 'Expired' }).expect(400);
+});
+
+test('a failed session write rolls back registration and preserves the code for retry', async () => {
+  await requestOtp().expect(200);
+  await query(`CREATE FUNCTION reject_session_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'simulated session failure'; END $$`);
+  await query('CREATE TRIGGER reject_session_insert BEFORE INSERT ON refresh_tokens FOR EACH ROW EXECUTE FUNCTION reject_session_insert()');
+  const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await request(app).post('/v1/auth/verify-otp').send({ email, code: sentCode(), display_name: 'Retry' }).expect(500);
+    expect((await query('SELECT 1 FROM users WHERE email = $1', [email])).rows).toHaveLength(0);
+    expect((await otpRows())[0]).toMatchObject({ attempts: 0, valid: true });
+  } finally {
+    log.mockRestore();
+    await query('DROP TRIGGER reject_session_insert ON refresh_tokens');
+    await query('DROP FUNCTION reject_session_insert()');
+  }
+  await request(app).post('/v1/auth/verify-otp').send({ email, code: sentCode(), display_name: 'Retry' }).expect(200);
+});
+
 test.each([
   [422, 406, 422], [422, 300, 503], [401, 10, 503], [429, 0, 503],
 ])('a definite provider rejection (%i/%i) expires the code but retains the cooldown', async (statusCode, code, expected) => {

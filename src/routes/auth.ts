@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { query, getClient } from '../db/pool';
+import { PoolClient } from 'pg';
+import { query } from '../db/pool';
 import { authenticate, generateAccessToken, generateRefreshToken } from '../middleware/auth';
 import { authLimit } from '../middleware/rateLimit';
 import { asyncHandler, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import { config } from '../config';
 import { LIMITS, REVENUECAT_ENTITLEMENT, SYSTEM_USER_EMAIL } from '../constants';
-import { requestEmailOtp } from '../services/emailOtp';
+import { requestEmailOtp, verifyEmailOtp } from '../services/emailOtp';
 import { generateUniqueSlug, extractSlug, extractLegacyCode, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
 import { normalizeEmail } from '../lib/emailAddress';
@@ -29,12 +30,14 @@ function hashToken(token: string): string {
  * Looks up existing user by email or creates a new one.
  */
 async function resolveUser(
+  client: PoolClient,
+  afterCommit: Array<() => void>,
   email: string,
   invite_code?: string,
   display_name?: string,
 ) {
   // Check if user exists
-  const { rows: existingUsers } = await query(
+  const { rows: existingUsers } = await client.query(
     'SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL',
     [email],
   );
@@ -47,7 +50,7 @@ async function resolveUser(
   // Normalize it through the same path used by profile edits so a name has
   // one consistent shape for its entire lifetime.
   if (display_name === undefined || display_name === null) {
-    throw new AppError(400, 'display_name is required for registration');
+    throw new AppError(400, 'display_name is required for registration', 'validation_failure', 'registration_required');
   }
   const normalizedDisplayName = normalizeDisplayName(display_name);
 
@@ -78,7 +81,7 @@ async function resolveUser(
     const trimmed = invite_code.toString().trim();
     const maybeSlug = extractSlug(trimmed, config.inviteLinkAllowedHosts);
     if (maybeSlug) {
-      const { rows: slugUsers } = await query(
+      const { rows: slugUsers } = await client.query(
         `SELECT id, display_name
          FROM users
          WHERE LOWER(invite_slug) = LOWER($1)
@@ -101,7 +104,7 @@ async function resolveUser(
       // accepted both; this path was the odd one out, which silently
       // broke every shared code for new signups.
       const legacyCode = extractLegacyCode(trimmed, config.inviteLinkAllowedHosts);
-      const { rows: invites } = await query(
+      const { rows: invites } = await client.query(
         `SELECT i.* FROM invites i JOIN users u ON u.id = i.created_by_user_id
          WHERE i.code = $1 AND i.status IN ('pending', 'sent')
            AND i.expires_at > NOW() AND u.deleted_at IS NULL`,
@@ -117,13 +120,10 @@ async function resolveUser(
   // Auto-generate an internal username from UUID (never shown to users)
   const autoUsername = 'u' + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
-  // Generate an opaque personal-invite slug for the new user. Done
-  // outside the transaction (collision lookup uses the same pool) so
-  // the transaction stays minimal. We re-check inside the transaction
-  // via the unique index; a race with another signup grabbing the
-  // same slug would surface as a unique_violation and roll back.
+  // Generate the slug on this transaction client. The unique index also
+  // rejects a collision with a different registration before commit.
   const inviteSlug = await generateUniqueSlug(async (candidate) => {
-    const { rows: existing } = await query(
+    const { rows: existing } = await client.query(
       'SELECT 1 FROM users WHERE LOWER(invite_slug) = LOWER($1)',
       [candidate],
     );
@@ -133,99 +133,90 @@ async function resolveUser(
   // Compute email hash for contact sync discovery
   const emailHash = crypto.createHash('sha256').update(email.toLowerCase()).digest('hex');
 
-  // Wrap user creation + invite consumption + follow + 25-code allocation
-  // in a single transaction. Any failure now rolls back the user row too,
-  // so we can never end up with a half-registered account that the next
-  // signup attempt would short-circuit past on `existingUsers.length > 0`.
-  const client = await getClient();
-  try {
-    await client.query('BEGIN');
+  const { rows: newUsers } = await client.query(
+    `INSERT INTO users (email, email_hash, username, display_name, invite_slug)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
+    [email, emailHash, autoUsername, normalizedDisplayName, inviteSlug],
+  );
+  const user = newUsers[0];
 
-    const { rows: newUsers } = await client.query(
-      `INSERT INTO users (email, email_hash, username, display_name, invite_slug)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [email, emailHash, autoUsername, normalizedDisplayName, inviteSlug],
+  if (validatedSlug) {
+    const { rows: stillValid } = await client.query(
+      `SELECT id FROM users WHERE id = $1 AND invite_slug = $2
+       AND deleted_at IS NULL FOR SHARE`,
+      [validatedSlug.user_id, validatedSlug.slug],
     );
-    const user = newUsers[0];
-
-    if (validatedSlug) {
-      const { rows: stillValid } = await client.query(
-        `SELECT id FROM users WHERE id = $1 AND invite_slug = $2
-         AND deleted_at IS NULL FOR SHARE`,
-        [validatedSlug.user_id, validatedSlug.slug],
-      );
-      if (!stillValid.length) throw new AppError(400, 'Invite link is no longer valid');
-      // Personal-invite-link signup. Create a ONE-WAY follow from the
-      // new user to the slug owner — owner must approve via inbound-
-      // follows UI to make it mutual. Fires the same `inbound_follow`
-      // notification shape as POST /v1/follows so the recipient's
-      // existing surfaces handle it identically.
-      await client.query(
-        `INSERT INTO follows (follower_id, followee_id)
-         VALUES ($1, $2)
-         ON CONFLICT (follower_id, followee_id) DO NOTHING`,
-        [user.id, validatedSlug.user_id],
-      );
-      await client.query(
-        `INSERT INTO notifications (user_id, type, actor_id, reference_type)
-         VALUES ($1, 'inbound_follow', $2, 'follow')`,
-        [validatedSlug.user_id, user.id],
-      );
-    } else if (validatedInvite) {
-      const { rows: inviter } = await client.query(
-        'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE',
-        [validatedInvite.created_by_user_id],
-      );
-      if (!inviter.length) throw new AppError(400, 'Invalid or already used invite code');
-      // Mark invite as used. Re-check status under the transaction so
-      // two concurrent signups can't both consume the same code.
-      // Mirrors the validation predicate above — accept either
-      // 'pending' or 'sent'. Without the 'sent' branch, a signup
-      // racing with the inviter's Share tap would lose the race and
-      // be told the code is invalid even though it's still redeemable.
-      const { rowCount } = await client.query(
-        `UPDATE invites
-            SET status = 'used', used_by_user_id = $1, used_at = NOW()
-          WHERE id = $2 AND status IN ('pending', 'sent') AND expires_at > NOW()`,
-        [user.id, validatedInvite.id],
-      );
-      if ((rowCount ?? 0) === 0) {
-        throw new AppError(400, 'Invalid or already used invite code');
-      }
-
-      // Create mutual follow with inviter
-      await client.query(
-        `INSERT INTO follows (follower_id, followee_id)
-         VALUES ($1, $2), ($2, $1)`,
-        [user.id, validatedInvite.created_by_user_id],
-      );
-
-      await client.query(
-        `INSERT INTO notifications (user_id, type, actor_id, reference_type)
-         VALUES ($1, 'new_mutual', $2, 'follow'), ($2, 'new_mutual', $1, 'follow')`,
-        [user.id, validatedInvite.created_by_user_id],
-      );
-
-      // TODO: Referral bonus disabled for launch. Revisit when we want
-      // to reward referring *paying* users specifically, not just any
-      // signup.
+    if (!stillValid.length) throw new AppError(400, 'Invite link is no longer valid');
+    // Personal-invite-link signup. Create a ONE-WAY follow from the
+    // new user to the slug owner — owner must approve via inbound-
+    // follows UI to make it mutual. Fires the same `inbound_follow`
+    // notification shape as POST /v1/follows so the recipient's
+    // existing surfaces handle it identically.
+    await client.query(
+      `INSERT INTO follows (follower_id, followee_id)
+       VALUES ($1, $2)
+       ON CONFLICT (follower_id, followee_id) DO NOTHING`,
+      [user.id, validatedSlug.user_id],
+    );
+    await client.query(
+      `INSERT INTO notifications (user_id, type, actor_id, reference_type)
+       VALUES ($1, 'inbound_follow', $2, 'follow')`,
+      [validatedSlug.user_id, user.id],
+    );
+  } else if (validatedInvite) {
+    const { rows: inviter } = await client.query(
+      'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE',
+      [validatedInvite.created_by_user_id],
+    );
+    if (!inviter.length) throw new AppError(400, 'Invalid or already used invite code');
+    // Mark invite as used. Re-check status under the transaction so
+    // two concurrent signups can't both consume the same code.
+    // Mirrors the validation predicate above — accept either
+    // 'pending' or 'sent'. Without the 'sent' branch, a signup
+    // racing with the inviter's Share tap would lose the race and
+    // be told the code is invalid even though it's still redeemable.
+    const { rowCount } = await client.query(
+      `UPDATE invites
+          SET status = 'used', used_by_user_id = $1, used_at = NOW()
+        WHERE id = $2 AND status IN ('pending', 'sent') AND expires_at > NOW()`,
+      [user.id, validatedInvite.id],
+    );
+    if ((rowCount ?? 0) === 0) {
+      throw new AppError(400, 'Invalid or already used invite code');
     }
 
-    await allocateInvitesForUserOnClient(
-      client,
-      user.id,
-      LIMITS.maxInvites,
+    // Create mutual follow with inviter
+    await client.query(
+      `INSERT INTO follows (follower_id, followee_id)
+       VALUES ($1, $2), ($2, $1)`,
+      [user.id, validatedInvite.created_by_user_id],
     );
 
-    await client.query('COMMIT');
+    await client.query(
+      `INSERT INTO notifications (user_id, type, actor_id, reference_type)
+       VALUES ($1, 'new_mutual', $2, 'follow'), ($2, 'new_mutual', $1, 'follow')`,
+      [user.id, validatedInvite.created_by_user_id],
+    );
 
-    // Slug-based signup: push the slug owner so the inbound-follow
-    // request shows up promptly. Fire-and-forget outside the
-    // transaction — a push failure must not roll back a successful
-    // signup. Respects the connections notification preference, same
-    // as POST /v1/follows.
-    if (validatedSlug) {
+    // TODO: Referral bonus disabled for launch. Revisit when we want
+    // to reward referring *paying* users specifically, not just any
+    // signup.
+  }
+
+  await allocateInvitesForUserOnClient(
+    client,
+    user.id,
+    LIMITS.maxInvites,
+  );
+
+  // Slug-based signup: push the slug owner so the inbound-follow
+  // request shows up promptly. Fire-and-forget outside the
+  // transaction — a push failure must not roll back a successful
+  // signup. Respects the connections notification preference, same
+  // as POST /v1/follows.
+  if (validatedSlug) {
+    afterCommit.push(() => {
       void (async () => {
         try {
           const { rows: prefRows } = await query(
@@ -248,15 +239,10 @@ async function resolveUser(
           console.warn('Slug-signup inbound-follow push failed:', e);
         }
       })();
-    }
-
-    return user;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
+    });
   }
+
+  return user;
 }
 
 /**
@@ -337,13 +323,13 @@ async function allocateInvitesWith(
 /**
  * Issue JWTs and store refresh token.
  */
-async function issueTokens(userId: string) {
+async function issueTokens(client: PoolClient, userId: string) {
   const accessToken = generateAccessToken(userId);
   const refreshToken = generateRefreshToken(userId);
 
   const hashedToken = hashToken(refreshToken);
   const refreshExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
-  await query(
+  await client.query(
     'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
     [userId, hashedToken, refreshExpiresAt],
   );
@@ -361,7 +347,7 @@ router.post(
 
     await requestEmailOtp(normalizedEmail);
 
-    res.json({ message: 'OTP sent' });
+    res.json({ message: 'OTP sent', resend_after_seconds: 30 });
   }),
 );
 
@@ -376,39 +362,15 @@ router.post(
       throw new AppError(400, 'A valid email address and code are required', 'validation_failure');
     }
 
-    // Look up the OTP
-    const { rows: otps } = await query(
-      `SELECT * FROM email_otps WHERE email = $1 AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1`,
-      [normalizedEmail],
+    const afterCommit: Array<() => void> = [];
+    const { user, accessToken, refreshToken } = await verifyEmailOtp(
+      normalizedEmail, code, async (client) => {
+        const user = await resolveUser(client, afterCommit, normalizedEmail, invite_code, display_name);
+        const tokens = await issueTokens(client, user.id);
+        return { user, ...tokens };
+      },
     );
-    if (otps.length === 0) throw new AppError(400, 'Invalid or expired code');
-
-    const otp = otps[0];
-
-    // Check attempt limit
-    if (otp.attempts >= 5) {
-      await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
-      throw new AppError(429, 'Too many attempts. Please request a new code.');
-    }
-
-    // Increment attempts
-    await query('UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1', [otp.id]);
-
-    // Compare hashes
-    const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
-    if (submittedHash !== otp.code_hash) {
-      throw new AppError(400, 'Invalid code');
-    }
-
-    // OTP is valid — resolve user (may throw 400 if display_name needed)
-    // We do NOT delete the OTP yet — if resolveUser throws (missing display_name),
-    // the client can retry with registration data using the same code.
-    const user = await resolveUser(normalizedEmail, invite_code, display_name);
-
-    // Success — delete the OTP
-    await query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
-
-    const { accessToken, refreshToken } = await issueTokens(user.id);
+    for (const notify of afterCommit) notify();
 
     // Resolve avatar_url to a full CDN/dev URL before sending. The
     // resolveUser helper returns the raw DB row where avatar_url is an

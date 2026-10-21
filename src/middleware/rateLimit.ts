@@ -62,7 +62,15 @@ export const authLimit: RequestHandler = isTest
       standardHeaders: true,
       legacyHeaders: false,
       validate: { trustProxy: false },
-      message: { error: 'Too many attempts, please try again later' },
+      handler: (_req, res) => {
+        const retryAfterSeconds = Number(res.getHeader('Retry-After')) || 15 * 60;
+        res.locals.failureReason = 'rate_limited';
+        res.status(429).json({
+          error: 'Too many attempts, please try again later',
+          code: 'auth_rate_limited',
+          retry_after_seconds: retryAfterSeconds,
+        });
+      },
     });
 
 export const inviteValidateLimit: RequestHandler = isTest

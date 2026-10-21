@@ -6,7 +6,10 @@ export class AppError extends Error {
     public statusCode: number,
     message: string,
     public reason?: FailureReason,
-    public code?: 'key_bundle_incomplete' | 'key_bundle_conflict' | 'key_recovery_required',
+    public code?: 'key_bundle_incomplete' | 'key_bundle_conflict' | 'key_recovery_required'
+      | 'otp_invalid' | 'otp_attempt_limit' | 'otp_cooldown' | 'auth_rate_limited'
+      | 'otp_delivery_uncertain' | 'otp_delivery_failed' | 'registration_required',
+    public retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'AppError';
@@ -17,7 +20,12 @@ export function errorHandler(err: Error, _req: Request, res: Response, next: Nex
   if (res.headersSent) { next(err); return; }
   if (err instanceof AppError) {
     res.locals.failureReason = err.reason;
-    res.status(err.statusCode).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
+    if (err.retryAfterSeconds != null) res.setHeader('Retry-After', err.retryAfterSeconds);
+    res.status(err.statusCode).json({
+      error: err.message,
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.retryAfterSeconds != null ? { retry_after_seconds: err.retryAfterSeconds } : {}),
+    });
     return;
   }
 
