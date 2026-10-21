@@ -586,6 +586,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
             child: TextButton(
               onPressed: () {
                 setState(() {
+                  _codeController.clear();
                   _otpCode = '';
                   _step = _Step.email;
                   _error = null;

@@ -235,6 +235,30 @@ void main() {
     await finish(tester);
   });
 
+  testWidgets('starting registration over clears code entry without resending',
+      (tester) async {
+    auth.verifyError = _failure(400, 'registration_required');
+    await open(tester);
+    await tester.enterText(find.byType(TextField).first, '123456');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.ensureVisible(find.text('Start over'));
+    await tester.tap(find.text('Start over'));
+    await tester.pump();
+    await tester.tap(find.text('I have a code'));
+    await tester.pump();
+    expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        isEmpty);
+    auth.verifyError = null;
+    await tester.enterText(find.byType(TextField).first, '654321');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(auth.verifications.last.code, '654321');
+    expect(auth.requests, hasLength(1));
+    await finish(tester);
+  });
+
   testWidgets('an older server cooldown still allows code verification',
       (tester) async {
     final error = _failure(429, 'unused');
