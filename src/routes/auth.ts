@@ -50,7 +50,7 @@ async function resolveUser(
   // Normalize it through the same path used by profile edits so a name has
   // one consistent shape for its entire lifetime.
   if (display_name === undefined || display_name === null) {
-    throw new AppError(400, 'display_name is required for registration', 'validation_failure', 'registration_required');
+    throw new AppError(400, 'display_name is required for registration', 'otp_registration_required', 'registration_required');
   }
   const normalizedDisplayName = normalizeDisplayName(display_name);
 
@@ -365,9 +365,16 @@ router.post(
     const afterCommit: Array<() => void> = [];
     const { user, accessToken, refreshToken } = await verifyEmailOtp(
       normalizedEmail, code, async (client) => {
-        const user = await resolveUser(client, afterCommit, normalizedEmail, invite_code, display_name);
-        const tokens = await issueTokens(client, user.id);
-        return { user, ...tokens };
+        try {
+          const user = await resolveUser(client, afterCommit, normalizedEmail, invite_code, display_name);
+          const tokens = await issueTokens(client, user.id);
+          return { user, ...tokens };
+        } catch (error) {
+          if (error instanceof AppError && error.statusCode === 400 && error.code !== 'registration_required') {
+            error.reason = 'otp_registration_invalid';
+          }
+          throw error;
+        }
       },
     );
     for (const notify of afterCommit) notify();

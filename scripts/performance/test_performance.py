@@ -14,6 +14,19 @@ def sample(at, count=0, start=1, busy=False):
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_recovery_reasons_remain_fixed_categories(self):
+        reasons = {'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
+                   'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
+                   'key_legacy_recovery'}
+        values = [dict(value=1, labels=dict(method='POST', route='/v1/devices/keys/prekey-allocation',
+                  status='409', reason=reason)) for reason in reasons | {'private@example.com'}]
+        compact = p.compact(dict(started_at=1, metrics=[dict(name='aside_http_failures_total', values=values)]))
+        serialized = json.dumps(compact)
+        for reason in reasons:
+            self.assertIn(reason, serialized)
+        self.assertNotIn('private@example.com', serialized)
+        self.assertIn('devices_keys_allocation', p.FAILURE_ENDPOINTS)
+
     def test_feed_contexts_are_allowlisted_and_do_not_duplicate_http_requests(self):
         labels = dict(page_kind='cursor', filter_kind='all', client_platform='ios', outcome='ok')
         def value(labels, count=1, suffix='count'):

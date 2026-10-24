@@ -109,6 +109,7 @@ class ApiEndpoints {
 
   // E2EE key registry (Phase 1c)
   static const deviceKeysUpload = '$base/devices/keys/upload';
+  static const deviceKeysAllocation = '$base/devices/keys/prekey-allocation';
   static const deviceKeysReplenish = '$base/devices/keys/replenish';
   static const deviceKeysRotateSigned = '$base/devices/keys/rotate-signed';
   static const deviceKeysRevoke = '$base/devices/revoke';

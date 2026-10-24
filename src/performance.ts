@@ -73,7 +73,7 @@ type FailureClientPlatform = typeof failureClientPlatforms[number];
 export const failureEndpoints = [
   'auth_request_otp', 'auth_verify_otp', 'auth_refresh', 'auth_session', 'auth_other',
   'users_me', 'users_feed_seen', 'users_member', 'users_other', 'feed_root', 'feed_other',
-  'devices_token', 'devices_keys_upload', 'devices_keys_replenish', 'devices_keys_rotate_signed',
+  'devices_token', 'devices_keys_allocation', 'devices_keys_upload', 'devices_keys_replenish', 'devices_keys_rotate_signed',
   'devices_revoke', 'devices_other', 'root', 'well_known', 'family_other', 'other',
 ] as const;
 type FailureEndpoint = typeof failureEndpoints[number];
@@ -101,6 +101,7 @@ const endpointRules: readonly EndpointRule[] = [
   [/^\/v1\/users\/[^/]+\/?$/, 'users_member', ['GET']],
   [/^\/v1\/feed\/?$/, 'feed_root', ['GET']],
   [/^\/v1\/devices\/token\/?$/, 'devices_token', ['POST', 'DELETE']],
+  [/^\/v1\/devices\/keys\/prekey-allocation\/?$/, 'devices_keys_allocation', ['POST']],
   [/^\/v1\/devices\/keys\/upload\/?$/, 'devices_keys_upload', ['POST']],
   [/^\/v1\/devices\/keys\/replenish\/?$/, 'devices_keys_replenish', ['POST']],
   [/^\/v1\/devices\/keys\/rotate-signed\/?$/, 'devices_keys_rotate_signed', ['POST']],

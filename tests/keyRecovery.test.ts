@@ -128,3 +128,47 @@ test('reconciliation does not wait on or lock prekeys being consumed by peers', 
     consuming.release();
   }
 });
+
+test('prekey allocation bounds include consumed rows and permit repair without replacing identity', async () => {
+  const {token, user} = await createTestUser();
+  const keys = bundle();
+  await upload(token, keys).expect(200);
+  await query('UPDATE one_time_prekeys SET consumed_at=now() WHERE user_id=$1', [user.id]);
+  await query('UPDATE kyber_prekeys SET consumed_at=now() WHERE user_id=$1', [user.id]);
+  const conflict = await upload(token, {...keys, one_time_prekeys:[{id:2, public:b64(33)}]}).expect(409);
+  expect(conflict.body.code).toBe('key_prekey_conflict');
+  const allocation = await request(app).post('/v1/devices/keys/prekey-allocation')
+    .auth(token, {type:'bearer'}).send({owner_user_id:user.id,
+      identity_key_pub:keys.identity_key_pub, signed_prekey:keys.signed_prekey}).expect(200);
+  expect(allocation.body).toEqual({one_time_floor:2, kyber_floor:1});
+  await upload(token, {...keys, one_time_prekeys:[{id:3, public:b64(33)}],
+    kyber_prekeys:[{id:2, public:b64(1568), signature:b64(64)}]}).expect(200);
+  const stored = (await query('SELECT identity_key_pub, signed_prekey_pub, revoked_at FROM device_keys WHERE user_id=$1', [user.id])).rows;
+  expect(stored).toHaveLength(1);
+  expect(stored[0].identity_key_pub.toString('base64')).toBe(keys.identity_key_pub);
+  expect(stored[0].signed_prekey_pub.toString('base64')).toBe(keys.signed_prekey.public);
+  expect(stored[0].revoked_at).toBeNull();
+  expect((await query('SELECT key_id FROM one_time_prekeys WHERE user_id=$1 AND consumed_at IS NULL', [user.id])).rows).toEqual([{key_id:3}]);
+  expect((await query('SELECT key_id FROM kyber_prekeys WHERE user_id=$1 AND consumed_at IS NULL', [user.id])).rows).toEqual([{key_id:2}]);
+});
+
+test('allocation requires authentication, the same owner and every registered identity/signed-key field', async () => {
+  const {token, user} = await createTestUser();
+  const keys = bundle();
+  const body = {owner_user_id:user.id, identity_key_pub:keys.identity_key_pub, signed_prekey:keys.signed_prekey};
+  const allocation = (value: object) => request(app).post('/v1/devices/keys/prekey-allocation').auth(token,{type:'bearer'}).send(value);
+  await request(app).post('/v1/devices/keys/prekey-allocation').send(body).expect(401);
+  await allocation(body).expect(409);
+  await upload(token, keys).expect(200);
+  for (const owner_user_id of [undefined, 'another-account']) await allocation({...body, owner_user_id}).expect(403);
+  await allocation({...body, identity_key_pub:b64(33)}).expect(409);
+  for (const signed_prekey of [
+    {...keys.signed_prekey, id:2}, {...keys.signed_prekey, public:b64(33)},
+    {...keys.signed_prekey, signature:b64(64)},
+  ]) await allocation({...body, signed_prekey}).expect(409);
+  await allocation({...body, signed_prekey:{...keys.signed_prekey, id:-1}}).expect(400);
+  await allocation(body).expect(200, {one_time_floor:2, kyber_floor:1});
+  expect((await query('SELECT COUNT(*)::int AS n FROM one_time_prekeys WHERE user_id=$1', [user.id])).rows[0].n).toBe(2);
+  await request(app).post('/v1/devices/revoke').auth(token,{type:'bearer'}).expect(200);
+  await allocation(body).expect(409);
+});

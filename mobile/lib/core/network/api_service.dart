@@ -426,8 +426,15 @@ class ApiService {
   }
 
   Future<dynamic> deletePost(String id) async {
-    final response = await _dio.delete(ApiEndpoints.post(id));
-    return response.data;
+    try {
+      final response = await _dio.delete(ApiEndpoints.post(id));
+      return response.data;
+    } on DioException catch (error) {
+      // A stale feed or a retry after a lost reply can target an absent post.
+      // The requested end state is already satisfied. Other failures still surface.
+      if (error.response?.statusCode == 404) return null;
+      rethrow;
+    }
   }
 
   Future<dynamic> likePost(String id) async {
@@ -855,7 +862,29 @@ class ApiService {
   /// Upload or reconcile saved public keys. A different active identity remains
   /// a conflict; never automatically revoke it to make an upload succeed.
   Future<void> uploadDeviceKeys(Map<String, dynamic> bundleJson) async {
-    await _dio.post(ApiEndpoints.deviceKeysUpload, data: bundleJson);
+    await _dio.post(ApiEndpoints.deviceKeysUpload,
+        data: bundleJson, options: Options(extra: {'sensitiveMedia': true}));
+  }
+
+  Future<({int oneTimeFloor, int kyberFloor})> prekeyAllocation(
+      Map<String, dynamic> bundleJson) async {
+    final response = await _dio.post(ApiEndpoints.deviceKeysAllocation,
+        data: bundleJson, options: Options(extra: {'sensitiveMedia': true}));
+    final data = response.data;
+    if (data is! Map ||
+        data['one_time_floor'] is! int ||
+        data['kyber_floor'] is! int) {
+      throw const FormatException('Invalid prekey allocation response');
+    }
+    final oneTime = data['one_time_floor'] as int;
+    final kyber = data['kyber_floor'] as int;
+    if (oneTime < 0 ||
+        kyber < 0 ||
+        oneTime > 2147483647 ||
+        kyber > 2147483647) {
+      throw const FormatException('Invalid prekey allocation bounds');
+    }
+    return (oneTimeFloor: oneTime, kyberFloor: kyber);
   }
 
   /// Adds more prekeys (OTPK and/or Kyber) to the current key set.
@@ -876,7 +905,8 @@ class ApiService {
     if (kyberPreKeys.isNotEmpty) {
       body['kyber_prekeys'] = kyberPreKeys;
     }
-    await _dio.post(ApiEndpoints.deviceKeysReplenish, data: body);
+    await _dio.post(ApiEndpoints.deviceKeysReplenish,
+        data: body, options: Options(extra: {'sensitiveMedia': true}));
   }
 
   /// Swaps the signed prekey. Called weekly.

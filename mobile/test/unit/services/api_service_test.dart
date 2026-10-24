@@ -68,6 +68,49 @@ void main() {
     expect(options.extra!['sensitiveMedia'], true);
   });
 
+  for (final status in [404, 403, 500]) {
+    test('post deletion accepts only an already absent post ($status)',
+        () async {
+      when(() => mockDio.delete(any())).thenThrow(DioException(
+        requestOptions: RequestOptions(path: '/fixture'),
+        response: Response(
+            requestOptions: RequestOptions(path: '/fixture'),
+            statusCode: status),
+        type: DioExceptionType.badResponse,
+      ));
+      if (status == 404) {
+        expect(await apiService.deletePost('post'), isNull);
+      } else {
+        await expectLater(
+            apiService.deletePost('post'), throwsA(isA<DioException>()));
+      }
+    });
+  }
+
+  test(
+      'allocation validates bounds and excludes key protocol data from debug logs',
+      () async {
+    when(() => mockDio.post(any(),
+            data: any(named: 'data'), options: any(named: 'options')))
+        .thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ''),
+            data: {'one_time_floor': 100, 'kyber_floor': 50}));
+    expect(await apiService.prekeyAllocation({'owner_user_id': 'owner'}),
+        (oneTimeFloor: 100, kyberFloor: 50));
+    final options = verify(() => mockDio.post(ApiEndpoints.deviceKeysAllocation,
+        data: any(named: 'data'),
+        options: captureAny(named: 'options'))).captured.single as Options;
+    expect(options.extra!['sensitiveMedia'], true);
+    for (final invalid in [-1, 2147483648, '100', null]) {
+      when(() => mockDio.post(any(),
+              data: any(named: 'data'), options: any(named: 'options')))
+          .thenAnswer((_) async => Response(
+              requestOptions: RequestOptions(path: ''),
+              data: {'one_time_floor': invalid, 'kyber_floor': 0}));
+      await expectLater(apiService.prekeyAllocation({}), throwsFormatException);
+    }
+  });
+
   group('ApiService Auth', () {
     test('verifyOtp sends email and code in body', () async {
       when(() => mockDio.post(

@@ -203,6 +203,58 @@ class SignalClient {
 
   SignalClient(this._storage);
 
+  Future<List<int>> _uploadableOneTimeIds() async {
+    final floor = (await _storage.loadPrekeyRecovery())?.oneTimeFloor ?? 0;
+    return (await _storage.listOneTimePreKeyIds())
+        .where((id) => id > floor)
+        .toList();
+  }
+
+  Future<List<int>> _uploadableKyberIds() async {
+    final floor = (await _storage.loadPrekeyRecovery())?.kyberFloor ?? 0;
+    return (await _storage.listKyberPreKeyIds())
+        .where((id) => id > floor)
+        .toList();
+  }
+
+  Future<bool> prekeyRecoveryPending() async =>
+      (await _storage.loadPrekeyRecovery())?.pending ?? false;
+
+  Future<void> preparePrekeyRecovery(int oneTimeFloor, int kyberFloor) async {
+    if (oneTimeFloor < 0 ||
+        kyberFloor < 0 ||
+        oneTimeFloor > 2147483647 ||
+        kyberFloor > 2147483647) {
+      throw StateError('Invalid prekey allocation bounds');
+    }
+    final oneTime = await _storage.listOneTimePreKeyIds();
+    final kyber = await _storage.listKyberPreKeyIds();
+    final previous = await _storage.loadPrekeyRecovery();
+    oneTimeFloor = [
+      oneTimeFloor,
+      await _storage.lastOneTimePreKeyId(),
+      previous?.oneTimeFloor ?? 0,
+      ...oneTime
+    ].reduce(math.max);
+    kyberFloor = [
+      kyberFloor,
+      await _storage.lastKyberPreKeyId(),
+      previous?.kyberFloor ?? 0,
+      ...kyber
+    ].reduce(math.max);
+    await _storage
+        .savePrekeyRecovery(PrekeyRecoveryState(oneTimeFloor, kyberFloor));
+  }
+
+  Future<void> completePrekeyRecovery() async {
+    final state = await _storage.loadPrekeyRecovery();
+    if (state != null && state.pending) {
+      await _storage.savePrekeyRecovery(PrekeyRecoveryState(
+          state.oneTimeFloor, state.kyberFloor,
+          pending: false));
+    }
+  }
+
   Future<String?> keyOwner() => _storage.loadOwner();
   Future<void> setKeyOwner(String userId) => _storage.saveOwner(userId);
 
@@ -224,17 +276,23 @@ class SignalClient {
         keyId: 1,
       ));
     }
-    final otpkIds = await _storage.listOneTimePreKeyIds();
+    final otpkIds = await _uploadableOneTimeIds();
     if (otpkIds.length < otpkCount) {
-      final start = otpkIds.isEmpty ? 1 : otpkIds.reduce(math.max) + 1;
+      final start = await _storage.reserveOneTimePreKeyIds(
+          otpkCount - otpkIds.length,
+          minimumLastId:
+              (await _storage.loadPrekeyRecovery())?.oneTimeFloor ?? 0);
       for (final key in generatePrekeyBatch(
           startId: start, count: otpkCount - otpkIds.length)) {
         await _storage.saveOneTimePreKey(key);
       }
     }
-    final kyberIds = await _storage.listKyberPreKeyIds();
+    final kyberIds = await _uploadableKyberIds();
     if (kyberIds.length < kyberCount) {
-      final start = kyberIds.isEmpty ? 1 : kyberIds.reduce(math.max) + 1;
+      final start = await _storage.reserveKyberPreKeyIds(
+          kyberCount - kyberIds.length,
+          minimumLastId:
+              (await _storage.loadPrekeyRecovery())?.kyberFloor ?? 0);
       for (final key in generateKyberPrekeyBatch(
         identitySerialized: identity.serialized,
         startId: start,
@@ -351,14 +409,14 @@ class SignalClient {
     final spk = await _storage.loadSignedPreKey();
     if (identity == null || spk == null) return null;
 
-    final otpkIds = await _storage.listOneTimePreKeyIds();
+    final otpkIds = await _uploadableOneTimeIds();
     final otpks = <OneTimePreKey>[];
     for (final id in otpkIds) {
       final otpk = await _storage.loadOneTimePreKey(id);
       if (otpk != null) otpks.add(otpk);
     }
 
-    final kpkIds = await _storage.listKyberPreKeyIds();
+    final kpkIds = await _uploadableKyberIds();
     final kpks = <KyberPreKey>[];
     for (final id in kpkIds) {
       final kpk = await _storage.loadKyberPreKey(id);
@@ -410,12 +468,14 @@ class SignalClient {
     int batchSize = defaultOtpkBatch,
   }) async {
     await initialize();
-    final existingIds = await _storage.listOneTimePreKeyIds();
+    final existingIds = await _uploadableOneTimeIds();
     if (existingIds.length >= threshold) return const [];
 
-    final maxId = existingIds.isEmpty ? 0 : existingIds.reduce(math.max);
+    final startId = await _storage.reserveOneTimePreKeyIds(batchSize,
+        minimumLastId:
+            (await _storage.loadPrekeyRecovery())?.oneTimeFloor ?? 0);
     final newOtpks = generatePrekeyBatch(
-      startId: maxId + 1,
+      startId: startId,
       count: batchSize,
     );
     for (final otpk in newOtpks) {
@@ -443,7 +503,7 @@ class SignalClient {
     int batchSize = defaultKyberBatch,
   }) async {
     await initialize();
-    final existingIds = await _storage.listKyberPreKeyIds();
+    final existingIds = await _uploadableKyberIds();
     if (existingIds.length >= threshold) return const [];
 
     final identity = await _storage.loadIdentityKeyPair();
@@ -452,10 +512,11 @@ class SignalClient {
         'no identity key; call generateInitialKeys() first',
       );
     }
-    final maxId = existingIds.isEmpty ? 0 : existingIds.reduce(math.max);
+    final startId = await _storage.reserveKyberPreKeyIds(batchSize,
+        minimumLastId: (await _storage.loadPrekeyRecovery())?.kyberFloor ?? 0);
     final fresh = generateKyberPrekeyBatch(
       identitySerialized: identity.serialized,
-      startId: maxId + 1,
+      startId: startId,
       count: batchSize,
     );
     for (final kpk in fresh) {

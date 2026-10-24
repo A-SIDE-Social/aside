@@ -63,6 +63,8 @@ void main() {
     signal = _MockSignalClient();
     api = _MockApiService();
     sync = KeyRegistrySync(signal, api);
+    when(() => signal.prekeyRecoveryPending()).thenAnswer((_) async => false);
+    when(() => signal.completePrekeyRecovery()).thenAnswer((_) async {});
     when(() => signal.keyOwner()).thenAnswer((_) async => 'owner');
     when(() => signal.setKeyOwner(any())).thenAnswer((_) async {});
     when(() => signal.currentPublicBundle())
@@ -73,6 +75,133 @@ void main() {
   });
 
   group('ensureKeysInitialized', () {
+    test(
+        'repairs prekey conflicts only after checking the unchanged registered identity',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      when(() => signal.preparePrekeyRecovery(100, 50))
+          .thenAnswer((_) async {});
+      when(() => api.prekeyAllocation(any()))
+          .thenAnswer((_) async => (oneTimeFloor: 100, kyberFloor: 50));
+      var uploads = 0;
+      when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {
+        if (++uploads == 1) {
+          final options = RequestOptions(path: '/fixture');
+          throw DioException(
+              requestOptions: options,
+              response: Response(
+                  requestOptions: options,
+                  statusCode: 409,
+                  data: {'code': 'key_prekey_conflict'}));
+        }
+      });
+      expect(await sync.ensureKeysInitialized(ownerUserId: 'owner'), isFalse);
+      expect(uploads, 2);
+      verify(() => api.prekeyAllocation({
+            'owner_user_id': 'owner',
+            'identity_key_pub': _fakeBundle().toJson()['identity_key_pub'],
+            'signed_prekey': _fakeBundle().toJson()['signed_prekey'],
+          })).called(1);
+      verify(() => signal.preparePrekeyRecovery(100, 50)).called(1);
+      verify(() => signal.completePrekeyRecovery()).called(1);
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test('pending prekey recovery resumes saved generation before uploading',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      when(() => signal.prekeyRecoveryPending()).thenAnswer((_) async => true);
+      await sync.ensureKeysInitialized(ownerUserId: 'owner');
+      verify(() => signal.resumeInitialKeys(otpkCount: 100)).called(1);
+      verifyNever(() => api.prekeyAllocation(any()));
+    });
+
+    test(
+        'a failed repair upload keeps durable recovery pending and retries the same bundle',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      var recoveryPending = false;
+      when(() => signal.prekeyRecoveryPending())
+          .thenAnswer((_) async => recoveryPending);
+      when(() => signal.preparePrekeyRecovery(100, 50)).thenAnswer((_) async {
+        recoveryPending = true;
+      });
+      when(() => api.prekeyAllocation(any()))
+          .thenAnswer((_) async => (oneTimeFloor: 100, kyberFloor: 50));
+      var uploads = 0;
+      when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {
+        uploads++;
+        if (uploads == 1) {
+          throw DioException(
+              requestOptions: RequestOptions(path: '/fixture'),
+              response: Response(
+                  requestOptions: RequestOptions(path: '/fixture'),
+                  statusCode: 409,
+                  data: {'code': 'key_prekey_conflict'}));
+        }
+        if (uploads == 2) {
+          throw DioException(
+              requestOptions: RequestOptions(path: '/fixture'),
+              type: DioExceptionType.receiveTimeout);
+        }
+      });
+      await expectLater(sync.ensureKeysInitialized(ownerUserId: 'owner'),
+          throwsA(isA<DioException>()));
+      expect(recoveryPending, isTrue);
+      verifyNever(() => signal.completePrekeyRecovery());
+      await sync.ensureKeysInitialized(ownerUserId: 'owner');
+      expect(uploads, 3);
+      verify(() => api.prekeyAllocation(any())).called(1);
+      verify(() => signal.resumeInitialKeys(otpkCount: 100)).called(2);
+      verify(() => signal.completePrekeyRecovery()).called(1);
+      verifyNever(() => signal.wipeKeys());
+      verifyNever(() => api.revokeDeviceKeys());
+    });
+
+    test('repair makes at most one replacement attempt per setup call',
+        () async {
+      when(() => signal.hasKeys()).thenAnswer((_) async => true);
+      when(() => signal.preparePrekeyRecovery(100, 50))
+          .thenAnswer((_) async {});
+      when(() => api.prekeyAllocation(any()))
+          .thenAnswer((_) async => (oneTimeFloor: 100, kyberFloor: 50));
+      when(() => api.uploadDeviceKeys(any())).thenThrow(DioException(
+          requestOptions: RequestOptions(path: '/fixture'),
+          response: Response(
+              requestOptions: RequestOptions(path: '/fixture'),
+              statusCode: 409,
+              data: {'code': 'key_prekey_conflict'})));
+      await expectLater(sync.ensureKeysInitialized(ownerUserId: 'owner'),
+          throwsA(isA<DioException>()));
+      verify(() => api.uploadDeviceKeys(any())).called(2);
+      verify(() => api.prekeyAllocation(any())).called(1);
+      verifyNever(() => signal.completePrekeyRecovery());
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    for (final legacy in [false, true]) {
+      test(
+          'does not allocate replacement prekeys for an identity conflict (legacy=$legacy)',
+          () async {
+        when(() => signal.hasKeys()).thenAnswer((_) async => true);
+        when(() => signal.keyOwner())
+            .thenAnswer((_) async => legacy ? null : 'owner');
+        when(() => api.uploadDeviceKeys(any())).thenAnswer((_) async {
+          final options = RequestOptions(path: '/fixture');
+          throw DioException(
+              requestOptions: options,
+              response:
+                  Response(requestOptions: options, statusCode: 409, data: {
+                'code': legacy ? 'key_prekey_conflict' : 'key_bundle_conflict'
+              }));
+        });
+        await expectLater(sync.ensureKeysInitialized(ownerUserId: 'owner'),
+            throwsA(isA<DioException>()));
+        verifyNever(() => api.prekeyAllocation(any()));
+        verifyNever(() => signal.wipeKeys());
+      });
+    }
+
     test('generates + uploads when no keys exist', () async {
       final bundle = _fakeBundle();
       when(() => signal.hasKeys()).thenAnswer((_) async => false);
@@ -260,6 +389,44 @@ void main() {
   });
 
   group('replenishIfNeeded', () {
+    test('retries a saved first batch when second-pool generation fails',
+        () async {
+      final fresh = _fakeBundle(otpkCount: 2).oneTimePreKeys;
+      var otpkCalls = 0;
+      var kyberCalls = 0;
+      when(() => signal.replenishOneTimePreKeys(
+            threshold: any(named: 'threshold'),
+            batchSize: any(named: 'batchSize'),
+          )).thenAnswer((_) async => ++otpkCalls == 1 ? fresh : []);
+      when(() => signal.replenishKyberPreKeys(
+            threshold: any(named: 'threshold'),
+            batchSize: any(named: 'batchSize'),
+          )).thenAnswer((_) async {
+        if (++kyberCalls == 1) throw StateError('Storage unavailable');
+        return [];
+      });
+      when(() => api.replenishPreKeys(
+            ownerUserId: any(named: 'ownerUserId'),
+            identityKey: any(named: 'identityKey'),
+            oneTimePreKeys: any(named: 'oneTimePreKeys'),
+            kyberPreKeys: any(named: 'kyberPreKeys'),
+          )).thenAnswer((_) async {});
+
+      await expectLater(sync.replenishIfNeeded(), throwsStateError);
+      final result = await KeyRegistrySync(signal, api).replenishIfNeeded();
+
+      expect(result, (otpks: 2, kyber: 0));
+      expect(otpkCalls, 1);
+      expect(kyberCalls, 2);
+      final sent = verify(() => api.replenishPreKeys(
+            ownerUserId: 'owner',
+            identityKey: any(named: 'identityKey'),
+            oneTimePreKeys: captureAny(named: 'oneTimePreKeys'),
+            kyberPreKeys: any(named: 'kyberPreKeys'),
+          )).captured.single;
+      expect(sent, fresh.map((key) => key.toJson()).toList());
+      verifyNever(() => signal.wipeKeys());
+    });
     test('no-op when SignalClient reports nothing to do on either pool',
         () async {
       when(() => signal.replenishOneTimePreKeys(

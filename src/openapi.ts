@@ -1667,12 +1667,13 @@ export const openApiSpec = {
     '/devices/keys/upload': {
       post: {
         tags: ['E2EE'],
-        summary: 'Upload the initial key bundle (first-run only)',
+        summary: 'Upload or reconcile a saved key bundle',
         description:
           "Stores the user's identity key, signed prekey, one-time " +
           'prekey batch, and Kyber prekey batch (post-quantum hybrid). ' +
-          'Returns 409 if an active key set already exists — caller ' +
-          'should POST /devices/revoke first to reset.',
+          'Identical retries preserve consumed prekeys. A different identity or signed prekey requires explicit recovery; ' +
+          'never automatically revoke saved keys. A prekey material conflict returns key_prekey_conflict; ' +
+          'an owner-bound client may verify allocation bounds and retry with fresh IDs while retaining private records.',
         security: [{ BearerAuth: [] }],
         requestBody: {
           required: true,
@@ -1687,6 +1688,8 @@ export const openApiSpec = {
                   'kyber_prekeys',
                 ],
                 properties: {
+                  owner_user_id: { type: 'string', format: 'uuid', description: 'Must match the authenticated account when supplied' },
+                  existing_only: { type: 'boolean', description: 'Legacy unbound material may only reconcile an existing matching registry' },
                   identity_key_pub: {
                     type: 'string',
                     description: 'Base64-encoded 33-byte libsignal IdentityKey',
@@ -1751,7 +1754,44 @@ export const openApiSpec = {
             },
           },
           '400': { description: 'Validation error (byte lengths, batch size, key ids)' },
-          '409': { description: 'Active key set already exists' },
+          '409': { description: 'Different active identity/signed key (key_bundle_conflict) or prekey material (key_prekey_conflict)' },
+        },
+      },
+    },
+    '/devices/keys/prekey-allocation': {
+      post: {
+        tags: ['E2EE'],
+        summary: 'Read prekey allocation bounds for an unchanged registered identity',
+        description: 'Requires the authenticated owner and exact registered identity and signed prekey. ' +
+          'Returns highest historical prekey IDs including consumed rows. Does not reserve IDs, replace keys or restore consumed keys.',
+        security: [{ BearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: {
+            type: 'object' as const,
+            required: ['owner_user_id', 'identity_key_pub', 'signed_prekey'],
+            properties: {
+              owner_user_id: { type: 'string', format: 'uuid' },
+              identity_key_pub: { type: 'string', description: 'base64 33 bytes' },
+              signed_prekey: { type: 'object' as const, required: ['id', 'public', 'signature'], properties: {
+                id: { type: 'integer', minimum: 1, maximum: 2147483647 },
+                public: { type: 'string', description: 'base64 33 bytes' },
+                signature: { type: 'string', description: 'base64 64 bytes' },
+              } },
+            },
+          } } },
+        },
+        responses: {
+          '200': { description: 'Historical allocation bounds', content: { 'application/json': { schema: {
+            type: 'object' as const, required: ['one_time_floor', 'kyber_floor'], properties: {
+              one_time_floor: { type: 'integer', minimum: 0, maximum: 2147483647 },
+              kyber_floor: { type: 'integer', minimum: 0, maximum: 2147483647 },
+            },
+          } } } },
+          '400': { description: 'Invalid key fields' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Owner mismatch' },
+          '409': { description: 'No active matching identity and signed prekey' },
         },
       },
     },
@@ -1761,7 +1801,7 @@ export const openApiSpec = {
         summary: 'Add more OTPKs and/or Kyber prekeys',
         description:
           'At least one of the two arrays must be non-empty. Idempotent ' +
-          'under (user_id, key_id) collisions — duplicate ids are skipped.',
+          'for identical (user_id, key_id) material; different material is rejected with key_prekey_conflict.',
         security: [{ BearerAuth: [] }],
         requestBody: {
           required: true,

@@ -7,7 +7,7 @@ import type { PoolClient } from 'pg';
 const router = Router();
 
 function keyConflict(): AppError {
-  return new AppError(409, 'An active encryption key set differs from this device. Recovery requires an explicit device change.', undefined, 'key_bundle_conflict');
+  return new AppError(409, 'An active encryption key set differs from this device. Recovery requires an explicit device change.', 'key_identity_conflict', 'key_bundle_conflict');
 }
 
 async function lockRegistry(client: PoolClient, userId: string): Promise<void> {
@@ -38,7 +38,8 @@ async function storePrekeys(
   for (const key of keys) {
     const old = existing.get(key.id);
     if (old && (!old.key_pub.equals(key.pub) || (kyber && !old.signature.equals(key.sig!)))) {
-      throw keyConflict();
+      throw new AppError(409, 'Prekey IDs conflict with previously registered material.',
+        'key_prekey_conflict', 'key_prekey_conflict');
     }
   }
   const missing = keys.filter(key => !existing.has(key.id));
@@ -244,7 +245,7 @@ router.post(
         // A legacy local identity has no recorded owner. It may only reconcile
         // with this account's existing registry, not silently register elsewhere.
         if (req.body.existing_only === true) {
-          throw new AppError(409, 'Existing local keys require manual account recovery', undefined, 'key_recovery_required');
+          throw new AppError(409, 'Existing local keys require manual account recovery', 'key_legacy_recovery', 'key_recovery_required');
         }
         if (!kpks.length) {
           throw new AppError(400, 'Initial upload requires Kyber prekeys', undefined, 'key_bundle_incomplete');
@@ -275,10 +276,42 @@ router.post(
   }),
 );
 
+// Read-only allocation bounds for this account's unchanged identity + signed
+// prekey. These are key-protocol values, never diagnostic/metric labels. No
+// stored public/private key or consumed row is changed by this operation.
+router.post('/keys/prekey-allocation', asyncHandler(async (req: any, res: any) => {
+  const userId = req.user!.userId;
+  if (req.body.owner_user_id !== userId) throw new AppError(403, 'Encryption keys belong to a different account');
+  const identity = decodeBytes(req.body.identity_key_pub, 33, 'identity_key_pub');
+  const signed = req.body.signed_prekey;
+  const id = validateKeyId(signed?.id, 'signed_prekey.id');
+  const pub = decodeBytes(signed?.public, 33, 'signed_prekey.public');
+  const sig = decodeBytes(signed?.signature, 64, 'signed_prekey.signature');
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    await lockRegistry(client, userId);
+    const { rows } = await client.query(
+      `SELECT identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig
+       FROM device_keys WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
+    const old = rows[0];
+    if (!old || !old.identity_key_pub.equals(identity) || old.signed_prekey_id !== id ||
+        !old.signed_prekey_pub.equals(pub) || !old.signed_prekey_sig.equals(sig)) throw keyConflict();
+    const { rows: bounds } = await client.query(
+      `SELECT (SELECT COALESCE(MAX(key_id), 0) FROM one_time_prekeys WHERE user_id = $1) AS one_time_floor,
+              (SELECT COALESCE(MAX(key_id), 0) FROM kyber_prekeys WHERE user_id = $1) AS kyber_floor`, [userId]);
+    await client.query('COMMIT');
+    res.json(bounds[0]);
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally { client.release(); }
+}));
+
 // POST /keys/replenish — Add more OTPKs and/or Kyber prekeys to an
 // existing active key set. Both arrays are optional but at least
-// one must be non-empty. ON CONFLICT DO NOTHING makes the call
-// idempotent under client retries.
+// one must be non-empty. Identical retries are idempotent; conflicting
+// material is rejected without changing consumed flags.
 //
 // Body: { one_time_prekeys?: [...], kyber_prekeys?: [...] }
 router.post(

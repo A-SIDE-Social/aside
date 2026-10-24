@@ -19,7 +19,9 @@ STAGES = {'otp_delivery', 'message_prehandler', 'message_handler', 'message_pers
           'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts'}
 FEED_FIELDS = ('page_kind', 'filter_kind', 'client_platform', 'outcome')
 FEED_CATEGORIES = ({'initial', 'cursor'}, {'all', 'list'}, {'ios', 'android', 'web', 'other', 'unknown'}, {'ok', 'error'})
-FAILURE_REASONS = {'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
+FAILURE_REASONS = {'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
+                   'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
+                   'key_legacy_recovery', 'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
                    'request_aborted', 'auth_failure', 'forbidden', 'route_not_found', 'not_found',
                    'method_not_allowed', 'rate_limited', 'client_error', 'internal_error',
                    'email_not_configured', 'email_auth_failure', 'email_recipient_rejected',
@@ -35,7 +37,7 @@ FAILURE_AUTH_PRESENCE = {'yes', 'no'}
 FAILURE_ABORT_PHASES = {'not_aborted', 'request', 'response'}
 FAILURE_ENDPOINTS = {'auth_request_otp', 'auth_verify_otp', 'auth_refresh', 'auth_session', 'auth_other',
                      'users_me', 'users_feed_seen', 'users_member', 'users_other', 'feed_root', 'feed_other',
-                     'devices_token', 'devices_keys_upload', 'devices_keys_replenish',
+                     'devices_token', 'devices_keys_allocation', 'devices_keys_upload', 'devices_keys_replenish',
                      'devices_keys_rotate_signed', 'devices_revoke', 'devices_other', 'root', 'well_known',
                      'family_other', 'other'}
 FAILURE_ROUTE_STATES = {'matched', 'declared_method', 'method_mismatch', 'unknown_path'}

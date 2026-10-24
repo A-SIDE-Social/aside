@@ -30,12 +30,23 @@ enum AuthStatus {
 
 enum KeyRegistrationStatus { pending, ready, unavailable, recoveryRequired }
 
+enum KeyRegistrationIssue {
+  none,
+  connection,
+  service,
+  storage,
+  conflict,
+  prekeyConflict,
+  accountRecovery
+}
+
 class AuthState {
   final AuthStatus status;
   final User? user;
   final String? error;
   final bool isNewRegistration;
   final KeyRegistrationStatus keyRegistrationStatus;
+  final KeyRegistrationIssue keyRegistrationIssue;
 
   const AuthState({
     this.status = AuthStatus.initial,
@@ -43,13 +54,15 @@ class AuthState {
     this.error,
     this.isNewRegistration = false,
     this.keyRegistrationStatus = KeyRegistrationStatus.pending,
+    this.keyRegistrationIssue = KeyRegistrationIssue.none,
   });
 
   AuthState copyWith(
       {AuthStatus? status,
       User? user,
       String? error,
-      KeyRegistrationStatus? keyRegistrationStatus}) {
+      KeyRegistrationStatus? keyRegistrationStatus,
+      KeyRegistrationIssue? keyRegistrationIssue}) {
     return AuthState(
       status: status ?? this.status,
       user: user ?? this.user,
@@ -57,6 +70,7 @@ class AuthState {
       isNewRegistration: isNewRegistration,
       keyRegistrationStatus:
           keyRegistrationStatus ?? this.keyRegistrationStatus,
+      keyRegistrationIssue: keyRegistrationIssue ?? this.keyRegistrationIssue,
     );
   }
 }
@@ -193,19 +207,37 @@ class AuthNotifier extends Notifier<AuthState> {
     if (sync == null) return;
     final ownerUserId = state.user?.id;
     if (ownerUserId == null) return;
-    state =
-        state.copyWith(keyRegistrationStatus: KeyRegistrationStatus.pending);
+    state = state.copyWith(
+        keyRegistrationStatus: KeyRegistrationStatus.pending,
+        keyRegistrationIssue: KeyRegistrationIssue.none);
     try {
       await sync.ensureKeysInitialized(ownerUserId: ownerUserId);
       if (ref.mounted && state.user?.id == ownerUserId) {
-        state =
-            state.copyWith(keyRegistrationStatus: KeyRegistrationStatus.ready);
+        state = state.copyWith(
+            keyRegistrationStatus: KeyRegistrationStatus.ready,
+            keyRegistrationIssue: KeyRegistrationIssue.none);
       }
     } catch (error) {
       if (!ref.mounted || state.user?.id != ownerUserId) return;
       final conflict = error is KeyRecoveryRequired ||
           (error is DioException && error.response?.statusCode == 409);
+      var issue = KeyRegistrationIssue.storage;
+      if (error is KeyRecoveryRequired) {
+        issue = KeyRegistrationIssue.accountRecovery;
+      } else if (error is DioException) {
+        if (error.response?.statusCode == 409) {
+          final data = error.response?.data;
+          issue = data is Map && data['code'] == 'key_prekey_conflict'
+              ? KeyRegistrationIssue.prekeyConflict
+              : KeyRegistrationIssue.conflict;
+        } else if (error.response != null) {
+          issue = KeyRegistrationIssue.service;
+        } else {
+          issue = KeyRegistrationIssue.connection;
+        }
+      }
       state = state.copyWith(
+          keyRegistrationIssue: issue,
           keyRegistrationStatus: conflict
               ? KeyRegistrationStatus.recoveryRequired
               : KeyRegistrationStatus.unavailable);

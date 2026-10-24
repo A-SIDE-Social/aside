@@ -1,6 +1,9 @@
 // Only fixed categories may become metric labels. Never use exception messages,
 // URLs, provider response bodies, or values supplied by a client.
 export const failureReasons = [
+  'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
+  'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
+  'key_legacy_recovery',
   'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
   'request_aborted', 'auth_failure', 'forbidden', 'route_not_found', 'not_found',
   'method_not_allowed', 'rate_limited', 'client_error', 'internal_error',

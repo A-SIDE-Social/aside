@@ -24,7 +24,7 @@ class _KeyWork {
   String? owner;
   Future<void>? reset;
   Future<({int otpks, int kyber})>? replenishment;
-  ({List<PublicOneTimePreKey> otpks, List<PublicKyberPreKey> kyber})? pending;
+  ({List<PublicOneTimePreKey> otpks, List<PublicKyberPreKey>? kyber})? pending;
 }
 
 class KeyRegistrySync {
@@ -84,6 +84,9 @@ class KeyRegistrySync {
     final legacy = existed && owner == null;
     if (!legacy) await _signal.setKeyOwner(ownerUserId);
     var bundle = existed ? await _signal.currentPublicBundle() : null;
+    if (!legacy && await _signal.prekeyRecoveryPending()) {
+      bundle = await _signal.resumeInitialKeys(otpkCount: otpkCount);
+    }
     if (bundle == null) {
       if (legacy) {
         throw const KeyRecoveryRequired(
@@ -101,6 +104,20 @@ class KeyRegistrySync {
     } on DioException catch (error) {
       final data = error.response?.data;
       if (!legacy &&
+          error.response?.statusCode == 409 &&
+          data is Map &&
+          data['code'] == 'key_prekey_conflict') {
+        final bounds = await _api.prekeyAllocation({
+          'owner_user_id': ownerUserId,
+          'identity_key_pub': bundle.toJson()['identity_key_pub'],
+          'signed_prekey': bundle.toJson()['signed_prekey'],
+        });
+        await _signal.preparePrekeyRecovery(
+            bounds.oneTimeFloor, bounds.kyberFloor);
+        _work.pending = null; // Private records remain in secure storage.
+        bundle = await _signal.resumeInitialKeys(otpkCount: otpkCount);
+        await upload(bundle);
+      } else if (!legacy &&
           error.response?.statusCode == 400 &&
           data is Map &&
           data['code'] == 'key_bundle_incomplete') {
@@ -111,6 +128,7 @@ class KeyRegistrySync {
       }
     }
     await _signal.setKeyOwner(ownerUserId);
+    await _signal.completePrekeyRecovery();
     _work.pending = null; // The full saved bundle was reconciled.
     return !existed;
   }
@@ -155,12 +173,16 @@ class KeyRegistrySync {
           threshold: otpkThreshold,
           batchSize: otpkBatchSize,
         );
+    // Preserve the completed first batch before generating the second pool.
+    // Its private records already count toward the local inventory threshold.
+    _work.pending = (otpks: freshOtpks, kyber: _work.pending?.kyber);
     final freshKyber = _work.pending?.kyber ??
         await _signal.replenishKyberPreKeys(
           threshold: kyberThreshold,
           batchSize: kyberBatchSize,
         );
     if (freshOtpks.isEmpty && freshKyber.isEmpty) {
+      _work.pending = null;
       return (otpks: 0, kyber: 0);
     }
 

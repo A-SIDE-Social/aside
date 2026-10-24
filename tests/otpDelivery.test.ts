@@ -247,3 +247,34 @@ test('admin and mobile requests share the cooldown without exposing admin eligib
   expect(unknown.text).toContain('Enter code');
   expect(mockSendEmail).toHaveBeenCalledTimes(1);
 });
+
+test('aggregate reasons separate registration handoff, bad form, wrong guesses and expired codes without retaining request values', async () => {
+  const { performanceRegistry } = await import('../src/performance');
+  const previous = process.env.PERFORMANCE_METRICS;
+  process.env.PERFORMANCE_METRICS = '1';
+  performanceRegistry.resetMetrics();
+  try {
+    await requestOtp().expect(200);
+    const code = sentCode();
+    const verify = (body: object) => request(app).post('/v1/auth/verify-otp').send(body);
+    await verify({email, code}).expect(400);
+    await verify({email, code, display_name:'   '}).expect(400);
+    const wrong = code === '111111' ? '222222' : '111111';
+    for (let i=0; i<5; i++) await verify({email, code:wrong}).expect(400);
+    await verify({email, code}).expect(429);
+    await query('UPDATE email_otps SET expires_at=clock_timestamp() WHERE email=$1', [email]);
+    await verify({email, code}).expect(400);
+    const metrics = await performanceRegistry.getMetricsAsJSON();
+    const failures = metrics.find(metric => metric.name === 'aside_http_failures_total')!.values;
+    for (const [reason, count] of Object.entries({otp_registration_required:1, otp_registration_invalid:1,
+      otp_incorrect:5, otp_attempt_limit:1, otp_invalid_or_expired:1})) {
+      expect(failures).toEqual(expect.arrayContaining([expect.objectContaining({value:count,
+        labels:expect.objectContaining({reason})})]));
+    }
+    const serialized = JSON.stringify(metrics);
+    for (const value of [email, code, wrong, 'display_name', 'code_hash']) expect(serialized).not.toContain(value);
+  } finally {
+    if (previous === undefined) delete process.env.PERFORMANCE_METRICS;
+    else process.env.PERFORMANCE_METRICS = previous;
+  }
+});

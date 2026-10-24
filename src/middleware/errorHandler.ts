@@ -6,7 +6,7 @@ export class AppError extends Error {
     public statusCode: number,
     message: string,
     public reason?: FailureReason,
-    public code?: 'key_bundle_incomplete' | 'key_bundle_conflict' | 'key_recovery_required'
+    public code?: 'key_bundle_incomplete' | 'key_bundle_conflict' | 'key_prekey_conflict' | 'key_recovery_required'
       | 'otp_invalid' | 'otp_attempt_limit' | 'otp_cooldown' | 'auth_rate_limited'
       | 'otp_delivery_uncertain' | 'otp_delivery_failed' | 'registration_required',
     public retryAfterSeconds?: number,

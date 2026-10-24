@@ -231,7 +231,20 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     final theme = Theme.of(context);
     final conversations = ref.watch(conversationsProvider);
     final currentUserId = ref.watch(authProvider).user?.id;
-    final keyStatus = ref.watch(authProvider).keyRegistrationStatus;
+    final auth = ref.watch(authProvider);
+    final keyStatus = auth.keyRegistrationStatus;
+    final recoveryMessage = switch (auth.keyRegistrationIssue) {
+      KeyRegistrationIssue.connection =>
+        'Messaging setup couldn’t connect. Your keys have been kept. Check your connection and retry.',
+      KeyRegistrationIssue.service =>
+        'Messaging setup is temporarily unavailable. Your keys have been kept. Retry shortly.',
+      KeyRegistrationIssue.storage =>
+        'Messaging setup couldn’t finish on this device. Your keys have been kept. Retry or contact support.',
+      KeyRegistrationIssue.prekeyConflict =>
+        'Messaging setup needs another attempt. Your keys have been kept. Retry or contact support if this continues.',
+      _ =>
+        'Messaging setup needs help with the saved keys. Your keys have been kept. Contact support before reinstalling or changing devices.',
+    };
     final needsKeyRecovery =
         keyStatus == KeyRegistrationStatus.recoveryRequired ||
             keyStatus == KeyRegistrationStatus.unavailable;
@@ -245,9 +258,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Row(children: [
-                  const Expanded(
-                      child: Text(
-                          'Encrypted messaging needs attention. Your keys have been kept. Retry or contact support before changing devices.')),
+                  Expanded(child: Text(recoveryMessage)),
                   TextButton(
                     onPressed: () =>
                         ref.read(authProvider.notifier).retryKeyRegistration(),

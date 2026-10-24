@@ -60,6 +60,9 @@ const _ownerKey = '${_prefix}owner';
 const _signedPreKey = '${_prefix}spk';
 const _otpkPrefix = '${_prefix}otpk:';
 const _kpkPrefix = '${_prefix}kpk:';
+const _otpkLastId = '${_prefix}otpk_last_id';
+const _kpkLastId = '${_prefix}kpk_last_id';
+const _prekeyRecovery = '${_prefix}prekey_recovery';
 const _sessionPrefix = '${_prefix}session:';
 const _plaintextPrefix = '${_prefix}plaintext:';
 const _peerIdentityPrefix = '${_prefix}peer_identity:';
@@ -87,6 +90,10 @@ Uint8List _decodeBytes(String s) => base64.decode(s);
 /// Abstract interface so tests can substitute an in-memory store.
 /// Production wires [SecureKeyStorage]; unit tests can swap a fake.
 abstract class KeyStorage {
+  Future<int> reserveOneTimePreKeyIds(int count, {int minimumLastId = 0});
+  Future<int> reserveKyberPreKeyIds(int count, {int minimumLastId = 0});
+  Future<PrekeyRecoveryState?> loadPrekeyRecovery();
+  Future<void> savePrekeyRecovery(PrekeyRecoveryState state);
   Future<String?> loadOwner();
   Future<void> saveOwner(String userId);
   Future<void> saveIdentityKeyPair(IdentityKeypair kp);
@@ -99,12 +106,14 @@ abstract class KeyStorage {
   Future<OneTimePreKey?> loadOneTimePreKey(int id);
   Future<void> deleteOneTimePreKey(int id);
   Future<List<int>> listOneTimePreKeyIds();
+  Future<int> lastOneTimePreKeyId();
 
   // Kyber prekeys (post-quantum). Same consumption semantics as OTPKs.
   Future<void> saveKyberPreKey(KyberPreKey kpk);
   Future<KyberPreKey?> loadKyberPreKey(int id);
   Future<void> deleteKyberPreKey(int id);
   Future<List<int>> listKyberPreKeyIds();
+  Future<int> lastKyberPreKeyId();
 
   // Per-peer Double Ratchet session records. Keyed by peer user id.
   // Record value is the protobuf-serialized SessionRecord bytes that
@@ -179,11 +188,101 @@ abstract class KeyStorage {
   Future<void> wipe();
 }
 
+/// Older private records remain available for delayed messages. Only their
+/// public halves are excluded from future uploads after prekey-ID recovery.
+class PrekeyRecoveryState {
+  final int oneTimeFloor;
+  final int kyberFloor;
+  final bool pending;
+  const PrekeyRecoveryState(this.oneTimeFloor, this.kyberFloor,
+      {this.pending = true});
+}
+
 /// Production implementation backed by flutter_secure_storage.
 /// Reads and writes to iOS Keychain / Android EncryptedSharedPreferences
 /// depending on platform.
 class SecureKeyStorage implements KeyStorage {
   final FlutterSecureStorage _storage;
+  static Future<void> _counterWrites = Future.value();
+
+  Future<int> _reserveIds(String counter, String prefix, int count, int floor) {
+    if (count < 1 || count > 200 || floor < 0 || floor > 2147483647) {
+      throw ArgumentError('Invalid prekey allocation');
+    }
+    final operation = _counterWrites.then((_) async {
+      var last = int.parse(await _storage.read(key: counter) ?? '0');
+      if (last < 0 || last > 2147483647) {
+        throw StateError('Invalid prekey counter');
+      }
+      for (final key in (await _storage.readAll()).keys) {
+        if (key.startsWith(prefix)) {
+          final id = int.parse(key.substring(prefix.length));
+          if (id > last) last = id;
+        }
+      }
+      if (floor > last) last = floor;
+      if (last + count > 2147483647) throw StateError('Prekey IDs exhausted');
+      // Reserve the entire range before generating or saving its records.
+      await _storage.write(key: counter, value: (last + count).toString());
+      return last + 1;
+    });
+    _counterWrites = operation.then<void>((_) {}, onError: (Object _) {});
+    return operation;
+  }
+
+  @override
+  Future<int> reserveOneTimePreKeyIds(int count, {int minimumLastId = 0}) =>
+      _reserveIds(_otpkLastId, _otpkPrefix, count, minimumLastId);
+  @override
+  Future<int> reserveKyberPreKeyIds(int count, {int minimumLastId = 0}) =>
+      _reserveIds(_kpkLastId, _kpkPrefix, count, minimumLastId);
+
+  @override
+  Future<PrekeyRecoveryState?> loadPrekeyRecovery() async {
+    final raw = await _storage.read(key: _prekeyRecovery);
+    if (raw == null) return null;
+    final value = jsonDecode(raw) as Map<String, dynamic>;
+    final oneTime = value['one_time_floor'] as int;
+    final kyber = value['kyber_floor'] as int;
+    if (oneTime < 0 ||
+        kyber < 0 ||
+        oneTime > 2147483647 ||
+        kyber > 2147483647) {
+      throw StateError('Invalid prekey recovery state');
+    }
+    return PrekeyRecoveryState(oneTime, kyber,
+        pending: value['pending'] as bool);
+  }
+
+  @override
+  Future<void> savePrekeyRecovery(PrekeyRecoveryState state) => _storage.write(
+      key: _prekeyRecovery,
+      value: jsonEncode({
+        'one_time_floor': state.oneTimeFloor,
+        'kyber_floor': state.kyberFloor,
+        'pending': state.pending
+      }));
+
+  // Keep allocation history even after consumed private records are removed.
+  // Persist before saving/deleting a record; failures must not permit ID reuse.
+  Future<void> _rememberKeyId(String key, int id) {
+    final operation = _counterWrites.then((_) async {
+      final previous = int.parse(await _storage.read(key: key) ?? '0');
+      if (id > previous) {
+        await _storage.write(key: key, value: id.toString());
+      }
+    });
+    _counterWrites = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  @override
+  Future<int> lastOneTimePreKeyId() async =>
+      int.parse(await _storage.read(key: _otpkLastId) ?? '0');
+
+  @override
+  Future<int> lastKyberPreKeyId() async =>
+      int.parse(await _storage.read(key: _kpkLastId) ?? '0');
 
   SecureKeyStorage({FlutterSecureStorage? storage})
       : _storage = storage ??
@@ -254,6 +353,7 @@ class SecureKeyStorage implements KeyStorage {
 
   @override
   Future<void> saveOneTimePreKey(OneTimePreKey otpk) async {
+    await _rememberKeyId(_otpkLastId, otpk.id);
     final json = jsonEncode({
       'id': otpk.id,
       'serialized': _encodeBytes(otpk.serialized),
@@ -276,6 +376,7 @@ class SecureKeyStorage implements KeyStorage {
 
   @override
   Future<void> deleteOneTimePreKey(int id) async {
+    await _rememberKeyId(_otpkLastId, id);
     await _storage.delete(key: '$_otpkPrefix$id');
   }
 
@@ -296,6 +397,7 @@ class SecureKeyStorage implements KeyStorage {
 
   @override
   Future<void> saveKyberPreKey(KyberPreKey kpk) async {
+    await _rememberKeyId(_kpkLastId, kpk.id);
     final json = jsonEncode({
       'id': kpk.id,
       'serialized': _encodeBytes(kpk.serialized),
@@ -320,6 +422,7 @@ class SecureKeyStorage implements KeyStorage {
 
   @override
   Future<void> deleteKyberPreKey(int id) async {
+    await _rememberKeyId(_kpkLastId, id);
     await _storage.delete(key: '$_kpkPrefix$id');
   }
 

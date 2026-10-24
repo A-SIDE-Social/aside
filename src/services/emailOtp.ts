@@ -81,18 +81,18 @@ export async function verifyEmailOtp<T>(
        ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [email],
     );
     const otp = rows[0];
-    if (!otp) throw new AppError(400, 'Invalid or expired code', 'validation_failure', 'otp_invalid');
+    if (!otp) throw new AppError(400, 'Invalid or expired code', 'otp_invalid_or_expired', 'otp_invalid');
     if (otp.attempts >= 5) {
       // Keep the row so exhausting guesses cannot bypass the resend cooldown.
       throw new AppError(429, 'Too many attempts. Please request a new code.',
-        'rate_limited', 'otp_attempt_limit');
+        'otp_attempt_limit', 'otp_attempt_limit');
     }
     const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
     if (submittedHash !== otp.code_hash) {
       await client.query('UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1', [otp.id]);
       await client.query('COMMIT');
       inTransaction = false;
-      throw new AppError(400, 'Invalid code', 'validation_failure', 'otp_invalid');
+      throw new AppError(400, 'Invalid code', 'otp_incorrect', 'otp_invalid');
     }
     const result = await complete(client);
     await client.query('DELETE FROM email_otps WHERE id = $1', [otp.id]);
