@@ -386,9 +386,11 @@ class _AuthInterceptor extends Interceptor {
           marker: marker,
           until: DateTime.now().add(const Duration(minutes: 5))
         );
-        await _secureStorage.setRefreshToken(nextRefreshToken as String);
       }
-      await _secureStorage.setAuthToken(token);
+      if (!await _secureStorage.commitRefresh(
+          refreshToken, token, nextRefreshToken as String?)) {
+        throw const _SessionChanged();
+      }
       return (
         accessToken: token,
         refreshToken: nextRefreshToken as String? ?? refreshToken

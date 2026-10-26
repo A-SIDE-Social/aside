@@ -283,14 +283,19 @@ void main() {
   });
 
   group('AuthNotifier.refreshSession', () {
-    test('refreshes tokens and updates storage', () async {
+    test('does not write already committed rotated credentials twice',
+        () async {
+      var saved = 'old-refresh';
       when(
         () => mockStorage.getRefreshToken(),
-      ).thenAnswer((_) async => 'old-refresh');
+      ).thenAnswer((_) async => saved);
       when(() => mockApi.refreshToken('old-refresh')).thenAnswer(
-        (_) async => {
-          'access_token': 'new-access',
-          'refresh_token': 'new-refresh',
+        (_) async {
+          saved = 'new-refresh';
+          return {
+            'access_token': 'new-access',
+            'refresh_token': 'new-refresh',
+          };
         },
       );
       when(
@@ -301,8 +306,8 @@ void main() {
       ).thenAnswer((_) async {});
 
       await notifier.refreshSession();
-      verify(() => mockStorage.setAuthToken('new-access')).called(1);
-      verify(() => mockStorage.setRefreshToken('new-refresh')).called(1);
+      verifyNever(() => mockStorage.setAuthToken(any()));
+      verifyNever(() => mockStorage.setRefreshToken(any()));
     });
 
     test('signs out when no refresh token available', () async {

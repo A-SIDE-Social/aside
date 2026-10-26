@@ -43,6 +43,14 @@ class _RecoveryFixture {
     when(() => storage.setRefreshToken(any())).thenAnswer((invocation) async {
       refreshToken = invocation.positionalArguments[0] as String;
     });
+    when(() => storage.commitRefresh(any(), any(), any()))
+        .thenAnswer((i) async {
+      if (refreshToken != i.positionalArguments[0]) return false;
+      final next = i.positionalArguments[2] as String?;
+      if (next != null) await storage.setRefreshToken(next);
+      await storage.setAuthToken(i.positionalArguments[1] as String);
+      return true;
+    });
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
       final isRefresh = request.uri.path == ApiEndpoints.refreshToken;

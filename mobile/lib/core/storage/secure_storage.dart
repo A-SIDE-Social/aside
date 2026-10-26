@@ -9,6 +9,24 @@ class SecureStorage {
   static const _userIdKey = 'user_id';
   static const _refreshAttemptKey = 'refresh_attempt';
   static Future<void> _attemptWrites = Future.value();
+  static Future<void> _credentialWrites = Future.value();
+
+  /// Compare and commit a renewal as one operation relative to local logout.
+  /// Platform writes are asynchronous: a pre-write check alone is not enough
+  /// to prevent a delayed write from restoring credentials after clearAll.
+  Future<bool> commitRefresh(
+      String expected, String access, String? refresh) async {
+    var saved = false;
+    final operation = _credentialWrites.then((_) async {
+      if (await getRefreshToken() != expected) return;
+      if (refresh != null) await setRefreshToken(refresh);
+      await setAuthToken(access);
+      saved = true;
+    });
+    _credentialWrites = operation.catchError((Object _) {});
+    await operation;
+    return saved;
+  }
 
   /// Persist a random retry secret before sending a refresh. A lost response
   /// can then recover the same rotation after an app restart. Never log it.
@@ -87,11 +105,16 @@ class SecureStorage {
   // own prefix and must only be removed by SecureKeyStorage.wipe().
 
   Future<void> clearAll() async {
-    await Future.wait([
-      _storage.delete(key: _authTokenKey),
-      _storage.delete(key: _refreshTokenKey),
-      _storage.delete(key: _userIdKey),
-      _storage.delete(key: _refreshAttemptKey),
-    ]);
+    final operation = _credentialWrites.then((_) async {
+      await _attemptWrites;
+      await Future.wait([
+        _storage.delete(key: _authTokenKey),
+        _storage.delete(key: _refreshTokenKey),
+        _storage.delete(key: _userIdKey),
+        _storage.delete(key: _refreshAttemptKey),
+      ]);
+    });
+    _credentialWrites = operation.catchError((Object _) {});
+    await operation;
   }
 }

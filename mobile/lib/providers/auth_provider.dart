@@ -418,15 +418,12 @@ class AuthNotifier extends Notifier<AuthState> {
       // The shared API client may already have persisted this rotation. Never
       // overwrite a newer sign-in, but still sync the renewed extension token.
       final savedRefresh = await _secureStorage.getRefreshToken();
-      if (savedRefresh != refreshToken &&
-          (newRefreshToken == null || savedRefresh != newRefreshToken)) {
+      if (newRefreshToken == null || savedRefresh != newRefreshToken) {
         return;
       }
-
-      await _secureStorage.setAuthToken(newToken);
-      if (newRefreshToken != null) {
-        await _secureStorage.setRefreshToken(newRefreshToken);
-      }
+      // ApiService already committed these credentials atomically. A second
+      // write here could overwrite a newer rotation or restore a logged-out
+      // session while an asynchronous platform write is in progress.
       // Keep App Group token in sync
       await AppGroupChannel.setToken(newToken);
     } on DioException catch (error) {
