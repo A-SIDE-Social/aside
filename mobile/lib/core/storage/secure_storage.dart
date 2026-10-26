@@ -1,9 +1,41 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:convert';
+import 'dart:math';
+import 'package:crypto/crypto.dart';
 
 class SecureStorage {
   static const _authTokenKey = 'auth_token';
   static const _refreshTokenKey = 'refresh_token';
   static const _userIdKey = 'user_id';
+  static const _refreshAttemptKey = 'refresh_attempt';
+  static Future<void> _attemptWrites = Future.value();
+
+  /// Persist a random retry secret before sending a refresh. A lost response
+  /// can then recover the same rotation after an app restart. Never log it.
+  Future<String> refreshNonce(String credential) async {
+    late String nonce;
+    final operation = _attemptWrites.then((_) async {
+      final fingerprint = sha256.convert(utf8.encode(credential)).toString();
+      final raw = await _storage.read(key: _refreshAttemptKey);
+      final saved = raw == null ? null : jsonDecode(raw);
+      if (saved is Map &&
+          saved['token_hash'] == fingerprint &&
+          saved['nonce'] is String) {
+        nonce = saved['nonce'] as String;
+      } else {
+        final random = Random.secure();
+        nonce = base64Url
+            .encode(List.generate(32, (_) => random.nextInt(256)))
+            .replaceAll('=', '');
+        await _storage.write(
+            key: _refreshAttemptKey,
+            value: jsonEncode({'token_hash': fingerprint, 'nonce': nonce}));
+      }
+    });
+    _attemptWrites = operation.catchError((Object _) {});
+    await operation;
+    return nonce;
+  }
 
   final FlutterSecureStorage _storage;
 
@@ -59,6 +91,7 @@ class SecureStorage {
       _storage.delete(key: _authTokenKey),
       _storage.delete(key: _refreshTokenKey),
       _storage.delete(key: _userIdKey),
+      _storage.delete(key: _refreshAttemptKey),
     ]);
   }
 }

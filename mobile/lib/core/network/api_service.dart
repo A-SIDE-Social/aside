@@ -77,6 +77,7 @@ class ApiService {
       data: {
         'email': email,
         'code': code,
+        'refresh_protocol': 2,
         if (inviteCode != null) 'invite_code': inviteCode,
         if (displayName != null) 'display_name': displayName,
       },
@@ -85,11 +86,11 @@ class ApiService {
   }
 
   Future<dynamic> refreshToken(String token) async {
-    final response = await _dio.post(
-      ApiEndpoints.refreshToken,
-      data: {'refresh_token': token},
-    );
-    return response.data;
+    final credentials = await _client.refreshCredentials();
+    return {
+      'access_token': credentials.accessToken,
+      'refresh_token': credentials.refreshToken
+    };
   }
 
   Future<dynamic> logout(String refreshToken) async {

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { config } from '../config';
 import { query } from '../db/pool';
 import type { FailureAuthResult } from '../performance';
@@ -69,5 +70,7 @@ export function generateAccessToken(userId: string): string {
 }
 
 export function generateRefreshToken(userId: string): string {
-  return jwt.sign({ userId }, config.jwtRefreshSecret, { expiresIn: config.refreshTokenExpiresIn } as jwt.SignOptions);
+  return jwt.sign({ userId }, config.jwtRefreshSecret, {
+    expiresIn: config.refreshTokenExpiresIn, jwtid: crypto.randomUUID(), algorithm: 'HS256',
+  } as jwt.SignOptions);
 }

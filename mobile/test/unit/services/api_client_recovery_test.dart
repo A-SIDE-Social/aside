@@ -26,6 +26,7 @@ class _RecoveryFixture {
   bool failStorageRead = false;
   final refreshArrived = Completer<void>();
   final attempts = <String, List<String?>>{};
+  final refreshInputs = <Map<String, dynamic>>[];
   Future<void> Function(HttpRequest)? beforeReply;
 
   Future<void> start() async {
@@ -34,6 +35,8 @@ class _RecoveryFixture {
       return accessToken;
     });
     when(() => storage.getRefreshToken()).thenAnswer((_) async => refreshToken);
+    when(() => storage.refreshNonce(any()))
+        .thenAnswer((_) async => 'test-rotation-nonce-fixture');
     when(() => storage.setAuthToken(any())).thenAnswer((invocation) async {
       accessToken = invocation.positionalArguments[0] as String;
     });
@@ -54,7 +57,12 @@ class _RecoveryFixture {
               request.headers.value('X-A-Side-Request-Attempt'),
             );
       }
-      await request.drain<void>();
+      if (isRefresh) {
+        refreshInputs.add(jsonDecode(await utf8.decoder.bind(request).join())
+            as Map<String, dynamic>);
+      } else {
+        await request.drain<void>();
+      }
       await beforeReply?.call(request);
       if (isRefresh && holdRefresh) return;
       request.response
@@ -119,6 +127,52 @@ void main() {
     for (final attempts in fixture.attempts.values) {
       expect(attempts, ['initial', 'auth_retry']);
     }
+  });
+
+  test(
+      'independent API clients share a rotating refresh without dropping requests',
+      () async {
+    fixture.refreshToken = 'rt2.session-fixture.original';
+    fixture.refreshBody = {
+      'access_token': 'renewed-fixture',
+      'refresh_token': 'rt2.session-fixture.rotated'
+    };
+    final other = ApiClient(secureStorage: fixture.storage);
+    other.dio.options.baseUrl = fixture.client.dio.options.baseUrl;
+    addTearDown(() => other.dio.close(force: true));
+    final both = Completer<void>();
+    fixture.beforeReply = (request) async {
+      if (fixture.expiredCalls == 2 && !both.isCompleted) both.complete();
+      if (request.uri.path == ApiEndpoints.refreshToken) await both.future;
+    };
+    final responses = await Future.wait([
+      fixture.client.dio.get(ApiEndpoints.me),
+      other.dio.get('/v1/feed'),
+    ]).timeout(const Duration(seconds: 3));
+    expect(responses.map((r) => r.statusCode), everyElement(200));
+    expect(fixture.refreshCalls, 1);
+    expect(fixture.authFailures, 0);
+    expect(fixture.refreshInputs.single['rotation_nonce'], isNotEmpty);
+  });
+
+  test(
+      'a failed credential write retries the same rotation without discarding the session',
+      () async {
+    fixture.refreshBody = {
+      'access_token': 'renewed-fixture',
+      'refresh_token': 'rt2.session-fixture.rotated'
+    };
+    var writes = 0;
+    when(() => fixture.storage.setRefreshToken(any())).thenAnswer((i) async {
+      if (++writes == 1) throw StateError('Storage unavailable');
+      fixture.refreshToken = i.positionalArguments.single as String;
+    });
+    expect((await fixture.failure(ApiEndpoints.me)).error, isA<StateError>());
+    expect(fixture.refreshToken, 'refresh-fixture');
+    expect((await fixture.client.dio.get(ApiEndpoints.me)).statusCode, 200);
+    expect(fixture.refreshInputs, hasLength(2));
+    expect(fixture.refreshInputs[0], fixture.refreshInputs[1]);
+    expect(fixture.authFailures, 0);
   });
 
   test('a delayed old-token 401 reuses the already refreshed token', () async {

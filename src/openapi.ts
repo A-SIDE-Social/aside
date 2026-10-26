@@ -304,6 +304,7 @@ export const openApiSpec = {
                 properties: {
                   email: { type: 'string' },
                   code: { type: 'string' },
+                  refresh_protocol: { type: 'integer', enum: [2], description: 'Opt into rotating persistent sessions' },
                   invite_code: { type: 'string', description: 'Optional for new registrations' },
                   display_name: { type: 'string', minLength: 1, maxLength: 50, description: 'Required for new registrations' },
                 },
@@ -345,6 +346,8 @@ export const openApiSpec = {
                 required: ['refresh_token'],
                 properties: {
                   refresh_token: { type: 'string' },
+                  rotation_nonce: { type: 'string', minLength: 43, maxLength: 43,
+                    description: 'Persisted random base64url retry secret; reuse only for the same unacknowledged refresh attempt' },
                 },
               },
             },
@@ -359,11 +362,14 @@ export const openApiSpec = {
                   type: 'object' as const,
                   properties: {
                     access_token: { type: 'string' },
+                    refresh_token: { type: 'string', description: 'Rotated credential; persist before the next renewal' },
                   },
                 },
               },
             },
           },
+          '401': { description: 'Invalid, inactive, revoked, idle-expired or reused session' },
+          '409': { description: 'An acknowledged refresh attempt has already been superseded' },
         },
       },
     },

@@ -410,12 +410,18 @@ class AuthNotifier extends Notifier<AuthState> {
       }
 
       final data = await _apiService.refreshToken(refreshToken);
-      if (await _secureStorage.getRefreshToken() != refreshToken) return;
       final responseMap = data as Map<String, dynamic>;
       final newToken =
           (responseMap['access_token'] ?? responseMap['token']) as String;
       final newRefreshToken = (responseMap['refresh_token'] ??
           responseMap['refreshToken']) as String?;
+      // The shared API client may already have persisted this rotation. Never
+      // overwrite a newer sign-in, but still sync the renewed extension token.
+      final savedRefresh = await _secureStorage.getRefreshToken();
+      if (savedRefresh != refreshToken &&
+          (newRefreshToken == null || savedRefresh != newRefreshToken)) {
+        return;
+      }
 
       await _secureStorage.setAuthToken(newToken);
       if (newRefreshToken != null) {

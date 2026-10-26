@@ -2,7 +2,7 @@ import 'dart:ui' show VoidCallback;
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kDebugMode, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 
 import '../config/env.dart';
 import '../storage/secure_storage.dart';
@@ -105,6 +105,7 @@ class ApiClient {
   final Dio dio;
   final SecureStorage _secureStorage;
   final VoidCallback? onAuthFailure;
+  late final _AuthInterceptor _auth;
 
   ApiClient({
     required SecureStorage secureStorage,
@@ -125,32 +126,31 @@ class ApiClient {
       },
     );
 
-    this.dio.interceptors.add(
-          _AuthInterceptor(
-            dio: this.dio,
-            secureStorage: _secureStorage,
-            onAuthFailure: _handleAuthFailure,
-          ),
-        );
+    _auth = _AuthInterceptor(
+      dio: this.dio,
+      secureStorage: _secureStorage,
+      onAuthFailure: _handleAuthFailure,
+    );
+    // Request/response logging can expose credentials and private content even
+    // in development builds. Use bounded aggregate diagnostics instead.
+    this.dio.interceptors.add(_auth);
+  }
 
-    if (kDebugMode) {
-      final logger = LogInterceptor(requestBody: true, responseBody: true);
-      this.dio.interceptors.add(
-            InterceptorsWrapper(
-              onRequest: (request, handler) =>
-                  request.extra['sensitiveMedia'] == true
-                      ? handler.next(request)
-                      : logger.onRequest(request, handler),
-              onResponse: (response, handler) =>
-                  response.requestOptions.extra['sensitiveMedia'] == true
-                      ? handler.next(response)
-                      : logger.onResponse(response, handler),
-              onError: (error, handler) =>
-                  error.requestOptions.extra['sensitiveMedia'] == true
-                      ? handler.next(error)
-                      : logger.onError(error, handler),
-            ),
-          );
+  Future<({String accessToken, String refreshToken})>
+      refreshCredentials() async {
+    try {
+      return await _auth._refreshAuthToken();
+    } on _SessionExpired {
+      final request = RequestOptions(path: ApiEndpoints.refreshToken);
+      throw DioException(
+          requestOptions: request,
+          type: DioExceptionType.badResponse,
+          response: Response(requestOptions: request, statusCode: 401));
+    } on _SessionChanged {
+      throw DioException(
+          requestOptions: RequestOptions(path: ApiEndpoints.refreshToken),
+          type: DioExceptionType.cancel,
+          message: 'Session changed during renewal.');
     }
   }
 
@@ -164,7 +164,27 @@ class _AuthInterceptor extends Interceptor {
   final SecureStorage _secureStorage;
   final VoidCallback _onAuthFailure;
 
-  Future<({String accessToken, String refreshToken})>? _refreshInFlight;
+  static final _refreshes =
+      <String, Future<({String accessToken, String refreshToken})>>{};
+  // Only legacy-to-rotating transitions need a short in-memory alias. Rotating
+  // credentials carry the same opaque session marker across renewals.
+  static final _upgrades = <String, ({String marker, DateTime until})>{};
+
+  String? _marker(String? credential) {
+    if (credential == null) return null;
+    final parts = credential.split('.');
+    return parts.length == 3 && parts[0] == 'rt2'
+        ? '${parts[0]}.${parts[1]}'
+        : credential;
+  }
+
+  bool _sameSession(String? before, String? after) {
+    if (_marker(before) == _marker(after)) return true;
+    _upgrades.removeWhere((_, value) => value.until.isBefore(DateTime.now()));
+    final upgrade = _upgrades['${_dio.options.baseUrl}|${_marker(before)}'];
+    return upgrade != null && upgrade.marker == _marker(after);
+  }
+
   // Keep the session marker private and in memory only. Never attach refresh
   // credentials to request extras or diagnostic metadata.
   final _requestSessions = Expando<_RequestSession>();
@@ -189,7 +209,8 @@ class _AuthInterceptor extends Interceptor {
           !_publicAuthPaths.contains(options.uri.path)) {
         final refreshToken = await _secureStorage.getRefreshToken();
         final session = _requestSessions[options];
-        if (session != null && session.refreshToken != refreshToken) {
+        if (session != null &&
+            !_sameSession(session.refreshToken, refreshToken)) {
           throw const _SessionChanged();
         }
         _requestSessions[options] = _RequestSession(refreshToken);
@@ -233,7 +254,8 @@ class _AuthInterceptor extends Interceptor {
     try {
       final refreshToken = await _secureStorage.getRefreshToken();
       final session = _requestSessions[request];
-      if (session != null && session.refreshToken != refreshToken) {
+      if (session != null &&
+          !_sameSession(session.refreshToken, refreshToken)) {
         throw const _SessionChanged();
       }
       final currentToken = await _secureStorage.getAuthToken();
@@ -292,22 +314,28 @@ class _AuthInterceptor extends Interceptor {
     _onAuthFailure();
   }
 
-  Future<({String accessToken, String refreshToken})> _refreshAuthToken() {
-    final pending = _refreshInFlight;
+  Future<({String accessToken, String refreshToken})>
+      _refreshAuthToken() async {
+    final credential = await _secureStorage.getRefreshToken();
+    if (credential == null || credential.isEmpty) {
+      throw const _SessionExpired();
+    }
+    final key = '${_dio.options.baseUrl}|$credential';
+    final pending = _refreshes[key];
     if (pending != null) return pending;
     late final Future<({String accessToken, String refreshToken})> refresh;
-    refresh = _performRefresh().whenComplete(() {
-      if (identical(_refreshInFlight, refresh)) _refreshInFlight = null;
+    refresh = _performRefresh(credential).whenComplete(() {
+      if (identical(_refreshes[key], refresh)) _refreshes.remove(key);
     });
-    _refreshInFlight = refresh;
+    _refreshes[key] = refresh;
     return refresh;
   }
 
-  Future<({String accessToken, String refreshToken})> _performRefresh() async {
-    final refreshToken = await _secureStorage.getRefreshToken();
-    if (refreshToken == null || refreshToken.isEmpty) {
-      throw const _SessionExpired();
-    }
+  Future<({String accessToken, String refreshToken})> _performRefresh(
+      String refreshToken) async {
+    final nonce = await _secureStorage.refreshNonce(refreshToken);
+    if (await _secureStorage.getRefreshToken() != refreshToken)
+      throw const _SessionChanged();
     Duration boundedTimeout(Duration? configured) {
       const limit = Duration(seconds: 30);
       return configured == null ||
@@ -333,7 +361,7 @@ class _AuthInterceptor extends Interceptor {
     try {
       final response = await refreshDio.post(
         ApiEndpoints.refreshToken,
-        data: {'refresh_token': refreshToken},
+        data: {'refresh_token': refreshToken, 'rotation_nonce': nonce},
       );
       if (await _secureStorage.getRefreshToken() != refreshToken) {
         throw const _SessionChanged();
@@ -348,10 +376,18 @@ class _AuthInterceptor extends Interceptor {
               (nextRefreshToken is! String || nextRefreshToken.isEmpty))) {
         throw const FormatException('Invalid session response');
       }
-      await _secureStorage.setAuthToken(token);
       if (nextRefreshToken != null) {
+        final marker = _marker(nextRefreshToken)!;
+        _upgrades
+            .removeWhere((_, value) => value.until.isBefore(DateTime.now()));
+        if (_upgrades.length >= 128) _upgrades.remove(_upgrades.keys.first);
+        _upgrades['${_dio.options.baseUrl}|${_marker(refreshToken)}'] = (
+          marker: marker,
+          until: DateTime.now().add(const Duration(minutes: 5))
+        );
         await _secureStorage.setRefreshToken(nextRefreshToken as String);
       }
+      await _secureStorage.setAuthToken(token);
       return (
         accessToken: token,
         refreshToken: nextRefreshToken as String? ?? refreshToken

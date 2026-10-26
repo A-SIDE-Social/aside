@@ -12,6 +12,7 @@ import { requestEmailOtp, verifyEmailOtp } from '../services/emailOtp';
 import { generateUniqueSlug, extractSlug, extractLegacyCode, SLUG_REGEX } from '../lib/slugs';
 import { normalizeDisplayName } from '../lib/displayName';
 import { normalizeEmail } from '../lib/emailAddress';
+import { newSessionCredential, refreshSession, sessionIdleDays } from '../services/refreshSession';
 import {
   sendPush,
   getTokensForUsers,
@@ -323,15 +324,16 @@ async function allocateInvitesWith(
 /**
  * Issue JWTs and store refresh token.
  */
-async function issueTokens(client: PoolClient, userId: string) {
+async function issueTokens(client: PoolClient, userId: string, rotating = false) {
   const accessToken = generateAccessToken(userId);
-  const refreshToken = generateRefreshToken(userId);
+  const sessionId = crypto.randomUUID();
+  const refreshToken = rotating ? newSessionCredential(sessionId) : generateRefreshToken(userId);
 
   const hashedToken = hashToken(refreshToken);
-  const refreshExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  const refreshExpiresAt = new Date(Date.now() + sessionIdleDays * 24 * 60 * 60 * 1000);
   await client.query(
-    'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
-    [userId, hashedToken, refreshExpiresAt],
+    'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, rotation_enabled) VALUES ($1, $2, $3, $4, $5)',
+    [sessionId, userId, hashedToken, refreshExpiresAt, rotating],
   );
 
   return { accessToken, refreshToken };
@@ -367,7 +369,7 @@ router.post(
       normalizedEmail, code, async (client) => {
         try {
           const user = await resolveUser(client, afterCommit, normalizedEmail, invite_code, display_name);
-          const tokens = await issueTokens(client, user.id);
+          const tokens = await issueTokens(client, user.id, req.body.refresh_protocol === 2);
           return { user, ...tokens };
         } catch (error) {
           if (error instanceof AppError && error.statusCode === 400 && error.code !== 'registration_required') {
@@ -405,38 +407,7 @@ router.post(
 router.post(
   '/refresh',
   asyncHandler(async (req: any, res: any) => {
-    const { refresh_token } = req.body;
-    if (!refresh_token) throw new AppError(400, 'Refresh token is required');
-
-    const hashedToken = hashToken(refresh_token);
-    const { rows } = await query(
-      `SELECT rt.user_id
-       FROM refresh_tokens rt
-       JOIN users u ON u.id = rt.user_id
-       WHERE rt.token_hash = $1
-         AND rt.revoked_at IS NULL
-         AND rt.expires_at > NOW()
-         AND u.deleted_at IS NULL`,
-      [hashedToken],
-    );
-    if (rows.length === 0) throw new AppError(401, 'Invalid refresh token');
-
-    // Verify the JWT is still valid
-    const jwt = await import('jsonwebtoken');
-    try {
-      const payload = jwt.default.verify(refresh_token, config.jwtRefreshSecret) as { userId: string };
-      if (payload.userId !== rows[0].user_id) {
-        await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hashedToken]);
-        throw new AppError(401, 'Invalid refresh token');
-      }
-      const accessToken = generateAccessToken(payload.userId);
-      res.json({ access_token: accessToken });
-    } catch (err) {
-      if (err instanceof AppError) throw err;
-      // Remove invalid token
-      await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hashedToken]);
-      throw new AppError(401, 'Refresh token expired');
-    }
+    res.json(await refreshSession(req.body?.refresh_token, req.body?.rotation_nonce));
   }),
 );
 
@@ -449,7 +420,8 @@ router.delete(
     if (!refresh_token) throw new AppError(400, 'Refresh token is required');
 
     const hashedToken = hashToken(refresh_token);
-    await query('DELETE FROM refresh_tokens WHERE token_hash = $1 AND user_id = $2', [
+    await query(`DELETE FROM refresh_tokens WHERE user_id = $2 AND
+      (token_hash = $1 OR id = (SELECT session_id FROM refresh_token_rotations WHERE token_hash = $1))`, [
       hashedToken,
       req.user!.userId,
     ]);

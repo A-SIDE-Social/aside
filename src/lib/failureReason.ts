@@ -1,6 +1,8 @@
 // Only fixed categories may become metric labels. Never use exception messages,
 // URLs, provider response bodies, or values supplied by a client.
 export const failureReasons = [
+  'refresh_invalid', 'refresh_unknown', 'refresh_revoked', 'refresh_idle_expired',
+  'refresh_inactive_account', 'refresh_reused', 'refresh_superseded',
   'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
   'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
   'key_legacy_recovery',
