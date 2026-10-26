@@ -334,8 +334,9 @@ class _AuthInterceptor extends Interceptor {
   Future<({String accessToken, String refreshToken})> _performRefresh(
       String refreshToken) async {
     final nonce = await _secureStorage.refreshNonce(refreshToken);
-    if (await _secureStorage.getRefreshToken() != refreshToken)
+    if (await _secureStorage.getRefreshToken() != refreshToken) {
       throw const _SessionChanged();
+    }
     Duration boundedTimeout(Duration? configured) {
       const limit = Duration(seconds: 30);
       return configured == null ||
