@@ -388,7 +388,7 @@ class _AuthInterceptor extends Interceptor {
         );
       }
       if (!await _secureStorage.commitRefresh(
-          refreshToken, token, nextRefreshToken as String?)) {
+          refreshToken, token, nextRefreshToken)) {
         throw const _SessionChanged();
       }
       return (
