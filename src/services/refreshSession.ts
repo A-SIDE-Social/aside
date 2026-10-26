@@ -53,7 +53,8 @@ export async function refreshSession(credential: unknown, nonce: unknown) {
     if (!session) throw rejected('refresh_unknown');
     if (session.deleted_at) throw rejected('refresh_inactive_account');
     if (session.revoked_at) throw rejected('refresh_revoked');
-    if (!session.live) throw rejected('refresh_idle_expired');
+    if (!session.live) throw rejected(session.rotation_enabled
+      ? 'refresh_idle_expired' : 'refresh_legacy_expired');
 
     // Legacy credentials migrate only while their original session is valid.
     // No expired/revoked session is revived, and signatures are never bypassed.
@@ -68,12 +69,15 @@ export async function refreshSession(credential: unknown, nonce: unknown) {
         if (typeof payload === 'string' || payload.userId !== session.user_id) {
           throw new Error('Invalid session');
         }
-      } catch { throw rejected('refresh_invalid'); }
+      } catch (error) {
+        throw rejected(error instanceof jwt.TokenExpiredError
+          ? 'refresh_legacy_expired' : 'refresh_invalid');
+      }
     }
 
     if (session.token_hash !== fingerprint) {
       const previous = (await client.query(
-        'SELECT request_hash, next_hash FROM refresh_token_rotations WHERE token_hash = $1',
+        'SELECT request_hash, next_hash, used_at FROM refresh_token_rotations WHERE token_hash = $1',
         [fingerprint],
       )).rows[0];
       if (!previous) throw rejected('refresh_unknown');
@@ -84,9 +88,18 @@ export async function refreshSession(credential: unknown, nonce: unknown) {
         committed = true;
         throw rejected('refresh_reused');
       }
-      // An old, already acknowledged retry cannot revoke a newer session or
-      // mint another credential. The client keeps its newer saved credential.
-      if (previous.next_hash !== session.token_hash) throw rejected('refresh_superseded', 409);
+      if (previous.next_hash !== session.token_hash) {
+        // Briefly tolerate overlapping acknowledged attempts, without minting
+        // credentials. Beyond this window, replay ends the session even if
+        // both the old token and its retry secret were copied.
+        if (Date.now() - new Date(previous.used_at).getTime() <= 60000) {
+          throw rejected('refresh_superseded', 409);
+        }
+        await client.query('UPDATE refresh_tokens SET revoked_at = clock_timestamp() WHERE id = $1', [session.id]);
+        await client.query('COMMIT');
+        committed = true;
+        throw rejected('refresh_reused');
+      }
       const next = successor(session.id, credential);
       await client.query('COMMIT');
       committed = true;

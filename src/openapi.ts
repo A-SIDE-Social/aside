@@ -375,9 +375,9 @@ export const openApiSpec = {
     },
     '/auth/session': {
       delete: {
+        security: [],
         tags: ['Auth'],
         summary: 'End a session (logout)',
-        security: [{ BearerAuth: [] }],
         requestBody: {
           required: true,
           content: {

@@ -3,6 +3,7 @@
 export const failureReasons = [
   'refresh_invalid', 'refresh_unknown', 'refresh_revoked', 'refresh_idle_expired',
   'refresh_inactive_account', 'refresh_reused', 'refresh_superseded',
+  'refresh_legacy_expired',
   'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
   'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
   'key_legacy_recovery',

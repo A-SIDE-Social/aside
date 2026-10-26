@@ -5,6 +5,7 @@ import { app, query, createTestUser, setupTestServer } from './helpers';
 import { config } from '../src/config';
 import { generateRefreshToken } from '../src/middleware/auth';
 import { newSessionCredential, refreshSession } from '../src/services/refreshSession';
+import { performanceRegistry } from '../src/performance';
 
 setupTestServer();
 const nonce = () => crypto.randomBytes(32).toString('base64url');
@@ -63,6 +64,16 @@ test('acknowledged old retries do not revoke or mint credentials for a newer gen
   expect((await refreshSession(third.refresh_token!,nonce())).access_token).toBeTruthy();
 });
 
+test('old acknowledged replay after the overlap window revokes the active session', async () => {
+  const f = await fixture();
+  const attempt = nonce();
+  const second = await refreshSession(f.token, attempt);
+  const third = await refreshSession(second.refresh_token!, nonce());
+  await query("UPDATE refresh_token_rotations SET used_at=now()-INTERVAL '2 minutes' WHERE token_hash=$1", [hash(f.token)]);
+  await reason(f.token, attempt, 'refresh_reused');
+  await reason(third.refresh_token!, nonce(), 'refresh_revoked');
+});
+
 test.each(['idle','revoked','deleted'] as const)('%s sessions are never resurrected', async kind => {
   const f = await fixture();
   if(kind==='idle') await query("UPDATE refresh_tokens SET expires_at=now()-INTERVAL '1 second' WHERE id=$1",[f.id]);
@@ -95,7 +106,7 @@ test('bad JWT signatures and expired legacy JWTs cannot migrate, even with a mat
     const value = jwt.sign({userId:f.user.id},expired?config.jwtRefreshSecret:'wrong-fixture-secret',
       {expiresIn:expired?-1:3600});
     await query('UPDATE refresh_tokens SET token_hash=$2 WHERE id=$1',[f.id,hash(value)]);
-    await reason(value,nonce(),'refresh_invalid');
+    await reason(value,nonce(),expired?'refresh_legacy_expired':'refresh_invalid');
   }
 });
 
@@ -115,6 +126,25 @@ test('malformed and unknown requests cannot revoke another session',async()=>{
   expect((await refreshSession(f.token,nonce())).access_token).toBeTruthy();
 });
 
+test('explicit logout works without an access token and cannot delete another session', async () => {
+  const f = await fixture();
+  const other = await fixture();
+  await request(app).delete('/v1/auth/session').send({refresh_token: f.token}).expect(200);
+  await reason(f.token, nonce(), 'refresh_unknown');
+  expect((await refreshSession(other.token, nonce())).access_token).toBeTruthy();
+});
+
+test('logout racing renewal cannot leave a rotated session active', async () => {
+  for (let i = 0; i < 8; i++) {
+    const f = await fixture();
+    await Promise.allSettled([
+      refreshSession(f.token, nonce()),
+      request(app).delete('/v1/auth/session').send({refresh_token: f.token}).expect(200),
+    ]);
+    expect((await query('SELECT id FROM refresh_tokens WHERE id=$1', [f.id])).rows).toHaveLength(0);
+  }
+});
+
 test('modern login opts into rotation; access tokens remain short lived',async()=>{
   const email='rolling-session@example.test';
   await request(app).post('/v1/auth/request-otp').send({email}).expect(200);
@@ -123,4 +153,25 @@ test('modern login opts into rotation; access tokens remain short lived',async()
   expect(response.body.refresh_token).toMatch(/^rt2\./);
   const access=jwt.decode(response.body.access_token) as jwt.JwtPayload;
   expect(access.exp!-access.iat!).toBe(900);
+});
+
+test('refresh diagnostics expose only fixed categories, never protocol values', async () => {
+  const f = await fixture();
+  const attempt = nonce();
+  const before = process.env.PERFORMANCE_METRICS;
+  process.env.PERFORMANCE_METRICS = '1';
+  try {
+    await request(app).post('/v1/auth/refresh')
+      .send({refresh_token:f.token, rotation_nonce:attempt}).expect(200);
+    await request(app).post('/v1/auth/refresh')
+      .send({refresh_token:f.token, rotation_nonce:nonce()}).expect(401);
+    const metrics = await performanceRegistry.metrics();
+    expect(metrics).toContain('reason="refresh_reused"');
+    for (const value of [f.token, attempt, f.id, f.user.id, hash(f.token)]) {
+      expect(metrics).not.toContain(value);
+    }
+  } finally {
+    if (before === undefined) delete process.env.PERFORMANCE_METRICS;
+    else process.env.PERFORMANCE_METRICS = before;
+  }
 });

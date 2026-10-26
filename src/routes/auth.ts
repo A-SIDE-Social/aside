@@ -2,7 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { PoolClient } from 'pg';
 import { query } from '../db/pool';
-import { authenticate, generateAccessToken, generateRefreshToken } from '../middleware/auth';
+import { generateAccessToken, generateRefreshToken } from '../middleware/auth';
 import { authLimit } from '../middleware/rateLimit';
 import { asyncHandler, resolveMediaUrl } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
@@ -414,17 +414,21 @@ router.post(
 // DELETE /session
 router.delete(
   '/session',
-  authenticate,
   asyncHandler(async (req: any, res: any) => {
-    const { refresh_token } = req.body;
-    if (!refresh_token) throw new AppError(400, 'Refresh token is required');
+    const refresh_token = req.body?.refresh_token;
+    if (typeof refresh_token !== 'string' || !refresh_token || refresh_token.length > 4096) {
+      throw new AppError(400, 'Refresh token is required');
+    }
 
+    // Possession of the unguessable refresh credential authorizes revocation
+    // of that session only. Logout must work after the access JWT expires and
+    // must not create new credentials as a side effect. Unknown tokens receive
+    // the same idempotent response. Resolve a stable ID before a racing rotate.
     const hashedToken = hashToken(refresh_token);
-    await query(`DELETE FROM refresh_tokens WHERE user_id = $2 AND
-      (token_hash = $1 OR id = (SELECT session_id FROM refresh_token_rotations WHERE token_hash = $1))`, [
-      hashedToken,
-      req.user!.userId,
-    ]);
+    const session = (await query(`SELECT id FROM refresh_tokens WHERE
+      token_hash = $1 OR id = (SELECT session_id FROM refresh_token_rotations WHERE token_hash = $1)`,
+    [hashedToken])).rows[0];
+    if (session) await query('DELETE FROM refresh_tokens WHERE id = $1', [session.id]);
 
     res.json({ message: 'Session ended' });
   }),
