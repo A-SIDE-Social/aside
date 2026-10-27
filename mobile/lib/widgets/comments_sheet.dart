@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/config/app_colors.dart';
+import '../core/network/post_availability.dart';
 import '../models/comment.dart';
 import '../providers/providers.dart';
 import 'comment_tile.dart';
@@ -31,6 +32,10 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   bool _isSending = false;
+  bool _postUnavailable = false;
+  bool get _cannotSend =>
+      _postUnavailable ||
+      isPostUnavailable(ref.read(commentsProvider(widget.postId)).error);
   String? _editingCommentId;
 
   /// The comment the user is currently replying to, if any. Stored as
@@ -96,14 +101,14 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
 
   Future<void> _send() async {
     final body = _controller.text.trim();
-    if (body.isEmpty || _isSending) return;
+    if (body.isEmpty || _isSending || _cannotSend) return;
 
+    final isNewComment = _editingCommentId == null;
     setState(() => _isSending = true);
     try {
       final api = ref.read(apiServiceProvider);
       if (_editingCommentId != null) {
         await api.editComment(_editingCommentId!, body);
-        _editingCommentId = null;
       } else {
         await api.createComment(
           widget.postId,
@@ -111,11 +116,19 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
           replyToCommentId: _replyingTo?.id,
         );
       }
+      if (!mounted) return;
       _controller.clear();
-      setState(() => _replyingTo = null);
+      setState(() {
+        _editingCommentId = null;
+        _replyingTo = null;
+      });
       ref.invalidate(commentsProvider(widget.postId));
     } catch (e) {
       if (mounted) {
+        if (isNewComment && isPostUnavailable(e)) {
+          setState(() => _postUnavailable = true);
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to send comment: $e')),
         );
@@ -292,7 +305,9 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                   child: CircularProgressIndicator(),
                 ),
                 error: (error, _) => Center(
-                  child: Text('Failed to load comments'),
+                  child: Text(isPostUnavailable(error)
+                      ? 'This post is no longer available.'
+                      : 'Failed to load comments'),
                 ),
               ),
             ),
@@ -349,6 +364,14 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                 ),
               ),
 
+            if (_cannotSend)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(unavailableCommentNotice),
+              ),
+
+            // Keep the field editable/selectable so the unsent draft can be
+            // copied. Only submission is disabled; no failed send is success.
             // Input bar
             Container(
               decoration: BoxDecoration(
@@ -435,7 +458,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                                     : Icons.send_rounded,
                                 color: colors.textPrimary,
                               ),
-                        onPressed: _isSending ? null : _send,
+                        onPressed: _isSending || _cannotSend ? null : _send,
                       ),
                     ],
                   ),

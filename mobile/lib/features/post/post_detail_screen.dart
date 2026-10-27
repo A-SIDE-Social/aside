@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/config/app_colors.dart';
 import '../../core/network/api_client.dart' show ApiException;
+import '../../core/network/post_availability.dart';
 import '../../widgets/widgets.dart';
 import '../../providers/providers.dart';
 import '../../models/models.dart';
@@ -29,6 +30,11 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
   final _commentController = TextEditingController();
   final _commentFocusNode = FocusNode();
   bool _isSending = false;
+  bool _postUnavailable = false;
+  bool get _cannotSend =>
+      _postUnavailable ||
+      isPostUnavailable(ref.read(_postProvider(widget.postId)).error) ||
+      isPostUnavailable(ref.read(commentsProvider(widget.postId)).error);
   String? _editingCommentId;
 
   /// The comment the user is replying to, if any. Stored as the full
@@ -160,16 +166,15 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
 
   Future<void> _sendComment() async {
     final body = _commentController.text.trim();
-    if (body.isEmpty || _isSending) return;
+    if (body.isEmpty || _isSending || _cannotSend) return;
 
+    final isNewComment = _editingCommentId == null;
     setState(() => _isSending = true);
 
     try {
       final api = ref.read(apiServiceProvider);
-      final isNewComment = _editingCommentId == null;
       if (_editingCommentId != null) {
         await api.editComment(_editingCommentId!, body);
-        _editingCommentId = null;
       } else {
         await api.createComment(
           widget.postId,
@@ -177,9 +182,13 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
           replyToCommentId: _replyingTo?.id,
         );
       }
+      if (!mounted) return;
       _commentController.clear();
-      setState(() => _replyingTo = null);
-      if (mounted) FocusScope.of(context).unfocus();
+      setState(() {
+        _editingCommentId = null;
+        _replyingTo = null;
+      });
+      FocusScope.of(context).unfocus();
       ref.invalidate(commentsProvider(widget.postId));
       if (isNewComment) {
         ref
@@ -188,6 +197,10 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
       }
     } catch (e) {
       if (mounted) {
+        if (isNewComment && isPostUnavailable(e)) {
+          setState(() => _postUnavailable = true);
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to send comment: $e')),
         );
@@ -574,6 +587,14 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                         ),
                       ),
 
+                    if (_cannotSend)
+                      const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Text(unavailableCommentNotice),
+                      ),
+
+                    // Preserve the draft for copying when the post disappears.
                     // Comment input bar
                     Container(
                       decoration: BoxDecoration(
@@ -649,7 +670,9 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                                             : Icons.send_rounded,
                                         color: colors.textPrimary,
                                       ),
-                                onPressed: _isSending ? null : _sendComment,
+                                onPressed: _isSending || _cannotSend
+                                    ? null
+                                    : _sendComment,
                               ),
                             ],
                           ),

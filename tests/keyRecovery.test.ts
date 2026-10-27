@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import request from 'supertest';
 import { app, pool, query, createTestUser, setupTestServer } from './helpers';
+import { performanceRegistry } from '../src/performance';
 
 setupTestServer();
 const b64 = (n: number) => crypto.randomBytes(n).toString('base64');
@@ -126,6 +127,50 @@ test('reconciliation does not wait on or lock prekeys being consumed by peers', 
   } finally {
     await consuming.query('ROLLBACK');
     consuming.release();
+  }
+});
+
+test('registry writes do not block behind unrelated account foreign-key readers', async () => {
+  const {token, user} = await createTestUser();
+  const referencing = await pool.connect();
+  try {
+    await referencing.query('BEGIN');
+    // PostgreSQL takes this lock for foreign-key checks on ordinary social
+    // writes. Those readers must not block updates to a separate key registry.
+    await referencing.query('SELECT id FROM users WHERE id=$1 FOR KEY SHARE', [user.id]);
+    await upload(token, bundle()).timeout({response:1000}).expect(200);
+  } finally {
+    await referencing.query('ROLLBACK');
+    referencing.release();
+  }
+});
+
+test('maximum upload batches retain fixed timing stages without protocol values', async () => {
+  const {token, user} = await createTestUser();
+  const keys = {...bundle(),
+    one_time_prekeys:Array.from({length:200}, (_,i) => ({id:i+1, public:b64(33)})),
+    kyber_prekeys:Array.from({length:100}, (_,i) => ({id:i+1, public:b64(1568), signature:b64(64)})),
+  };
+  const enabled = process.env.PERFORMANCE_METRICS;
+  process.env.PERFORMANCE_METRICS = '1';
+  performanceRegistry.resetMetrics();
+  try {
+    await upload(token, keys).expect(200);
+    await upload(token, keys).expect(200);
+    const metric = await performanceRegistry.getSingleMetric('aside_operation_stage_seconds')!.get();
+    const stages = new Set(metric.values.map(value => value.labels.stage));
+    for (const stage of ['prehandler','handler','pool','lock','registry','one_time','kyber','commit']) {
+      expect(stages.has(`key_upload_${stage}`)).toBe(true);
+    }
+    const serialized = JSON.stringify(await performanceRegistry.getMetricsAsJSON());
+    for (const value of [token, user.id, keys.identity_key_pub, keys.kyber_prekeys[0].public]) {
+      expect(serialized).not.toContain(value);
+    }
+    expect((await query('SELECT COUNT(*)::int AS n FROM one_time_prekeys WHERE user_id=$1', [user.id])).rows[0].n).toBe(200);
+    expect((await query('SELECT COUNT(*)::int AS n FROM kyber_prekeys WHERE user_id=$1', [user.id])).rows[0].n).toBe(100);
+  } finally {
+    if (enabled === undefined) delete process.env.PERFORMANCE_METRICS;
+    else process.env.PERFORMANCE_METRICS = enabled;
   }
 });
 
