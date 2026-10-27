@@ -37,7 +37,9 @@ const stageDuration = new Histogram({ name: 'aside_operation_stage_seconds', hel
   labelNames: ['stage', 'outcome'] as const, buckets, registers: [performanceRegistry] });
 export const performanceStages = ['otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout',
   'feed_handler', 'feed_subscription', 'feed_select', 'feed_media', 'feed_comment_counts',
-  'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts'] as const;
+  'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts',
+  'key_upload_prehandler', 'key_upload_handler', 'key_upload_pool', 'key_upload_lock',
+  'key_upload_registry', 'key_upload_one_time', 'key_upload_kyber', 'key_upload_commit'] as const;
 type PerformanceStage = typeof performanceStages[number];
 const feedDuration = new Histogram({
   name: 'aside_feed_duration_seconds', help: 'Authenticated feed handler duration by fixed page, filter and declared client categories',
@@ -277,6 +279,21 @@ export function measureMessageHandler(handler: (req: Request, res: Response) => 
   return (req: Request, res: Response) => {
     recordMessagePrehandler(req);
     return measureStage('message_handler', () => handler(req, res));
+  };
+}
+
+// Fixed timing categories only: no bundle contents, sizes, keys, identifiers,
+// request headers or dynamic labels. Separate transfer/parsing/auth time from
+// pool acquisition, registry contention and the existing batched DB work.
+export function measureKeyUploadHandler(handler: (req: Request, res: Response) => Promise<void>) {
+  return (req: Request, res: Response) => {
+    if (!performanceEnabled()) return handler(req, res);
+    const start = requestStarts.get(req);
+    if (start !== undefined) {
+      requestStarts.delete(req);
+      recordStage('key_upload_prehandler', start, true);
+    }
+    return measureStage('key_upload_handler', () => handler(req, res));
   };
 }
 

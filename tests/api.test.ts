@@ -3485,6 +3485,24 @@ describe('Comments', () => {
     expect(res.body.comment.body).toBe('Nice photo!');
   });
 
+  test.each(['missing', 'deleted', 'expired', 'disconnected'])(
+    'comment access preserves the same private 404 for a %s post', async (condition) => {
+      let target = postId;
+      if (condition === 'missing') target = '00000000-0000-4000-8000-000000000001';
+      if (condition === 'deleted') await query('UPDATE posts SET deleted_at=now() WHERE id=$1', [target]);
+      if (condition === 'expired') await query("UPDATE posts SET expires_at=now()-INTERVAL '1 hour' WHERE id=$1", [target]);
+      if (condition === 'disconnected') await query('DELETE FROM follows WHERE follower_id=$1 AND followee_id=$2', [userB.id, userA.id]);
+      const before = (await query('SELECT COUNT(*)::int AS n FROM comments WHERE post_id=$1', [target])).rows[0].n;
+      const create = await request(app).post(`/v1/posts/${target}/comments`)
+        .set('Authorization', `Bearer ${tokenB}`).send({body:'Unsent draft'}).expect(404);
+      const list = await request(app).get(`/v1/posts/${target}/comments`)
+        .set('Authorization', `Bearer ${tokenB}`).expect(404);
+      expect(create.body).toEqual({error:'Post not found'});
+      expect(list.body).toEqual(create.body);
+      expect((await query('SELECT COUNT(*)::int AS n FROM comments WHERE post_id=$1', [target])).rows[0].n).toBe(before);
+    },
+  );
+
   test('GET /v1/posts/:id/comments lists comments', async () => {
     await request(app)
       .post(`/v1/posts/${postId}/comments`)
