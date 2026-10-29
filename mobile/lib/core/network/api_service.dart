@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -48,6 +49,29 @@ class ApiService {
           'Content-Type': contentType,
           'Content-Length': bytes.length,
         },
+      ),
+      onSendProgress: onSendProgress,
+      cancelToken: cancelToken,
+    );
+  }
+
+  /// Stream large videos without buffering the entire file in Dart memory.
+  /// Active uploads use the composer's stall watchdog rather than a fixed
+  /// one-minute send deadline. Presigned requests carry no account credentials.
+  Future<void> uploadFile(
+    String url,
+    File file,
+    String contentType, {
+    ProgressCallback? onSendProgress,
+    CancelToken? cancelToken,
+  }) async {
+    final length = await file.length();
+    await _uploadDio.put(
+      url,
+      data: file.openRead(),
+      options: Options(
+        sendTimeout: Duration.zero,
+        headers: {'Content-Type': contentType, 'Content-Length': length},
       ),
       onSendProgress: onSendProgress,
       cancelToken: cancelToken,

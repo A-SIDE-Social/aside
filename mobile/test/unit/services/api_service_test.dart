@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -29,6 +32,43 @@ void main() {
   setUpAll(() {
     registerFallbackValue(RequestOptions(path: ''));
     registerFallbackValue(Options());
+  });
+
+  test('video files stream to presigned storage without account credentials',
+      () async {
+    final directory =
+        await Directory.systemTemp.createTemp('aside-video-upload-');
+    final file = File('${directory.path}/clip.mp4');
+    final bytes = List<int>.generate(256 * 1024, (index) => index % 251);
+    await file.writeAsBytes(bytes);
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+      await directory.delete(recursive: true);
+    });
+    final received = Completer<List<int>>();
+    server.listen((request) async {
+      expect(request.method, 'PUT');
+      expect(request.headers.contentLength, bytes.length);
+      expect(request.headers.contentType!.mimeType, 'video/mp4');
+      expect(request.headers.value('Authorization'), isNull);
+      expect(request.headers.value('Cookie'), isNull);
+      final body =
+          await request.fold<List<int>>([], (all, chunk) => all..addAll(chunk));
+      request.response.statusCode = 200;
+      await request.response.close();
+      received.complete(body);
+    });
+    var sentBytes = 0;
+    await apiService
+        .uploadFile('http://127.0.0.1:${server.port}/upload', file, 'video/mp4',
+            onSendProgress: (sent, total) {
+      sentBytes = sent;
+      expect(total, bytes.length);
+    });
+    expect(await received.future, bytes);
+    expect(sentBytes, bytes.length);
+    expect(await file.exists(), isTrue);
   });
 
   test('voice upload is replayable binary and excludes payload logging',

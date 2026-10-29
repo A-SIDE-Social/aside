@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:aside/features/post/create_post_screen.dart';
@@ -9,6 +10,8 @@ import 'package:aside/providers/api_provider.dart';
 import 'package:aside/providers/auth_provider.dart';
 import 'package:aside/providers/draft_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +21,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../helpers/fixtures.dart';
 import '../../../helpers/mocks.dart';
 import '../../../helpers/voice_fakes.dart';
+
+class _VideoPlatform extends VideoPlayerPlatform {
+  @override
+  Future<void> init() async {}
+  @override
+  Future<int?> createWithOptions(VideoCreationOptions options) async => 1;
+  @override
+  Stream<VideoEvent> videoEventsFor(int playerId) => const Stream.empty();
+  @override
+  Future<void> dispose(int playerId) async {}
+}
 
 class _Auth extends AuthNotifier {
   @override
@@ -105,6 +119,86 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, text);
   }
+
+  for (final source in [
+    'Choose video from library (20 min)',
+    'Record video (20 min)'
+  ]) {
+    testWidgets(
+        'over-limit video from $source keeps the post choices available',
+        (tester) async {
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/image_picker'),
+          (_) async => 'fixture.mp4');
+      messenger.setMockMethodCallHandler(
+          const MethodChannel('video_compress'),
+          (_) async =>
+              jsonEncode({'path': 'fixture.mp4', 'duration': 1200001}));
+      addTearDown(() {
+        messenger.setMockMethodCallHandler(
+            const MethodChannel('plugins.flutter.io/image_picker'), null);
+        messenger.setMockMethodCallHandler(
+            const MethodChannel('video_compress'), null);
+      });
+      await open(tester);
+      await tester.tap(find.text(source));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Videos can be up to 20 minutes'),
+          findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(find.text('Text post'), findsOneWidget);
+      expect(find.text('New Post'), findsOneWidget);
+      verifyNever(() => api.getUploadUrls(any()));
+    });
+  }
+
+  testWidgets(
+      'a 30 second library video is accepted and rechecked before publishing a draft',
+      (tester) async {
+    final original = VideoPlayerPlatform.instance;
+    VideoPlayerPlatform.instance = _VideoPlatform();
+    addTearDown(() => VideoPlayerPlatform.instance = original);
+    final file = File('${directory.path}/video.mp4')
+      ..writeAsBytesSync([1, 2, 3]);
+    var duration = 30000;
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/image_picker'),
+        (_) async => file.path);
+    messenger.setMockMethodCallHandler(const MethodChannel('video_compress'),
+        (_) async => jsonEncode({'path': file.path, 'duration': duration}));
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/image_picker'), null);
+      messenger.setMockMethodCallHandler(
+          const MethodChannel('video_compress'), null);
+    });
+    await open(tester);
+    await tester.tap(find.text('Choose video from library (20 min)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Choose another video'), findsNothing);
+    expect(find.byType(TextField), findsWidgets);
+    // Simulate an existing file changing after selection; sharing must re-read
+    // duration rather than trust picker options or the saved draft.
+    duration = 1200001;
+    await tester.tap(find.text('Share'));
+    await tester.pumpAndSettle();
+    expect(
+        find.textContaining('Videos can be up to 20 minutes'), findsOneWidget);
+    verifyNever(() => api.getUploadUrls(any()));
+    verifyNever(() => api.createPost(
+        caption: any(named: 'caption'),
+        media: any(named: 'media'),
+        groupIds: any(named: 'groupIds'),
+        hideAfter24h: any(named: 'hideAfter24h'),
+        voiceCaptionId: any(named: 'voiceCaptionId')));
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.text('New Post'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('new text posts request sentence capitalization', (tester) async {
     await open(tester);
