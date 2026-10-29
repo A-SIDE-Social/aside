@@ -120,10 +120,7 @@ void main() {
     await tester.enterText(find.byType(TextField).first, text);
   }
 
-  for (final source in [
-    'Choose video from library (20 min)',
-    'Record video (20 min)'
-  ]) {
+  for (final source in ['Choose video from library', 'Record video']) {
     testWidgets(
         'over-limit video from $source keeps the post choices available',
         (tester) async {
@@ -131,10 +128,8 @@ void main() {
       messenger.setMockMethodCallHandler(
           const MethodChannel('plugins.flutter.io/image_picker'),
           (_) async => 'fixture.mp4');
-      messenger.setMockMethodCallHandler(
-          const MethodChannel('video_compress'),
-          (_) async =>
-              jsonEncode({'path': 'fixture.mp4', 'duration': 1200001}));
+      messenger.setMockMethodCallHandler(const MethodChannel('video_compress'),
+          (_) async => jsonEncode({'path': 'fixture.mp4', 'duration': 180001}));
       addTearDown(() {
         messenger.setMockMethodCallHandler(
             const MethodChannel('plugins.flutter.io/image_picker'), null);
@@ -144,8 +139,8 @@ void main() {
       await open(tester);
       await tester.tap(find.text(source));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Videos can be up to 20 minutes'),
-          findsOneWidget);
+      expect(
+          find.textContaining('Videos can be up to 3 minutes'), findsOneWidget);
       await tester.tap(find.text('OK'));
       await tester.pumpAndSettle();
       expect(find.text('Text post'), findsOneWidget);
@@ -176,17 +171,17 @@ void main() {
           const MethodChannel('video_compress'), null);
     });
     await open(tester);
-    await tester.tap(find.text('Choose video from library (20 min)'));
+    await tester.tap(find.text('Choose video from library'));
     await tester.pumpAndSettle();
     expect(find.text('Choose another video'), findsNothing);
     expect(find.byType(TextField), findsWidgets);
     // Simulate an existing file changing after selection; sharing must re-read
     // duration rather than trust picker options or the saved draft.
-    duration = 1200001;
+    duration = 180001;
     await tester.tap(find.text('Share'));
     await tester.pumpAndSettle();
     expect(
-        find.textContaining('Videos can be up to 20 minutes'), findsOneWidget);
+        find.textContaining('Videos can be up to 3 minutes'), findsOneWidget);
     verifyNever(() => api.getUploadUrls(any()));
     verifyNever(() => api.createPost(
         caption: any(named: 'caption'),

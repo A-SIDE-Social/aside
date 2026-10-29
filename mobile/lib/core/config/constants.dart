@@ -9,7 +9,7 @@ class AppLimits {
   static const int maxPhotosPerPost = 10;
   static const int maxGroups = 10;
   static const int maxVideoStorySeconds = 30;
-  static const int maxVideoPostSeconds = 20 * 60;
+  static const int maxVideoPostSeconds = 3 * 60;
   static const int maxInvites = 25;
   static const int maxBioLength = 160;
   // 2,200 matches Instagram. Generous enough that voice-dictated captions

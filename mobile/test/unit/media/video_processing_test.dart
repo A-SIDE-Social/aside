@@ -11,9 +11,9 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
-  for (final duration in [30000, 1200000]) {
+  for (final duration in [30000, 180000]) {
     test(
-        'allows a $duration ms post video, including the exact 20 minute boundary',
+        'allows a $duration ms post video, including the exact 3 minute boundary',
         () async {
       messenger.setMockMethodCallHandler(
           channel,
@@ -22,7 +22,7 @@ void main() {
       await validatePostVideoDuration('fixture.mp4');
     });
   }
-  for (final duration in [1200001, 1800000, null, 0, -1, 'NaN', 'Infinity']) {
+  for (final duration in [180001, 240000, null, 0, -1, 'NaN', 'Infinity']) {
     test('rejects an over-limit or unverifiable video ($duration)', () async {
       messenger.setMockMethodCallHandler(
           channel,

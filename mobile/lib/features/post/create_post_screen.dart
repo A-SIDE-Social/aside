@@ -170,7 +170,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
               ),
               ListTile(
                 leading: const Icon(Icons.videocam_outlined),
-                title: Text('Record video (${_maxVideoSeconds ~/ 60} min)'),
+                title: const Text('Record video'),
                 onTap: () {
                   didPick = true;
                   Navigator.pop(ctx);
@@ -181,8 +181,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
               ),
               ListTile(
                 leading: const Icon(Icons.video_library_outlined),
-                title: Text(
-                    'Choose video from library (${_maxVideoSeconds ~/ 60} min)'),
+                title: const Text('Choose video from library'),
                 onTap: () {
                   didPick = true;
                   Navigator.pop(ctx);
@@ -347,7 +346,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
             ),
             ListTile(
               leading: const Icon(Icons.videocam_outlined),
-              title: Text('Record video (${_maxVideoSeconds ~/ 60} min)'),
+              title: const Text('Record video'),
               onTap: () {
                 Navigator.pop(ctx);
                 _recordVideo();
@@ -355,8 +354,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
             ),
             ListTile(
               leading: const Icon(Icons.video_library_outlined),
-              title: Text(
-                  'Choose video from library (${_maxVideoSeconds ~/ 60} min)'),
+              title: const Text('Choose video from library'),
               onTap: () {
                 Navigator.pop(ctx);
                 _pickVideoFromLibrary();
