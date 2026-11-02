@@ -1,7 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import { Histogram } from '@prometheus-io/client';
-import { measureFeedHandler, measureHttp, measureMessageHandler, measureStage, performanceRegistry, startPerformanceServer } from '../src/performance';
+import { measureFeedHandler, measureHttp, measureKeyUploadHandler, measureMessageHandler, measureStage, performanceRegistry, startPerformanceServer } from '../src/performance';
 import { AppError, errorHandler } from '../src/middleware/errorHandler';
 import { authenticate } from '../src/middleware/auth';
 import { EventEmitter } from 'events';
@@ -49,6 +49,7 @@ test('does not instrument requests or start listener when disabled', async () =>
   expect(startPerformanceServer({ totalCount: 0, idleCount: 0, waitingCount: 0 })).toBeUndefined();
   await measureStage('otp_delivery', async () => 42);
   await measureFeedHandler(async (_req, res) => { res.statusCode = 200; })({} as any, {} as any);
+  await measureKeyUploadHandler(async (_req, res) => { res.statusCode = 200; })({} as any, {} as any);
   expect((await performanceRegistry.getSingleMetric('aside_operation_stage_seconds')!.get()).values).toHaveLength(0);
   expect((await performanceRegistry.getSingleMetric('aside_feed_duration_seconds')!.get()).values).toHaveLength(0);
 });
@@ -204,6 +205,33 @@ test('separates time before the message handler from handler work without changi
     const failure = new Error('private detail');
     await expect(measureStage('message_fanout', async () => { throw failure; })).rejects.toBe(failure);
     expect(JSON.stringify(await performanceRegistry.getMetricsAsJSON())).not.toContain('private');
+  } finally { clock.mockRestore(); }
+});
+
+test('key upload timings separate prehandler work and preserve private failures', async () => {
+  let now = 0n;
+  const clock = jest.spyOn(process.hrtime, 'bigint').mockImplementation(() => now);
+  try {
+    const req = { originalUrl: '/v1/devices/keys/upload?private-query', method: 'POST',
+      body: { identity_key_pub: 'private-key', owner_user_id: 'private-owner' } };
+    const res = Object.assign(new EventEmitter(), {statusCode:200, writableFinished:true, locals:{}});
+    measureHttp(req as any, res as any, () => {});
+    now = 2_000_000_000n;
+    const failure = new Error('private failure');
+    await expect(measureKeyUploadHandler(async () => {
+      await measureStage('key_upload_lock', async () => { now += 10_000_000n; });
+      throw failure;
+    })(req as any, res as any)).rejects.toBe(failure);
+    const metric = await (performanceRegistry.getSingleMetric('aside_operation_stage_seconds') as Histogram<string>).get();
+    expect(metric.values.filter(v => v.metricName?.endsWith('_sum'))).toEqual(expect.arrayContaining([
+      expect.objectContaining({value:2, labels:{stage:'key_upload_prehandler', outcome:'ok'}}),
+      expect.objectContaining({value:0.01, labels:{stage:'key_upload_handler', outcome:'error'}}),
+      expect.objectContaining({value:0.01, labels:{stage:'key_upload_lock', outcome:'ok'}}),
+    ]));
+    const serialized = JSON.stringify(await performanceRegistry.getMetricsAsJSON());
+    for (const value of ['private-query', 'private-key', 'private-owner', 'private failure']) {
+      expect(serialized).not.toContain(value);
+    }
   } finally { clock.mockRestore(); }
 });
 

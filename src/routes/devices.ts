@@ -3,6 +3,7 @@ import { query, getClient } from '../db/pool';
 import { asyncHandler } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import type { PoolClient } from 'pg';
+import { measureKeyUploadHandler, measureStage } from '../performance';
 
 const router = Router();
 
@@ -13,7 +14,9 @@ function keyConflict(): AppError {
 async function lockRegistry(client: PoolClient, userId: string): Promise<void> {
   // Lock even when no registry row exists yet. Upload and revocation must not
   // interleave and leave a newly uploaded identity without its prekeys.
-  await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+  // The account key itself is not modified. NO KEY UPDATE still serializes
+  // registry writers/revocation, but permits unrelated FK checks (KEY SHARE).
+  await client.query('SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE', [userId]);
 }
 
 async function storePrekeys(
@@ -175,7 +178,7 @@ function decodeKyberPub(value: unknown, name: string): Buffer {
 // a depleted local bundle without resetting any consumed rows.
 router.post(
   '/keys/upload',
-  asyncHandler(async (req: any, res: any) => {
+  asyncHandler(measureKeyUploadHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
     if (req.body.owner_user_id !== undefined && req.body.owner_user_id !== userId) {
       throw new AppError(403, 'Encryption keys belong to a different account');
@@ -225,43 +228,45 @@ router.post(
       sig: decodeBytes(k?.signature, 64, `kyber_prekeys[${i}].signature`),
     }));
 
-    const client = await getClient();
+    const client = await measureStage('key_upload_pool', () => getClient());
     try {
       await client.query('BEGIN');
-      await lockRegistry(client, userId);
+      await measureStage('key_upload_lock', () => lockRegistry(client, userId));
 
-      const existing = await client.query(
-        `SELECT identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig
-         FROM device_keys WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE`,
-        [userId],
-      );
-      if (existing.rows.length > 0) {
-        const old = existing.rows[0];
-        if (!old.identity_key_pub.equals(identityPub) || old.signed_prekey_id !== spkId ||
-            !old.signed_prekey_pub.equals(spkPub) || !old.signed_prekey_sig.equals(spkSig)) {
-          throw keyConflict();
-        }
-      } else {
-        // A legacy local identity has no recorded owner. It may only reconcile
-        // with this account's existing registry, not silently register elsewhere.
-        if (req.body.existing_only === true) {
-          throw new AppError(409, 'Existing local keys require manual account recovery', 'key_legacy_recovery', 'key_recovery_required');
-        }
-        if (!kpks.length) {
-          throw new AppError(400, 'Initial upload requires Kyber prekeys', undefined, 'key_bundle_incomplete');
-        }
-        await client.query(
-          `INSERT INTO device_keys
-             (user_id, identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [userId, identityPub, spkId, spkPub, spkSig],
+      await measureStage('key_upload_registry', async () => {
+        const existing = await client.query(
+          `SELECT identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig
+           FROM device_keys WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE`,
+          [userId],
         );
-      }
+        if (existing.rows.length > 0) {
+          const old = existing.rows[0];
+          if (!old.identity_key_pub.equals(identityPub) || old.signed_prekey_id !== spkId ||
+              !old.signed_prekey_pub.equals(spkPub) || !old.signed_prekey_sig.equals(spkSig)) {
+            throw keyConflict();
+          }
+        } else {
+          // A legacy local identity has no recorded owner. It may only reconcile
+          // with this account's existing registry, not silently register elsewhere.
+          if (req.body.existing_only === true) {
+            throw new AppError(409, 'Existing local keys require manual account recovery', 'key_legacy_recovery', 'key_recovery_required');
+          }
+          if (!kpks.length) {
+            throw new AppError(400, 'Initial upload requires Kyber prekeys', undefined, 'key_bundle_incomplete');
+          }
+          await client.query(
+            `INSERT INTO device_keys
+               (user_id, identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [userId, identityPub, spkId, spkPub, spkSig],
+          );
+        }
+      });
 
-      await storePrekeys(client, userId, 'one_time_prekeys', otpks);
-      await storePrekeys(client, userId, 'kyber_prekeys', kpks);
+      await measureStage('key_upload_one_time', () => storePrekeys(client, userId, 'one_time_prekeys', otpks));
+      await measureStage('key_upload_kyber', () => storePrekeys(client, userId, 'kyber_prekeys', kpks));
 
-      await client.query('COMMIT');
+      await measureStage('key_upload_commit', () => client.query('COMMIT'));
       res.json({
         message: 'Keys uploaded',
         one_time_prekey_count: otpks.length,
@@ -273,7 +278,7 @@ router.post(
     } finally {
       client.release();
     }
-  }),
+  })),
 );
 
 // Read-only allocation bounds for this account's unchanged identity + signed
