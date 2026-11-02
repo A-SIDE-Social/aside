@@ -16,10 +16,14 @@ import time
 HISTOGRAMS = {'aside_http_duration_seconds', 'aside_db_pool_wait_seconds', 'aside_db_query_seconds', 'aside_operation_stage_seconds'}
 STAGES = {'otp_delivery', 'message_prehandler', 'message_handler', 'message_persist', 'message_fanout',
           'feed_handler', 'feed_subscription', 'feed_select', 'feed_media', 'feed_comment_counts',
-          'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts'}
+          'feed_comment_preview', 'feed_likes', 'feed_reactions', 'feed_older_posts',
+          'key_upload_prehandler', 'key_upload_handler', 'key_upload_pool', 'key_upload_lock',
+          'key_upload_registry', 'key_upload_one_time', 'key_upload_kyber', 'key_upload_commit'}
 FEED_FIELDS = ('page_kind', 'filter_kind', 'client_platform', 'outcome')
 FEED_CATEGORIES = ({'initial', 'cursor'}, {'all', 'list'}, {'ios', 'android', 'web', 'other', 'unknown'}, {'ok', 'error'})
-FAILURE_REASONS = {'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
+FAILURE_REASONS = {'refresh_invalid', 'refresh_unknown', 'refresh_revoked', 'refresh_idle_expired',
+                   'refresh_inactive_account', 'refresh_reused', 'refresh_superseded', 'refresh_legacy_expired',
+                   'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
                    'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
                    'key_legacy_recovery', 'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
                    'request_aborted', 'auth_failure', 'forbidden', 'route_not_found', 'not_found',

@@ -14,6 +14,53 @@ def sample(at, count=0, start=1, busy=False):
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_refresh_reasons_survive_all_failure_families(self):
+        reasons = {'refresh_invalid', 'refresh_unknown', 'refresh_revoked', 'refresh_idle_expired',
+                   'refresh_inactive_account', 'refresh_reused', 'refresh_superseded', 'refresh_legacy_expired'}
+        common = dict(method='POST', status='401', reason='refresh_unknown')
+        families = {
+            'aside_http_failures_total': dict(common, route='/v1/auth/refresh'),
+            'aside_http_failure_contexts_total': dict(common, path_class='auth', client_platform='ios',
+                auth_present='no', abort_phase='not_aborted'),
+            'aside_http_failure_investigations_total': dict(common, path_class='auth', endpoint='auth_refresh',
+                route_state='matched', client_platform='ios', client_generation='context_v2',
+                request_attempt='initial', auth_kind='missing', auth_result='not_checked', body_kind='json',
+                failure_stage='handler', abort_phase='not_aborted'),
+        }
+        metrics = []
+        for name, labels in families.items():
+            values = [dict(value=1, labels=dict(labels, reason=reason)) for reason in reasons]
+            values += [dict(value=1, labels=dict(labels, reason='unapproved_reason')),
+                       dict(value=1, labels=dict(labels, raw_value='secret'))]
+            metrics.append(dict(name=name, values=values))
+        result = p.compact(dict(started_at=1, metrics=metrics))
+        for field in ('failures', 'contexts', 'investigations'):
+            self.assertEqual(len(result[field]), len(reasons))
+            self.assertEqual({json.loads(key)[-1] for key in result[field]}, reasons)
+        self.assertNotIn('unapproved_reason', json.dumps(result))
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_key_upload_stages_survive_collection_without_extra_dimensions(self):
+        stages = {'key_upload_prehandler', 'key_upload_handler', 'key_upload_pool', 'key_upload_lock',
+                  'key_upload_registry', 'key_upload_one_time', 'key_upload_kyber', 'key_upload_commit'}
+        values = []
+        for stage in stages:
+            for outcome in ('ok', 'error'):
+                labels = dict(stage=stage, outcome=outcome)
+                values += [dict(value=2, labels=labels, metricName='aside_operation_stage_seconds_count'),
+                           dict(value=2, labels=dict(labels, le='1'), metricName='aside_operation_stage_seconds_bucket')]
+        for labels in (dict(stage='unapproved_stage', outcome='ok'),
+                       dict(stage='key_upload_lock', outcome='unapproved_outcome'),
+                       dict(stage='key_upload_lock', outcome='ok', raw_value='secret')):
+            values.append(dict(value=1, labels=labels, metricName='aside_operation_stage_seconds_count'))
+        result = p.compact(dict(started_at=1, metrics=[dict(name='aside_operation_stage_seconds', values=values)]))
+        self.assertEqual(len(result['hist']), len(stages) * 2)
+        for key, histogram in result['hist'].items():
+            self.assertIn(json.loads(key)[2], stages)
+            self.assertEqual(histogram, dict(n=2, b={'1': 2}))
+        self.assertNotIn('unapproved', json.dumps(result))
+        self.assertNotIn('secret', json.dumps(result))
+
     def test_recovery_reasons_remain_fixed_categories(self):
         reasons = {'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
                    'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
