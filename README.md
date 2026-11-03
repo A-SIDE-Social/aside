@@ -10,6 +10,17 @@ repository is the canonical open-source code for the backend and
 Flutter client. Hosted A/SIDE production builds are made from this
 repo plus private build-time configuration.
 
+## Where current work lives
+
+| Work | Where it lives |
+| --- | --- |
+| iOS and Android app | `mobile/` in this repository |
+| API, database schema, and server behavior | `src/` and `tests/` in this repository |
+| Hosted builds, releases, and production configuration | A private deployment repository that pins a commit from this one |
+| Public landing page at a-side.social | A separate website repository |
+
+Changes to the shipped app or API belong here.
+
 ## What's In Here
 
 ```text
@@ -73,7 +84,7 @@ Backend runtime config is env-driven. Important public-facing values:
 - `SUPPORT_EMAIL`, `LEGAL_TERMS_URL`, `LEGAL_PRIVACY_URL`: operator
   support and legal surfaces.
 - `MARKETING_FROM_EMAIL`, `MARKETING_REPLY_TO_EMAIL`,
-  `UNSUBSCRIBE_BASE_URL`: optional broadcast email config.
+  `UNSUBSCRIBE_BASE_URL`: optional email to opted-in users.
 - `SYSTEM_USER_EMAIL`: sentinel user email for dev/system-managed rows.
 
 Flutter build-time config is supplied with `--dart-define`:
@@ -118,8 +129,8 @@ credentials.
   subscriptions.
 - Postmark: set `POSTMARK_API_TOKEN` and `OTP_FROM_EMAIL` for real OTP
   delivery.
-- Resend: optional broadcast email provider. Add your own templates in
-  `src/marketing/templates/`.
+- Resend: optional provider for email to opted-in users. Add your own
+  templates in `src/marketing/templates/`.
 
 ## Hosted Build Overlay
 

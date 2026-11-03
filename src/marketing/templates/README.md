@@ -1,7 +1,7 @@
 # Broadcast email templates
 
-This directory holds renderer functions for outbound marketing /
-announcement emails. Each template ends up in the admin
+This directory holds renderer functions for announcement emails to
+opted-in users. Each template ends up in the admin
 `/admin/broadcast` picker once registered in `index.ts`.
 
 ## Adding a template
