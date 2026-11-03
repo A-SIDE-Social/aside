@@ -20,6 +20,9 @@ export const LIMITS = {
   maxPhotosPerPost: 10,
   maxGroups: 10,
   maxVideoStorySeconds: 30,
+  // Uploads go straight to object storage, so the API cannot inspect video
+  // length. Stored size is the limit it can enforce when a post is created.
+  maxPostMediaBytes: 1024 * 1024 * 1024,
   maxInvites: 25,
   inviteExpirationDays: 30,
   maxBioLength: 160,

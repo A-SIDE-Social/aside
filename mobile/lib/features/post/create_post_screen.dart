@@ -170,23 +170,23 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
               ),
               ListTile(
                 leading: const Icon(Icons.videocam_outlined),
-                title: Text('Record video (${_maxVideoSeconds}s)'),
+                title: const Text('Record video'),
                 onTap: () {
                   didPick = true;
                   Navigator.pop(ctx);
                   _recordVideo().then((_) {
-                    if (_media.isEmpty && mounted) context.pop();
+                    if (_media.isEmpty && mounted) _showPostTypePicker();
                   });
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.video_library_outlined),
-                title: Text('Choose video from library (${_maxVideoSeconds}s)'),
+                title: const Text('Choose video from library'),
                 onTap: () {
                   didPick = true;
                   Navigator.pop(ctx);
                   _pickVideoFromLibrary().then((_) {
-                    if (_media.isEmpty && mounted) context.pop();
+                    if (_media.isEmpty && mounted) _showPostTypePicker();
                   });
                 },
               ),
@@ -274,11 +274,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
       maxDuration: Duration(seconds: _maxVideoSeconds),
     );
     if (video == null || !mounted) return;
-
-    _edit(() {
-      _media.add(_ComposerMedia(file: video, isVideo: true));
-      _isTextPost = false;
-    });
+    await _addPickedVideo(video);
   }
 
   Future<void> _pickVideoFromLibrary() async {
@@ -287,12 +283,35 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
       maxDuration: Duration(seconds: _maxVideoSeconds),
     );
     if (video == null || !mounted) return;
-
-    _edit(() {
-      _media.add(_ComposerMedia(file: video, isVideo: true));
-      _isTextPost = false;
-    });
+    await _addPickedVideo(video);
   }
+
+  Future<void> _addPickedVideo(XFile video) async {
+    try {
+      await validatePostVideoDuration(video.path);
+      if (!mounted) return;
+      _edit(() {
+        _media.add(_ComposerMedia(file: video, isVideo: true));
+        _isTextPost = false;
+      });
+    } on PostVideoValidationException catch (error) {
+      if (mounted) await _showVideoValidationError(error.message);
+    }
+  }
+
+  Future<void> _showVideoValidationError(String message) => showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Choose another video'),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
 
   /// Returns the filter for a specific media index, defaulting to none.
   FilmFilter _filterFor(int index) => _media[index].filter ?? FilmFilters.none;
@@ -327,7 +346,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
             ),
             ListTile(
               leading: const Icon(Icons.videocam_outlined),
-              title: Text('Record video (${_maxVideoSeconds}s)'),
+              title: const Text('Record video'),
               onTap: () {
                 Navigator.pop(ctx);
                 _recordVideo();
@@ -335,7 +354,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
             ),
             ListTile(
               leading: const Icon(Icons.video_library_outlined),
-              title: Text('Choose video from library (${_maxVideoSeconds}s)'),
+              title: const Text('Choose video from library'),
               onTap: () {
                 Navigator.pop(ctx);
                 _pickVideoFromLibrary();
@@ -626,6 +645,12 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
     });
 
     try {
+      // Recheck all videos, including resumed drafts and already uploaded items,
+      // before requesting upload URLs or creating a post.
+      for (final item in _media.where((item) => item.isVideo)) {
+        await validatePostVideoDuration(item.file.path);
+      }
+      if (!mounted) return;
       final api = ref.read(apiServiceProvider);
 
       if (_media.isNotEmpty) {
@@ -647,7 +672,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
           final uploadUrl = upload['upload_url'] as String;
           final key = upload['key'] as String;
 
-          List<int> bytes;
+          List<int> bytes = const [];
+          File? videoUploadFile;
           int? width;
           int? height;
           // For videos, a first-frame JPEG uploaded as a sibling key so
@@ -656,11 +682,14 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
           List<int>? thumbnailBytes;
           if (isVideo) {
             // Strip GPS/location metadata from video
-            final stripped = await stripVideoMetadata(file.path);
-            bytes = await stripped.readAsBytes();
-            // Clean up temp file if different from original
-            if (stripped.path != file.path) {
-              stripped.delete().ignore();
+            videoUploadFile = await stripVideoMetadata(file.path);
+            try {
+              await validatePostVideoSize(videoUploadFile);
+            } on PostVideoValidationException {
+              if (videoUploadFile.path != file.path) {
+                videoUploadFile.delete().ignore();
+              }
+              rethrow;
             }
             // Capture video dimensions for aspect ratio display
             try {
@@ -705,20 +734,22 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
           _watchdog = watchdog;
 
           try {
-            await api.uploadBytes(
-              uploadUrl,
-              bytes,
-              contentType,
-              cancelToken: cancelToken,
-              onSendProgress: (sent, total) {
-                if (!mounted) return;
-                watchdog.noteProgress();
-                final fileFraction = total > 0 ? sent / total : 0.0;
-                _edit(() {
-                  _uploadProgress = (i + fileFraction) / _uploadTotalFiles;
-                });
-              },
-            );
+            void onProgress(int sent, int total) {
+              if (!mounted) return;
+              watchdog.noteProgress();
+              final fileFraction = total > 0 ? sent / total : 0.0;
+              _edit(() {
+                _uploadProgress = (i + fileFraction) / _uploadTotalFiles;
+              });
+            }
+
+            if (videoUploadFile != null) {
+              await api.uploadFile(uploadUrl, videoUploadFile, contentType,
+                  cancelToken: cancelToken, onSendProgress: onProgress);
+            } else {
+              await api.uploadBytes(uploadUrl, bytes, contentType,
+                  cancelToken: cancelToken, onSendProgress: onProgress);
+            }
           } catch (e) {
             if (isUploadStallOrTimeout(e)) {
               throw const _UploadStalled();
@@ -727,6 +758,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
           } finally {
             watchdog.stop();
             _watchdog = null;
+            if (videoUploadFile != null && videoUploadFile.path != file.path) {
+              videoUploadFile.delete().ignore();
+            }
           }
 
           // If we have a video thumbnail, upload it as a sibling asset
@@ -827,6 +861,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
             if (mounted) context.pop();
           });
         }
+      }
+    } on PostVideoValidationException catch (error) {
+      if (mounted) {
+        _edit(() => _isPosting = false);
+        await _showVideoValidationError(error.message);
       }
     } on _UploadStalled {
       if (mounted) {

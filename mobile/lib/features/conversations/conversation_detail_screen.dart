@@ -1902,6 +1902,7 @@ class _MessageBubble extends StatelessWidget {
                       constraints: const BoxConstraints(maxWidth: 250),
                       child: CachedNetworkImage(
                         imageUrl: message.mediaUrl!,
+                        cacheKey: mediaCacheKey(message.mediaUrl!),
                         fit: BoxFit.cover,
                         cacheManager: AppImageCacheManager.instance,
                         memCacheWidth:
