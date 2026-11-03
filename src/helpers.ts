@@ -1,6 +1,6 @@
 import { query } from './db/pool';
 import { config } from './config';
-import { resolveStorageUrl } from './storage';
+import { resolveStorageUrl, storageKeyFromUrl } from './storage';
 import { AppError } from './middleware/errorHandler';
 
 /**
@@ -54,7 +54,10 @@ export function asyncHandler(fn: Function) {
 export function resolveMediaUrl(key: string, req: any): string {
   if (!key) return key;
   // Already a full URL
-  if (key.startsWith('http://') || key.startsWith('https://')) return key;
+  if (key.startsWith('http://') || key.startsWith('https://')) {
+    const storedKey = config.mediaSignedUrls ? storageKeyFromUrl(key) : null;
+    return storedKey ? resolveStorageUrl(storedKey) : key;
+  }
   const isDev = config.nodeEnv === 'development' || config.nodeEnv === 'test';
   if (isDev) {
     const host = req.get('x-forwarded-host') || req.get('host');

@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from './config';
+import { signGetUrl } from './lib/mediaSigning';
 
 let s3Client: S3Client | null = null;
 
@@ -137,11 +138,57 @@ export async function getPresignedDownloadUrl(
   return getSignedUrl(client, command, { expiresIn: ttlSeconds });
 }
 
+function storageHost(): string {
+  if (config.s3Endpoint) return `${config.s3Bucket}.${new URL(config.s3Endpoint).host}`;
+  return `${config.s3Bucket}.s3.${config.s3Region}.amazonaws.com`;
+}
+
+function signedMediaUrl(key: string): string {
+  const host = storageHost();
+  const url = signGetUrl({
+    host,
+    key,
+    region: config.s3Region,
+    accessKey: config.s3AccessKey,
+    secretKey: config.s3SecretKey,
+  });
+  // The signature covers the storage host, and the CDN accepts it unchanged.
+  return config.mediaSignedUrlsViaCdn && config.cdnUrl
+    ? url.replace(`https://${host}`, config.cdnUrl)
+    : url;
+}
+
+/** Avatars stay public: they appear before a connection exists. */
+const isPublicMediaKey = (key: string): boolean => key.startsWith('avatar-');
+
 /**
- * Resolve a stored media key to a public URL.
- * Uses CDN_URL if configured, otherwise builds the S3/Spaces direct URL.
+ * The object key behind a full media URL from this bucket, or null. Older rows
+ * may store a full URL rather than a key, and those still need signing.
+ */
+export function storageKeyFromUrl(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const path = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+  const hosts = [storageHost(), config.cdnUrl && new URL(config.cdnUrl).host].filter(Boolean);
+  if (hosts.includes(url.host)) return path || null;
+  if (config.s3Endpoint && url.host === new URL(config.s3Endpoint).host) {
+    const prefix = `${config.s3Bucket}/`;
+    return path.startsWith(prefix) ? path.slice(prefix.length) || null : null;
+  }
+  return null;
+}
+
+/**
+ * Resolve a stored media key to a URL the client can load.
+ * With MEDIA_SIGNED_URLS on, everything except avatars gets a signed link.
+ * Otherwise uses CDN_URL if configured, or builds the S3/Spaces direct URL.
  */
 export function resolveStorageUrl(key: string): string {
+  if (config.mediaSignedUrls && !isPublicMediaKey(key)) return signedMediaUrl(key);
   if (config.cdnUrl) {
     return `${config.cdnUrl}/${key}`;
   }

@@ -82,6 +82,10 @@ export const config = {
   s3Endpoint: process.env.S3_ENDPOINT || '',  // e.g. https://nyc3.digitaloceanspaces.com
   s3AccessKey: process.env.S3_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID || '',
   s3SecretKey: process.env.S3_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
+  // Serve media (except avatars) through time-limited signed links. Requires
+  // S3_ACCESS_KEY and S3_SECRET_KEY, since signing happens without an SDK call.
+  mediaSignedUrls: process.env.MEDIA_SIGNED_URLS === '1',
+  mediaSignedUrlsViaCdn: process.env.MEDIA_SIGNED_URLS_VIA_CDN === '1',
   cdnUrl: process.env.CDN_URL || process.env.CLOUDFRONT_URL || '',  // e.g. https://media.example.com or https://bucket.nyc3.cdn.digitaloceanspaces.com
   nodeEnv,
   devOtp: process.env.DEV_OTP || '',  // Fixed OTP code. In dev/test it applies to every email; in production it ONLY applies to emails in devOtpAllowedEmails (must be set, otherwise DEV_OTP is ignored in prod).
@@ -128,3 +132,7 @@ export const config = {
   marketingCtaUrl:
     process.env.MARKETING_CTA_URL || publicAppUrl,
 };
+
+if (config.mediaSignedUrls && (!config.s3AccessKey || !config.s3SecretKey)) {
+  throw new Error('[FATAL] MEDIA_SIGNED_URLS requires S3_ACCESS_KEY and S3_SECRET_KEY. Refusing to start.');
+}
