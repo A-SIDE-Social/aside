@@ -1,18 +1,22 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 import '../core/cache/image_cache_manager.dart';
 import '../core/config/app_colors.dart';
 import '../core/config/constants.dart';
+import '../core/media/fresh_video_link.dart';
 import '../core/utils/emoji_picker.dart';
 import '../core/utils/post_share_util.dart';
 import '../models/post.dart';
+import '../providers/api_provider.dart';
 import 'avatar.dart';
 import 'comments_sheet.dart';
 import 'feed_pinch_zoom.dart';
 import 'likes_sheet.dart';
 import 'linkified_text.dart';
 import 'reactions_strip.dart';
+import 'video_unavailable.dart';
 import 'voice_caption_player.dart';
 
 class PostCard extends StatefulWidget {
@@ -473,7 +477,9 @@ class _PostCardState extends State<PostCard>
                     cacheManager: AppImageCacheManager.instance,
                     placeholder: (_, __) => Container(color: colors.surfaceAlt),
                     errorWidget: (_, __, ___) => _VideoStaticThumbnail(
-                        url: item.mediaUrl, colors: colors),
+                        postId: widget.post.id,
+                        url: item.mediaUrl,
+                        colors: colors),
                   ),
                 ),
                 Container(
@@ -496,10 +502,12 @@ class _PostCardState extends State<PostCard>
         return GestureDetector(
           onTap: onTap,
           onDoubleTap: onDoubleTap,
-          child: _VideoStaticThumbnail(url: item.mediaUrl, colors: colors),
+          child: _VideoStaticThumbnail(
+              postId: widget.post.id, url: item.mediaUrl, colors: colors),
         );
       }
-      return _VideoThumbnail(url: item.mediaUrl, colors: colors);
+      return _VideoThumbnail(
+          postId: widget.post.id, url: item.mediaUrl, colors: colors);
     }
     // No memCacheWidth: decode at source resolution. Capping below
     // source (previously screenWidth × DPR ≈ 1179px on a 15 Pro Max)
@@ -971,37 +979,61 @@ class _LikeCountChip extends StatelessWidget {
 
 /// Shows the first frame of a video with a play icon overlay.
 /// Used in feed/grid contexts where tapping navigates to post detail.
-class _VideoStaticThumbnail extends StatefulWidget {
+class _VideoStaticThumbnail extends ConsumerStatefulWidget {
+  final String postId;
   final String url;
   final AppColorTokens colors;
 
-  const _VideoStaticThumbnail({required this.url, required this.colors});
+  const _VideoStaticThumbnail({
+    required this.postId,
+    required this.url,
+    required this.colors,
+  });
 
   @override
-  State<_VideoStaticThumbnail> createState() => _VideoStaticThumbnailState();
+  ConsumerState<_VideoStaticThumbnail> createState() => _VideoStaticThumbnailState();
 }
 
-class _VideoStaticThumbnailState extends State<_VideoStaticThumbnail> {
+class _VideoStaticThumbnailState extends ConsumerState<_VideoStaticThumbnail> {
   late VideoPlayerController _controller;
   bool _initialized = false;
+  bool _failed = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url))
-      ..initialize().then((_) {
-        if (mounted) setState(() => _initialized = true);
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final controller = await openPostVideo(
+        () => ref.read(apiServiceProvider),
+        widget.postId,
+        widget.url,
+      );
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _initialized = true;
       });
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (_initialized) _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_failed) return VideoUnavailable(colors: widget.colors);
     if (!_initialized) {
       return Container(
         color: widget.colors.surfaceAlt,
@@ -1042,32 +1074,55 @@ class _VideoStaticThumbnailState extends State<_VideoStaticThumbnail> {
 
 /// Displays a video with a play button overlay. Tap to play/pause.
 /// No autoplay — video starts paused with a centered play icon.
-class _VideoThumbnail extends StatefulWidget {
+class _VideoThumbnail extends ConsumerStatefulWidget {
+  final String postId;
   final String url;
   final AppColorTokens colors;
 
-  const _VideoThumbnail({required this.url, required this.colors});
+  const _VideoThumbnail({
+    required this.postId,
+    required this.url,
+    required this.colors,
+  });
 
   @override
-  State<_VideoThumbnail> createState() => _VideoThumbnailState();
+  ConsumerState<_VideoThumbnail> createState() => _VideoThumbnailState();
 }
 
-class _VideoThumbnailState extends State<_VideoThumbnail> {
+class _VideoThumbnailState extends ConsumerState<_VideoThumbnail> {
   late VideoPlayerController _controller;
   bool _initialized = false;
+  bool _failed = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url))
-      ..initialize().then((_) {
-        if (mounted) setState(() => _initialized = true);
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final controller = await openPostVideo(
+        () => ref.read(apiServiceProvider),
+        widget.postId,
+        widget.url,
+      );
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _initialized = true;
       });
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (_initialized) _controller.dispose();
     super.dispose();
   }
 
@@ -1084,6 +1139,7 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
 
   @override
   Widget build(BuildContext context) {
+    if (_failed) return VideoUnavailable(colors: widget.colors);
     if (!_initialized) {
       return Container(
         color: widget.colors.surfaceAlt,
