@@ -1,4 +1,4 @@
-# Marketing Broadcasts
+# Email Broadcasts
 
 This module implements operator-controlled email broadcasts to opted-in
 users. It is optional; if `RESEND_API_KEY` is unset, the admin UI shows
