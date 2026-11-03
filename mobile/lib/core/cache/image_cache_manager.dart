@@ -16,3 +16,13 @@ class AppImageCacheManager {
     ),
   );
 }
+
+/// Cache key for a media URL: the URL without its query string.
+///
+/// A stored file never changes under the same path, but the parameters on its
+/// URL can. Keying on the path keeps a cached file valid when they do. URLs
+/// without a query keep their existing key, so current caches stay usable.
+String mediaCacheKey(String url) {
+  final queryStart = url.indexOf('?');
+  return queryStart == -1 ? url : url.substring(0, queryStart);
+}

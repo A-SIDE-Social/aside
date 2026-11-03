@@ -537,6 +537,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                       else
                         CachedNetworkImage(
                           imageUrl: post.media.first.mediaUrl,
+                          cacheKey: mediaCacheKey(post.media.first.mediaUrl),
                           fit: BoxFit.cover,
                           cacheManager: AppImageCacheManager.instance,
                           memCacheWidth: gridCachePx,

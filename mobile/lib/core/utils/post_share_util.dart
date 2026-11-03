@@ -8,6 +8,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../models/post.dart';
+import '../cache/image_cache_manager.dart';
 import '../config/env.dart';
 
 /// Utility for sharing posts to external platforms via the native share sheet.
@@ -139,7 +140,10 @@ class PostShareUtil {
 
       for (var i = 0; i < mediaList.length; i++) {
         final media = mediaList[i];
-        final file = await DefaultCacheManager().getSingleFile(media.mediaUrl);
+        final file = await DefaultCacheManager().getSingleFile(
+          media.mediaUrl,
+          key: mediaCacheKey(media.mediaUrl),
+        );
         final isVideo = media.mediaType == 'video';
 
         xFiles.add(

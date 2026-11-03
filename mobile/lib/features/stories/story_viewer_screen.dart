@@ -445,6 +445,7 @@ class _StoryMedia extends StatelessWidget {
     final cachePx = (MediaQuery.sizeOf(context).width * dpr).round();
     return CachedNetworkImage(
       imageUrl: story.mediaUrl,
+      cacheKey: mediaCacheKey(story.mediaUrl),
       fit: BoxFit.contain,
       width: double.infinity,
       height: double.infinity,

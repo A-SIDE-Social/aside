@@ -468,6 +468,7 @@ class _PostCardState extends State<PostCard>
                 SizedBox.expand(
                   child: CachedNetworkImage(
                     imageUrl: thumb,
+                    cacheKey: mediaCacheKey(thumb),
                     fit: BoxFit.cover,
                     cacheManager: AppImageCacheManager.instance,
                     placeholder: (_, __) => Container(color: colors.surfaceAlt),
@@ -514,6 +515,7 @@ class _PostCardState extends State<PostCard>
         onDoubleTap: onDoubleTap,
         child: CachedNetworkImage(
           imageUrl: item.mediaUrl,
+          cacheKey: mediaCacheKey(item.mediaUrl),
           fit: fit,
           cacheManager: AppImageCacheManager.instance,
           fadeInDuration: const Duration(milliseconds: 150),
