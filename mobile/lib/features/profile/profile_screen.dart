@@ -8,9 +8,11 @@ import 'package:video_player/video_player.dart';
 
 import '../../core/cache/image_cache_manager.dart';
 import '../../core/config/app_colors.dart';
+import '../../core/media/fresh_video_link.dart';
 import '../../core/media/image_compression.dart';
 import '../../core/network/upload_watchdog.dart';
 import '../../core/network/api_retry.dart';
+import '../../widgets/video_unavailable.dart';
 import '../../widgets/widgets.dart';
 import '../../providers/providers.dart';
 import '../../models/models.dart';
@@ -531,6 +533,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                     children: [
                       if (post.media.first.mediaType == 'video')
                         _VideoGridThumbnail(
+                          postId: post.id,
                           url: post.media.first.mediaUrl,
                           colors: colors,
                         )
@@ -857,37 +860,62 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
 }
 
 /// Shows the first frame of a video, center-cropped to fill a square grid cell.
-class _VideoGridThumbnail extends StatefulWidget {
+class _VideoGridThumbnail extends ConsumerStatefulWidget {
+  final String postId;
   final String url;
   final AppColorTokens colors;
 
-  const _VideoGridThumbnail({required this.url, required this.colors});
+  const _VideoGridThumbnail({
+    required this.postId,
+    required this.url,
+    required this.colors,
+  });
 
   @override
-  State<_VideoGridThumbnail> createState() => _VideoGridThumbnailState();
+  ConsumerState<_VideoGridThumbnail> createState() =>
+      _VideoGridThumbnailState();
 }
 
-class _VideoGridThumbnailState extends State<_VideoGridThumbnail> {
+class _VideoGridThumbnailState extends ConsumerState<_VideoGridThumbnail> {
   late VideoPlayerController _controller;
   bool _initialized = false;
+  bool _failed = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url))
-      ..initialize().then((_) {
-        if (mounted) setState(() => _initialized = true);
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final controller = await openPostVideo(
+        () => ref.read(apiServiceProvider),
+        widget.postId,
+        widget.url,
+      );
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _initialized = true;
       });
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (_initialized) _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_failed) return VideoUnavailable(colors: widget.colors);
     if (!_initialized) {
       return Container(color: widget.colors.surfaceAlt);
     }
