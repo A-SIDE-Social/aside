@@ -683,6 +683,14 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
           if (isVideo) {
             // Strip GPS/location metadata from video
             videoUploadFile = await stripVideoMetadata(file.path);
+            try {
+              await validatePostVideoSize(videoUploadFile);
+            } on PostVideoValidationException {
+              if (videoUploadFile.path != file.path) {
+                videoUploadFile.delete().ignore();
+              }
+              rethrow;
+            }
             // Capture video dimensions for aspect ratio display
             try {
               final ctrl = VideoPlayerController.file(File(file.path));

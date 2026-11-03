@@ -10,6 +10,7 @@ import { getPlanLimits, LIMITS } from '../constants';
 import { notifyNewPost } from '../firebase';
 import { verifyPostAccess } from '../lib/postAccess';
 import { postAudiencePredicate, resolvePostAudience } from '../lib/postAudience';
+import { assertPostMediaWithinLimit } from '../lib/postMediaLimit';
 
 const router = Router();
 
@@ -86,6 +87,8 @@ router.post(
     if (caption && caption.length > LIMITS.maxCaptionLength) {
       throw new AppError(400, `Caption must be ${LIMITS.maxCaptionLength} characters or fewer`);
     }
+
+    await assertPostMediaWithinLimit(media);
 
     // Audience validation and every relational insert happen in one
     // transaction. A malformed/stale list selection can never leave behind

@@ -7,9 +7,11 @@ import '../config/constants.dart';
 /// Strip metadata (including GPS/location) from a video file by re-muxing it.
 ///
 /// Uses video_compress to produce a clean copy. The re-compression strips
-/// container-level metadata including GPS coordinates. Falls back to the
-/// original file on failure.
+/// container-level metadata including GPS coordinates. Throws
+/// [PostVideoValidationException] on failure rather than returning the
+/// original, which could still contain the location it was recorded at.
 Future<File> stripVideoMetadata(String inputPath) async {
+  File? processed;
   try {
     final info = await VideoCompress.compressVideo(
       inputPath,
@@ -17,13 +19,16 @@ Future<File> stripVideoMetadata(String inputPath) async {
       deleteOrigin: false,
       includeAudio: true,
     );
-    if (info != null && info.file != null) {
-      return info.file!;
-    }
+    processed = info?.file;
   } catch (_) {
-    // Best effort — fall through to return original
+    // Present a useful message without exposing native errors or file paths.
   }
-  return File(inputPath);
+  if (processed == null) {
+    throw const PostVideoValidationException(
+      'We couldn’t prepare this video for posting. Please try again, or choose another video.',
+    );
+  }
+  return processed;
 }
 
 class PostVideoValidationException implements Exception {
@@ -48,6 +53,19 @@ Future<void> validatePostVideoDuration(String path) async {
   if (milliseconds > AppLimits.maxVideoPostSeconds * 1000) {
     throw const PostVideoValidationException(
       'Videos can be up to ${AppLimits.maxVideoPostSeconds ~/ 60} minutes. Trim this video in your photo library, then choose it again.',
+    );
+  }
+}
+
+/// Checks the processed file before uploading it, so someone on a slow
+/// connection isn't left waiting for an upload the server would reject.
+Future<void> validatePostVideoSize(
+  File file, {
+  int maxBytes = AppLimits.maxVideoPostBytes,
+}) async {
+  if (await file.length() > maxBytes) {
+    throw const PostVideoValidationException(
+      'This video is too large to post. Videos can be up to 1 GB. Trim it in your photo library, then choose it again.',
     );
   }
 }
