@@ -74,4 +74,13 @@ describe('config hardening', () => {
     expect(config.jwtExpiresIn).toBe('15m');
     expect(config.cookieSecret).toBe('test-cookie-secret');
   });
+
+  it('refuses signed media links without storage credentials', () => {
+    process.env.MEDIA_SIGNED_URLS = '1';
+    delete process.env.S3_ACCESS_KEY;
+    delete process.env.S3_SECRET_KEY;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    expect(() => require('../src/config')).toThrow('MEDIA_SIGNED_URLS requires');
+  });
 });
