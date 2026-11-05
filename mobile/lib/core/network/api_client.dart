@@ -19,6 +19,7 @@ String get asideClientPlatform {
 
 const skipAuthRecoveryExtra = 'skipAuthRecovery';
 const _authRetriedExtra = 'authRetried';
+const _authRenewalAttemptedExtra = 'authRenewalAttempted';
 
 const _publicAuthPaths = {
   ApiEndpoints.requestOtp,
@@ -260,24 +261,29 @@ class _AuthInterceptor extends Interceptor {
       }
       final currentToken = await _secureStorage.getAuthToken();
       if (request.extra[_authRetriedExtra] == true) {
-        // A retried request must never wait for its own refresh operation.
-        // Also avoid signing out a newer session for a delayed old response.
+        // Never sign out a newer session for a delayed old response.
         if (request.headers['Authorization'] != 'Bearer $currentToken') {
           throw const _SessionChanged();
         }
-        _notifyAuthFailure();
-        handler.next(err);
-        return;
+        if (request.extra[_authRenewalAttemptedExtra] == true) {
+          _notifyAuthFailure();
+          handler.next(err);
+          return;
+        }
       }
       if (_authFailureNotified) {
         handler.next(err);
         return;
       }
 
-      // A slow response may have used the old token even though another
-      // request already finished refreshing it. Reuse the current token.
-      final credentials = currentToken != null &&
-              request.headers['Authorization'] != 'Bearer $currentToken'
+      // Reusing a different saved token is not a renewal. If that token is
+      // also rejected, try the refresh credential once before signing out.
+      // At most one saved-token replay and one renewal are allowed per request.
+      final reuseSavedToken = request.extra[_authRetriedExtra] != true &&
+          currentToken != null &&
+          request.headers['Authorization'] != 'Bearer $currentToken';
+      request.extra[_authRenewalAttemptedExtra] = !reuseSavedToken;
+      final credentials = reuseSavedToken
           ? (accessToken: currentToken, refreshToken: refreshToken)
           : await _refreshAuthToken();
       _requestSessions[request] = _RequestSession(credentials.refreshToken);

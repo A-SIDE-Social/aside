@@ -23,7 +23,8 @@ FEED_FIELDS = ('page_kind', 'filter_kind', 'client_platform', 'outcome')
 FEED_CATEGORIES = ({'initial', 'cursor'}, {'all', 'list'}, {'ios', 'android', 'web', 'other', 'unknown'}, {'ok', 'error'})
 FAILURE_REASONS = {'refresh_invalid', 'refresh_unknown', 'refresh_revoked', 'refresh_idle_expired',
                    'refresh_inactive_account', 'refresh_reused', 'refresh_superseded', 'refresh_legacy_expired',
-                   'otp_registration_required', 'otp_registration_invalid', 'otp_invalid_or_expired',
+                   'otp_registration_required', 'otp_registration_invalid',
+                   'otp_registration_name_invalid', 'otp_registration_invite_invalid', 'otp_invalid_or_expired',
                    'otp_incorrect', 'otp_attempt_limit', 'key_identity_conflict', 'key_prekey_conflict',
                    'key_legacy_recovery', 'validation_failure', 'malformed_body', 'payload_too_large', 'unsupported_encoding',
                    'request_aborted', 'auth_failure', 'forbidden', 'route_not_found', 'not_found',
