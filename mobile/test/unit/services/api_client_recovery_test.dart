@@ -27,6 +27,7 @@ class _RecoveryFixture {
   final refreshArrived = Completer<void>();
   final attempts = <String, List<String?>>{};
   final refreshInputs = <Map<String, dynamic>>[];
+  final rejectedAccessTokens = {'expired-fixture'};
   Future<void> Function(HttpRequest)? beforeReply;
 
   Future<void> start() async {
@@ -54,8 +55,8 @@ class _RecoveryFixture {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
       final isRefresh = request.uri.path == ApiEndpoints.refreshToken;
-      final expired =
-          request.headers.value('Authorization') == 'Bearer expired-fixture';
+      final expired = rejectedAccessTokens.any(
+          (token) => request.headers.value('Authorization') == 'Bearer $token');
       if (isRefresh) {
         refreshCalls++;
         if (!refreshArrived.isCompleted) refreshArrived.complete();
@@ -200,6 +201,119 @@ void main() {
     expect((await slow).statusCode, 200);
     expect(fixture.refreshCalls, 1);
     expect(fixture.attempts['/v1/slow'], ['initial', 'auth_retry']);
+  });
+
+  void reuseRejectedSavedToken() {
+    fixture.rejectedAccessTokens.add('another-stale-fixture');
+    fixture.beforeReply = (request) async {
+      if (request.headers.value('X-A-Side-Request-Attempt') == 'initial' &&
+          request.uri.path != ApiEndpoints.refreshToken) {
+        fixture.accessToken = 'another-stale-fixture';
+      }
+    };
+  }
+
+  test('a rejected reused token still gets one real renewal before sign-out',
+      () async {
+    reuseRejectedSavedToken();
+    final response = await fixture.client.dio.get(ApiEndpoints.me);
+    expect(response.statusCode, 200);
+    expect(fixture.refreshCalls, 1);
+    expect(fixture.authFailures, 0);
+    expect(fixture.attempts[ApiEndpoints.me],
+        ['initial', 'auth_retry', 'auth_retry']);
+  });
+
+  for (final status in [429, 503]) {
+    test('renewal $status after a rejected reused token preserves sign-in',
+        () async {
+      reuseRejectedSavedToken();
+      fixture.refreshStatus = status;
+      final error = await fixture.failure(ApiEndpoints.me);
+      expect(error.response?.statusCode, status);
+      expect(fixture.refreshCalls, 1);
+      expect(fixture.authFailures, 0);
+      expect(fixture.refreshToken, 'refresh-fixture');
+    });
+  }
+
+  test('a rejected reused token cannot cause an unbounded renewal loop',
+      () async {
+    reuseRejectedSavedToken();
+    fixture.retryStatus = 401;
+    final error = await fixture.failure(ApiEndpoints.me);
+    expect(error.response?.statusCode, 401);
+    expect(fixture.refreshCalls, 1);
+    expect(fixture.authFailures, 1);
+    expect(fixture.attempts[ApiEndpoints.me],
+        ['initial', 'auth_retry', 'auth_retry']);
+  });
+
+  test(
+      'a rejected renewal after saved-token reuse still invalidates the session',
+      () async {
+    reuseRejectedSavedToken();
+    fixture.refreshStatus = 401;
+    final error = await fixture.failure(ApiEndpoints.me);
+    expect(error.response?.statusCode, 401);
+    expect(fixture.refreshCalls, 1);
+    expect(fixture.authFailures, 1);
+  });
+
+  test('a renewal timeout after saved-token reuse preserves credentials',
+      () async {
+    reuseRejectedSavedToken();
+    fixture.holdRefresh = true;
+    fixture.client.dio.options.receiveTimeout =
+        const Duration(milliseconds: 100);
+    final error = await fixture.failure(ApiEndpoints.me);
+    expect(error.type, DioExceptionType.receiveTimeout);
+    expect(fixture.refreshCalls, 1);
+    expect(fixture.authFailures, 0);
+    expect(fixture.refreshToken, 'refresh-fixture');
+  });
+
+  test('account change during fallback renewal cannot clear the new session',
+      () async {
+    reuseRejectedSavedToken();
+    final beforeReply = fixture.beforeReply!;
+    fixture.beforeReply = (request) async {
+      await beforeReply(request);
+      if (request.uri.path == ApiEndpoints.refreshToken) {
+        fixture.accessToken = 'new-account-access-fixture';
+        fixture.refreshToken = 'new-account-refresh-fixture';
+      }
+    };
+    final error = await fixture.failure(ApiEndpoints.me);
+    expect(error.type, DioExceptionType.cancel);
+    expect(fixture.authFailures, 0);
+    expect(fixture.accessToken, 'new-account-access-fixture');
+    expect(fixture.refreshToken, 'new-account-refresh-fixture');
+  });
+
+  test('concurrent rejected reused tokens share one real renewal', () async {
+    reuseRejectedSavedToken();
+    final beforeReply = fixture.beforeReply!;
+    final bothReused = Completer<void>();
+    var reused = 0;
+    fixture.beforeReply = (request) async {
+      await beforeReply(request);
+      if (request.headers.value('Authorization') ==
+          'Bearer another-stale-fixture') {
+        reused++;
+        if (reused == 2) bothReused.complete();
+      }
+      if (request.uri.path == ApiEndpoints.refreshToken) {
+        await bothReused.future;
+      }
+    };
+    final responses = await Future.wait([
+      fixture.client.dio.get(ApiEndpoints.me),
+      fixture.client.dio.get('/v1/feed'),
+    ]).timeout(const Duration(seconds: 3));
+    expect(responses.map((response) => response.statusCode), everyElement(200));
+    expect(fixture.refreshCalls, 1);
+    expect(fixture.authFailures, 0);
   });
 
   for (final status in [404, 503]) {

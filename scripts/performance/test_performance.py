@@ -14,6 +14,32 @@ def sample(at, count=0, start=1, busy=False):
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_registration_categories_survive_all_failure_families(self):
+        reasons = {'otp_registration_invalid', 'otp_registration_name_invalid', 'otp_registration_invite_invalid'}
+        common = dict(method='POST', status='400')
+        families = {
+            'aside_http_failures_total': dict(common, route='/v1/auth/verify-otp'),
+            'aside_http_failure_contexts_total': dict(common, path_class='auth', client_platform='android',
+                auth_present='no', abort_phase='not_aborted'),
+            'aside_http_failure_investigations_total': dict(common, path_class='auth', endpoint='auth_verify_otp',
+                route_state='matched', client_platform='android', client_generation='context_v2',
+                request_attempt='initial', auth_kind='missing', auth_result='not_checked', body_kind='json',
+                failure_stage='handler', abort_phase='not_aborted'),
+        }
+        metrics = []
+        for name, labels in families.items():
+            values = [dict(value=1, labels=dict(labels, reason=reason)) for reason in reasons]
+            values += [dict(value=1, labels=dict(labels, reason='unapproved_reason')),
+                       dict(value=1, labels=dict(labels, reason='otp_registration_name_invalid', name='private-name')),
+                       dict(value=1, labels=dict(labels, reason='otp_registration_invite_invalid', invite='private-invite'))]
+            metrics.append(dict(name=name, values=values))
+        result = p.compact(dict(started_at=1, metrics=metrics))
+        for field in ('failures', 'contexts', 'investigations'):
+            self.assertEqual({json.loads(key)[-1] for key in result[field]}, reasons)
+            self.assertEqual(len(result[field]), len(reasons))
+        self.assertNotIn('unapproved_reason', json.dumps(result))
+        self.assertNotIn('private-', json.dumps(result))
+
     def test_refresh_reasons_survive_all_failure_families(self):
         reasons = {'refresh_invalid', 'refresh_unknown', 'refresh_revoked', 'refresh_idle_expired',
                    'refresh_inactive_account', 'refresh_reused', 'refresh_superseded', 'refresh_legacy_expired'}

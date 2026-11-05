@@ -53,7 +53,15 @@ async function resolveUser(
   if (display_name === undefined || display_name === null) {
     throw new AppError(400, 'display_name is required for registration', 'otp_registration_required', 'registration_required');
   }
-  const normalizedDisplayName = normalizeDisplayName(display_name);
+  let normalizedDisplayName: string;
+  try {
+    normalizedDisplayName = normalizeDisplayName(display_name);
+  } catch (error) {
+    if (error instanceof AppError && error.statusCode === 400) {
+      error.reason = 'otp_registration_name_invalid';
+    }
+    throw error;
+  }
 
   // Validate the invite code BEFORE we touch the users table. Earlier
   // versions ran this check AFTER the INSERT, so a typo'd or expired
@@ -112,7 +120,7 @@ async function resolveUser(
         [legacyCode],
       );
       if (invites.length === 0) {
-        throw new AppError(400, 'Invalid or already used invite code');
+        throw new AppError(400, 'Invalid or already used invite code', 'otp_registration_invite_invalid');
       }
       validatedInvite = invites[0];
     }
@@ -148,7 +156,7 @@ async function resolveUser(
        AND deleted_at IS NULL FOR SHARE`,
       [validatedSlug.user_id, validatedSlug.slug],
     );
-    if (!stillValid.length) throw new AppError(400, 'Invite link is no longer valid');
+    if (!stillValid.length) throw new AppError(400, 'Invite link is no longer valid', 'otp_registration_invite_invalid');
     // Personal-invite-link signup. Create a ONE-WAY follow from the
     // new user to the slug owner — owner must approve via inbound-
     // follows UI to make it mutual. Fires the same `inbound_follow`
@@ -170,7 +178,7 @@ async function resolveUser(
       'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE',
       [validatedInvite.created_by_user_id],
     );
-    if (!inviter.length) throw new AppError(400, 'Invalid or already used invite code');
+    if (!inviter.length) throw new AppError(400, 'Invalid or already used invite code', 'otp_registration_invite_invalid');
     // Mark invite as used. Re-check status under the transaction so
     // two concurrent signups can't both consume the same code.
     // Mirrors the validation predicate above — accept either
@@ -184,7 +192,7 @@ async function resolveUser(
       [user.id, validatedInvite.id],
     );
     if ((rowCount ?? 0) === 0) {
-      throw new AppError(400, 'Invalid or already used invite code');
+      throw new AppError(400, 'Invalid or already used invite code', 'otp_registration_invite_invalid');
     }
 
     // Create mutual follow with inviter
@@ -373,7 +381,7 @@ router.post(
           return { user, ...tokens };
         } catch (error) {
           if (error instanceof AppError && error.statusCode === 400 && error.code !== 'registration_required') {
-            error.reason = 'otp_registration_invalid';
+            error.reason ??= 'otp_registration_invalid';
           }
           throw error;
         }
