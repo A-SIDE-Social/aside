@@ -79,7 +79,7 @@ export async function getPresignedUploadUrl(
     Bucket: config.s3Bucket,
     Key: key,
     ContentType: contentType,
-    ACL: 'public-read',
+    ACL: config.mediaSignedUrls && !isPublicMediaKey(key) ? 'private' : 'public-read',
   });
   return getSignedUrl(client, command, { expiresIn: 3600 });
 }
