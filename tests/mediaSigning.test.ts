@@ -93,6 +93,21 @@ describe('resolving media URLs', () => {
     expect(load({}).resolveStorageUrl('avatar-1')).toBe('https://media.nyc3.cdn.digitaloceanspaces.com/avatar-1');
   });
 
+  test.each(['photo.jpeg', 'video.mp4', 'old-file-without-extension'])('new protected uploads have private ACLs: %s', async key => {
+    const url = new URL(await load({}).getPresignedUploadUrl(key, 'application/octet-stream'));
+    expect(url.searchParams.get('x-amz-acl')).toBe('private');
+  });
+
+  test('avatar uploads keep their public permission', async () => {
+    const url = new URL(await load({}).getPresignedUploadUrl('avatar-1', 'image/jpeg'));
+    expect(url.searchParams.get('x-amz-acl')).toBe('public-read');
+  });
+
+  test('upload permissions remain unchanged when signed media is disabled', async () => {
+    const url = new URL(await load({ mediaSignedUrls: false }).getPresignedUploadUrl('photo.jpeg', 'image/jpeg'));
+    expect(url.searchParams.get('x-amz-acl')).toBe('public-read');
+  });
+
   test.each([
     ['CDN host', 'https://media.nyc3.cdn.digitaloceanspaces.com/a.jpeg', 'a.jpeg'],
     ['bucket host', 'https://media.nyc3.digitaloceanspaces.com/a.jpeg', 'a.jpeg'],
