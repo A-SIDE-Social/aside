@@ -137,6 +137,62 @@ class ApiClient {
     this.dio.interceptors.add(_auth);
   }
 
+  /// Attach current-session proof only to registry operations that need it.
+  /// Never log the body. A concurrent rotation may be retried once with the
+  /// newly saved credential, but never across an account change.
+  Future<Response<dynamic>> postForKeySession(
+      String path, Map<String, dynamic> body,
+      {bool signingOut = false}) async {
+    const paths = {
+      ApiEndpoints.deviceKeysUpload,
+      ApiEndpoints.deviceKeysReplenish,
+      ApiEndpoints.deviceKeysRotateSigned,
+      ApiEndpoints.deviceKeysRevoke,
+      '/v1/devices/keys/recovery/request',
+      '/v1/devices/keys/recovery/confirm',
+    };
+    if (!paths.contains(path)) {
+      throw ArgumentError(
+          'Session proof is restricted to key registry operations');
+    }
+    final owner = await _secureStorage.getUserId();
+    if (body['owner_user_id'] != null && body['owner_user_id'] != owner) {
+      throw StateError('The signed-in account changed');
+    }
+    var credential = await _secureStorage.getRefreshToken();
+    final originalCredential = credential;
+    for (var attempt = 0;; attempt++) {
+      if (await _secureStorage.getUserId() != owner ||
+          !_auth._sameSession(
+              originalCredential, await _secureStorage.getRefreshToken())) {
+        throw StateError('The signed-in account changed');
+      }
+      try {
+        return await dio.post(path,
+            data: {
+              ...body,
+              if (owner != null) 'owner_user_id': owner,
+              if (credential != null) 'refresh_token': credential
+            },
+            options: Options(extra: {
+              'sensitiveMedia': true,
+              if (signingOut) skipAuthRecoveryExtra: true,
+            }));
+      } on DioException catch (error) {
+        final data = error.response?.data;
+        if (attempt != 0 ||
+            error.response?.statusCode != 409 ||
+            data is! Map ||
+            data['code'] != 'key_session_changed') {
+          rethrow;
+        }
+        final saved = await _secureStorage.getRefreshToken();
+        if (saved == credential) rethrow;
+        credential = saved;
+      }
+    }
+  }
+
   Future<({String accessToken, String refreshToken})>
       refreshCredentials() async {
     try {

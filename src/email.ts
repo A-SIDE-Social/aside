@@ -33,13 +33,15 @@ function deliveryError(error: unknown): OtpDeliveryError {
 /**
  * Send an OTP email via Postmark.
  *
- * In dev/test mode, the OTP is logged to the console instead of sending.
+ * In dev/test mode, delivery is skipped without logging addresses or codes.
  */
-export async function sendOtpEmail(email: string, code: string): Promise<void> {
+export type EmailOtpPurpose = 'login' | 'messaging-device-change';
+
+export async function sendOtpEmail(email: string, code: string, purpose: EmailOtpPurpose = 'login'): Promise<void> {
   const isDev = config.nodeEnv === 'development' || config.nodeEnv === 'test';
 
   if (isDev) {
-    console.log(`[OTP] ${email} → ${code}`);
+    console.log('[OTP] Delivery skipped in development');
     return;
   }
 
@@ -58,10 +60,14 @@ export async function sendOtpEmail(email: string, code: string): Promise<void> {
       await client.sendEmail({
         From: config.otpFromEmail,
         To: email,
-        Subject: `${code} is your login code`,
+        Subject: purpose === 'login' ? `${code} is your login code` : `${code} confirms your messaging device change`,
         TextBody: [
-          `Your login code is: ${code}`,
+          purpose === 'login' ? `Your login code is: ${code}` : `Your messaging device-change code is: ${code}`,
           '',
+          ...(purpose === 'messaging-device-change' ? [
+            'Use this only if you chose to move A/SIDE messaging to another device or login.',
+            'This changes the messaging encryption registration. It does not transfer old message history.', '',
+          ] : []),
           'It expires in 10 minutes.',
           '',
           'If you didn\'t request this, you can safely ignore this email.',

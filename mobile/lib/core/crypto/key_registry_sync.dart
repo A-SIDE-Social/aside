@@ -23,6 +23,9 @@ class _KeyWork {
   Future<bool>? initialization;
   String? owner;
   Future<void>? reset;
+  Future<void>? recovery;
+  int recoveryEpoch = 0;
+  ({String owner, Map<String, dynamic> bundle, String ticket})? confirmation;
   Future<({int otpks, int kyber})>? replenishment;
   ({List<PublicOneTimePreKey> otpks, List<PublicKyberPreKey>? kyber})? pending;
 }
@@ -45,7 +48,9 @@ class KeyRegistrySync {
     required String ownerUserId,
     int otpkCount = SignalClient.defaultOtpkBatch,
   }) {
-    if (_work.reset != null) {
+    if (_work.reset != null ||
+        _work.recovery != null ||
+        _work.confirmation != null) {
       return Future.error(StateError('Encryption setup is stopping'));
     }
     final pending = _work.initialization;
@@ -133,6 +138,70 @@ class KeyRegistrySync {
     return !existed;
   }
 
+  /// Only called after the person accepts the device-change warning. The
+  /// saved owner and private identity must already belong to this account.
+  Future<void> requestMessagingRecovery({required String ownerUserId}) =>
+      _withRecovery(() async {
+        final epoch = _work.recoveryEpoch;
+        try {
+          await _work.initialization;
+        } catch (_) {}
+        try {
+          await _work.replenishment;
+        } catch (_) {}
+        if (await _signal.keyOwner() != ownerUserId) {
+          throw const KeyRecoveryRequired(
+              'Saved keys must belong to this account before moving messaging');
+        }
+        var bundle = await _signal.currentPublicBundle();
+        if (bundle == null) {
+          throw const KeyRecoveryRequired('Saved keys are incomplete');
+        }
+        if (bundle.kyberPreKeys.isEmpty) {
+          bundle = await _signal.resumeInitialKeys();
+        }
+        if (epoch != _work.recoveryEpoch) return;
+        final body = {...bundle.toJson(), 'owner_user_id': ownerUserId};
+        final ticket = await _api.requestMessagingRecovery(body);
+        if (epoch != _work.recoveryEpoch) return;
+        _work.confirmation = (owner: ownerUserId, bundle: body, ticket: ticket);
+      });
+
+  Future<void> confirmMessagingRecovery(
+          {required String ownerUserId, required String code}) =>
+      _withRecovery(() async {
+        final pending = _work.confirmation;
+        if (pending == null ||
+            pending.owner != ownerUserId ||
+            await _signal.keyOwner() != ownerUserId) {
+          throw const KeyRecoveryRequired('Request a new confirmation code');
+        }
+        await _api.confirmMessagingRecovery(pending.bundle,
+            ticket: pending.ticket, code: code);
+        // No regeneration or wipe, even after an interrupted response. Leave
+        // the ticket available on failure so an exact retry is idempotent.
+        await _signal.completePrekeyRecovery();
+        _work.pending = null;
+        _work.confirmation = null;
+      });
+
+  void cancelMessagingRecovery() {
+    _work.recoveryEpoch++;
+    _work.confirmation = null;
+  }
+
+  Future<void> _withRecovery(Future<void> Function() action) {
+    if (_work.reset != null || _work.recovery != null) {
+      return Future.error(StateError('Messaging setup is busy'));
+    }
+    late final Future<void> operation;
+    operation = action().whenComplete(() {
+      if (identical(_work.recovery, operation)) _work.recovery = null;
+    });
+    _work.recovery = operation;
+    return operation;
+  }
+
   /// Tops up the OTPK and Kyber prekey pools if either has dropped
   /// below its threshold. Uploads the combined batch in a single
   /// request so a partial replenishment is still transactional on
@@ -143,7 +212,9 @@ class KeyRegistrySync {
     int kyberThreshold = SignalClient.defaultKyberThreshold,
     int kyberBatchSize = SignalClient.defaultKyberBatch,
   }) {
-    if (_work.reset != null) {
+    if (_work.reset != null ||
+        _work.recovery != null ||
+        _work.confirmation != null) {
       return Future.error(StateError('Encryption setup is stopping'));
     }
     final pending = _work.replenishment;
@@ -200,6 +271,11 @@ class KeyRegistrySync {
   /// Generates a fresh signed prekey, persists, and uploads. Called
   /// by the weekly rotation scheduler (Phase 2).
   Future<void> rotateSignedPreKey() async {
+    if (_work.reset != null ||
+        _work.recovery != null ||
+        _work.confirmation != null) {
+      throw StateError('Messaging setup is busy');
+    }
     final newSpk = await _signal.rotateSignedPreKey();
     await _api.rotateSignedPreKey(newSpk.toJson());
   }
@@ -226,6 +302,10 @@ class KeyRegistrySync {
     try {
       await _work.replenishment;
     } catch (_) {}
+    try {
+      await _work.recovery;
+    } catch (_) {}
+    cancelMessagingRecovery();
     // Server first so any stale keys are neutralized even if local
     // wipe somehow fails partway. Always wipe local keys on a deliberate
     // sign-out even if the best-effort server revocation cannot complete.
