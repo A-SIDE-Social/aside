@@ -168,6 +168,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         return authState.isNewRegistration ? '/onboarding/contacts' : '/';
       }
 
+      final widgetAccount = state.uri.queryParameters['widget_account'];
+      if (status == AuthStatus.authenticated &&
+          widgetAccount != null &&
+          widgetAccount != authState.user?.id) {
+        return '/';
+      }
+
       // Allow onboarding screens for authenticated users
       if (state.matchedLocation.startsWith('/onboarding')) {
         return status == AuthStatus.authenticated ? null : '/sign-in';
@@ -444,7 +451,10 @@ class _AsideAppState extends ConsumerState<AsideApp>
     // — same channel the FCM push handler uses, so the warm-listen +
     // cold-start drain logic below works for URL taps too.
     _universalLinkService = UniversalLinkService(
-      currentUserId: () => ref.read(authProvider).user?.id,
+      currentUserId: () {
+        final auth = ref.read(authProvider);
+        return auth.status == AuthStatus.authenticated ? auth.user?.id : null;
+      },
       onDeepLink: (route) {
         debugPrint('[deep_link] received');
         ref.read(pendingDeepLinkProvider.notifier).set(route);

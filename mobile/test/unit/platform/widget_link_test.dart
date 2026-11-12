@@ -6,7 +6,8 @@ void main() {
   const post = '00000000-0000-0000-0000-000000000002';
   test('widget opens its exact post only in the matching account', () {
     final uri = Uri.parse('aside://post/$post?account=$owner');
-    expect(routeForWidgetUri(uri, currentUserId: owner), '/post/$post');
+    expect(routeForWidgetUri(uri, currentUserId: owner),
+        '/post/$post?widget_account=$owner');
     expect(routeForWidgetUri(uri, currentUserId: null), isNull);
     expect(routeForWidgetUri(uri, currentUserId: 'other'), isNull);
     expect(

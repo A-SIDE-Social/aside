@@ -28,7 +28,8 @@ current access and refresh credentials. Widget credentials use a separate
 signing key and are accepted only on the widget-photo endpoint. They expire
 after 30 days and are checked against the current server login session on every
 request, so revocation, sign-out and account deletion take effect on the next
-widget request. Refresh tokens never enter the widget container.
+widget request. Refresh tokens never enter the widget container. The operating system protects
+these files until the first device unlock; this permits later background refresh.
 
 It does not persist photos
 or signed media URLs to the App Group cache. It requests a refresh after at most

@@ -88,5 +88,5 @@ String? routeForWidgetUri(Uri uri, {required String? currentUserId}) {
       uri.queryParameters['account'] != currentUserId) {
     return null;
   }
-  return '/post/$id';
+  return '/post/$id?widget_account=$currentUserId';
 }

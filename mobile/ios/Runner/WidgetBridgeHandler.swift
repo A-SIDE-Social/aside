@@ -63,7 +63,7 @@ class WidgetBridgeHandler: NSObject, FlutterPlugin {
                   let store = Self.store else { result(false); return }
             if store.session?.userId != session.userId { store.clearWidgetData() }
             do {
-                try JSONEncoder().encode(session).write(to: store.container.appendingPathComponent("widget_session.json"), options: [.atomic, .completeFileProtection])
+                try JSONEncoder().encode(session).write(to: store.container.appendingPathComponent("widget_session.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                 reloadWidgets(); result(true)
             } catch { result(false) }
 
@@ -75,7 +75,7 @@ class WidgetBridgeHandler: NSObject, FlutterPlugin {
                   let sources = try? JSONDecoder().decode(WidgetSources.self, from: data),
                   sources.sources.allSatisfy({ $0.isValid && $0.ownerId == ownerId }) else { result(false); return }
             do {
-                try data.write(to: store.container.appendingPathComponent("widget_sources.json"), options: [.atomic, .completeFileProtection])
+                try data.write(to: store.container.appendingPathComponent("widget_sources.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                 reloadWidgets(); result(true)
             } catch { result(false) }
 
