@@ -36,14 +36,31 @@ final widgetSourcesProvider =
         'ownerId': owner
       },
   ];
-  final token = await SecureStorage().getAuthToken();
+  final storage = SecureStorage();
+  var credential = await storage.getRefreshToken();
   if (!ref.mounted ||
       ref.read(authProvider).user?.id != owner ||
-      token == null) {
+      credential == null) {
     return [];
   }
+  String widgetToken;
+  try {
+    widgetToken =
+        await ref.read(apiServiceProvider).createWidgetSession(credential);
+  } catch (_) {
+    final rotated = await storage.getRefreshToken();
+    if (!ref.mounted ||
+        ref.read(authProvider).user?.id != owner ||
+        rotated == null ||
+        rotated == credential) {
+      rethrow;
+    }
+    widgetToken =
+        await ref.read(apiServiceProvider).createWidgetSession(rotated);
+  }
+  if (!ref.mounted || ref.read(authProvider).user?.id != owner) return [];
   await AppGroupChannel.setWidgetSession(
-      userId: owner, token: token, baseURL: Env.apiBaseUrl);
+      userId: owner, token: widgetToken, baseURL: Env.apiBaseUrl);
   if (!ref.mounted || ref.read(authProvider).user?.id != owner) return [];
   await AppGroupChannel.syncWidgetSources(owner, sources);
   return sources;

@@ -32,6 +32,11 @@ class WidgetBridgeHandler: NSObject, FlutterPlugin {
 
         case "setUserId":
             if let userId = call.arguments as? String {
+                if let store = Self.store, store.session?.userId != userId {
+                    try? FileManager.default.removeItem(at: store.container.appendingPathComponent("widget_session.json"))
+                    store.clearWidgetData()
+                    reloadWidgets()
+                }
                 Self.writeToContainer(key: "user_id", value: userId)
                 result(true)
             } else {

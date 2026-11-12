@@ -7,7 +7,7 @@ open the pictured post; the containing app rechecks access before displaying it.
 
 ## Data flow
 
-The app writes configuration choices and an atomic account/session snapshot to
+The app writes configuration choices and an atomic account/widget-credential snapshot to
 its existing App Group container. Source identifiers include the account ID.
 The widget's configuration intent is not discoverable as a general shortcut.
 A removed source or another account's selection produces an empty widget,
@@ -23,10 +23,17 @@ migration and does not change the regular feed.
 
 The extension uses an ephemeral network session, does not attach credentials to
 media downloads, caps image input at 10 MiB and downsamples to 600 pixels. It
-checks the active session again after downloading. It does not persist photos
+checks the active session again after downloading. The app obtains a read-only credential from `POST /v1/widgets/session` using its
+current access and refresh credentials. Widget credentials use a separate
+signing key and are accepted only on the widget-photo endpoint. They expire
+after 30 days and are checked against the current server login session on every
+request, so revocation, sign-out and account deletion take effect on the next
+widget request. Refresh tokens never enter the widget container.
+
+It does not persist photos
 or signed media URLs to the App Group cache. It requests a refresh after at most
 15 minutes and supplies an empty timeline entry at the earlier of that point
-or the post's expiry. Expired credentials require opening the app to refresh.
+or the post's expiry. Expired widget credentials require opening the app to refresh.
 
 Signing out removes the widget session, cached choices and legacy photo cache,
 then requests a timeline reload. This cannot recall an image already captured

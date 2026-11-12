@@ -70,3 +70,48 @@ test('video uses a thumbnail and text-only feeds return an empty widget', async 
   await query('DELETE FROM posts'); await post(friend.user.id, { text: true });
   expect((await get()).body.post).toBeNull();
 });
+
+describe('read-only widget credentials', () => {
+  const crypto = require('crypto') as typeof import('crypto');
+  async function session(userId = viewer.user.id) {
+    const secret = `test-${crypto.randomBytes(32).toString('hex')}`;
+    const hash = crypto.createHash('sha256').update(secret).digest('hex');
+    const { rows } = await query(`INSERT INTO refresh_tokens(user_id,token_hash,expires_at)
+      VALUES($1,$2,NOW()+INTERVAL '1 day') RETURNING id`, [userId, hash]);
+    return { id: rows[0].id as string, secret };
+  }
+  const mint = (secret: string) => request(app).post('/v1/widgets/session')
+    .auth(viewer.token, { type: 'bearer' }).send({ refresh_token: secret });
+  test('requires the current account and a live refresh credential', async () => {
+    expect((await request(app).post('/v1/widgets/session').send({ refresh_token: 'test' })).status).toBe(401);
+    expect((await mint('missing-session')).status).toBe(409);
+    const foreign = await session(outsider.user.id);
+    expect((await mint(foreign.secret)).status).toBe(409);
+    const own = await session();
+    await query('UPDATE refresh_tokens SET expires_at=NOW()-INTERVAL \'1 day\' WHERE id=$1', [own.id]);
+    expect((await mint(own.secret)).status).toBe(409);
+  });
+  test('cannot authorize other API routes, and stops when its session is revoked', async () => {
+    const own = await session(); const response = await mint(own.secret);
+    expect(response.status).toBe(200); expect(response.headers['cache-control']).toContain('no-store');
+    const token = response.body.token as string;
+    await post(friend.user.id);
+    expect((await request(app).get('/v1/feed/widget').auth(token, { type: 'bearer' })).status).toBe(200);
+    for (const path of ['/v1/users/me', '/v1/feed', '/v1/conversations', '/v1/lists']) {
+      expect((await request(app).get(path).auth(token, { type: 'bearer' })).status).toBe(401);
+    }
+    expect((await request(app).post('/v1/widgets/session').auth(token, { type: 'bearer' }).send({ refresh_token: own.secret })).status).toBe(401);
+    await query('UPDATE refresh_tokens SET token_hash=$2 WHERE id=$1', [own.id, crypto.createHash('sha256').update('rotated').digest('hex')]);
+    expect((await request(app).get('/v1/feed/widget').auth(token, { type: 'bearer' })).status).toBe(200);
+    await query('UPDATE refresh_tokens SET revoked_at=NOW() WHERE id=$1', [own.id]);
+    expect((await request(app).get('/v1/feed/widget').auth(token, { type: 'bearer' })).status).toBe(401);
+  });
+  test('account deletion and session expiry invalidate issued credentials', async () => {
+    const own = await session(); const token = (await mint(own.secret)).body.token;
+    await query('UPDATE users SET deleted_at=NOW() WHERE id=$1', [viewer.user.id]);
+    expect((await request(app).get('/v1/feed/widget').auth(token, { type: 'bearer' })).status).toBe(401);
+    await query('UPDATE users SET deleted_at=NULL WHERE id=$1', [viewer.user.id]);
+    await query('UPDATE refresh_tokens SET expires_at=NOW()-INTERVAL \'1 day\' WHERE id=$1', [own.id]);
+    expect((await request(app).get('/v1/feed/widget').auth(token, { type: 'bearer' })).status).toBe(401);
+  });
+});

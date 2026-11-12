@@ -753,6 +753,14 @@ export const openApiSpec = {
     },
 
     // ─── Feed ───────────────────────────────────────────────────────────
+    '/widgets/session': {
+      post: {
+        tags: ['Feed'], security: [{ BearerAuth: [] }],
+        summary: 'Create a read-only widget credential bound to the current login session',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['refresh_token'], properties: { refresh_token: { type: 'string' } } } } } },
+        responses: { '200': { description: 'Read-only token valid for up to 30 days, checked against the live session on every widget-photo request' }, '409': { description: 'Session rotated; retry with the newly saved credential' } },
+      },
+    },
     '/feed/widget': {
       get: {
         tags: ['Feed'],

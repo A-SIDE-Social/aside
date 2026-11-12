@@ -13,7 +13,7 @@ const feedQuery = (stage: FeedStage, ...args: Parameters<typeof query>) =>
 
 // A widget needs one authorized image, without loading comments or reactions.
 // Recheck membership, audience, expiry and the history window on every refresh.
-router.get('/widget', asyncHandler(async (req: any, res: any) => {
+export const widgetPhotoHandler = asyncHandler(async (req: any, res: any) => {
   const viewer = req.user!.userId;
   const friend = req.query.user_id ?? null;
   const list = req.query.group_id ?? null;
@@ -58,7 +58,8 @@ router.get('/widget', asyncHandler(async (req: any, res: any) => {
     id: row.id, user_id: row.user_id, display_name: row.display_name,
     image_url: resolveMediaUrl(row.image_key, req), expires_at: row.expires_at,
   } : null, refresh_after_seconds: 900 });
-}));
+});
+router.get('/widget', widgetPhotoHandler);
 
 // GET / - Chronological feed from mutual follows
 router.get(

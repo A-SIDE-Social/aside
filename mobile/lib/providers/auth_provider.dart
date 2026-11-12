@@ -293,8 +293,7 @@ class AuthNotifier extends Notifier<AuthState> {
         await AppGroupChannel.setToken(currentToken);
         await AppGroupChannel.setApiBaseUrl(Env.apiBaseUrl);
         await AppGroupChannel.setUserId(user.id);
-        await AppGroupChannel.setWidgetSession(
-            userId: user.id, token: currentToken, baseURL: Env.apiBaseUrl);
+        await AppGroupChannel.reloadWidgets();
       }
 
       state = AuthState(status: AuthStatus.authenticated, user: user);
@@ -365,8 +364,7 @@ class AuthNotifier extends Notifier<AuthState> {
       final user = User.fromJson(userData);
       await _secureStorage.setUserId(user.id);
       await AppGroupChannel.setUserId(user.id);
-      await AppGroupChannel.setWidgetSession(
-          userId: user.id, token: token, baseURL: Env.apiBaseUrl);
+      await AppGroupChannel.reloadWidgets();
 
       if (displayName != null) {
         try {
@@ -430,11 +428,6 @@ class AuthNotifier extends Notifier<AuthState> {
       // session while an asynchronous platform write is in progress.
       // Keep App Group token in sync
       await AppGroupChannel.setToken(newToken);
-      final userId = state.user?.id;
-      if (userId != null) {
-        await AppGroupChannel.setWidgetSession(
-            userId: userId, token: newToken, baseURL: Env.apiBaseUrl);
-      }
     } on DioException catch (error) {
       if (error.response?.statusCode == 401) {
         if (await _secureStorage.getRefreshToken() == refreshToken) {
