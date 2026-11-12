@@ -115,3 +115,12 @@ describe('read-only widget credentials', () => {
     expect((await request(app).get('/v1/feed/widget').auth(token, { type: 'bearer' })).status).toBe(401);
   });
 });
+
+test('widget snapshots expire when the free history window ends', async () => {
+  const id = await post(friend.user.id);
+  await query("UPDATE posts SET created_at=NOW()-INTERVAL '29 days 23 hours 55 minutes' WHERE id=$1", [id]);
+  const response = await get();
+  expect(response.body.post.id).toBe(id);
+  const remaining = new Date(response.body.post.expires_at).getTime()-Date.now();
+  expect(remaining).toBeGreaterThan(0); expect(remaining).toBeLessThanOrEqual(300000);
+});

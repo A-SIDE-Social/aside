@@ -56,7 +56,7 @@ struct PhotoWidgetIntent: WidgetConfigurationIntent {
 private enum PhotoTimeline {
     static func load(selectionId: String?) async -> Timeline<FeedEntry> {
         let now = Date()
-        let retry = now.addingTimeInterval(15 * 60)
+        let retry = now.addingTimeInterval(30 * 60)
         func empty(_ name: String = "Your friends") -> Timeline<FeedEntry> {
             Timeline(entries: [.empty(now, source: name)], policy: .after(retry))
         }
@@ -107,7 +107,7 @@ private enum PhotoTimeline {
             guard expiration > Date() else { return empty(name) }
             let entry = FeedEntry(date: now, imageData: image, posterName: photo.display_name, sourceName: name, postURL: link)
             // Clear the visible photo at expiry even if the next refresh fails.
-            return Timeline(entries: [entry, .empty(expiration, source: name)], policy: .after(expiration))
+            return Timeline(entries: [entry, .empty(expiration, source: name)], policy: .after(min(retry, expiration)))
         } catch { return empty(name) }
     }
 }

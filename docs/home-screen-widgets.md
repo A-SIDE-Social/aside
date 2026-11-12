@@ -32,9 +32,10 @@ widget request. Refresh tokens never enter the widget container. The operating s
 these files until the first device unlock; this permits later background refresh.
 
 It does not persist photos
-or signed media URLs to the App Group cache. It requests a refresh after at most
-15 minutes and supplies an empty timeline entry at the earlier of that point
-or the post's expiry. Expired widget credentials require opening the app to refresh.
+or signed media URLs to the App Group cache. It requests a refresh after 30 minutes and supplies an empty timeline entry at
+the earlier of 24 hours or the post/history expiry. WidgetKit may refresh later
+than requested; this avoids making the widget blank at every routine refresh
+budget delay. Expired widget credentials require opening the app to refresh.
 
 Signing out removes the widget session, cached choices and legacy photo cache,
 then requests a timeline reload. This cannot recall an image already captured

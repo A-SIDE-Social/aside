@@ -33,7 +33,7 @@ export const widgetPhotoHandler = asyncHandler(async (req: any, res: any) => {
     if (!connected.rows.length || friend === viewer) throw new AppError(404, 'Friend not found');
   }
   const { feedHistoryDays } = getPlanLimits(await getUserSubscriptionStatus(viewer));
-  const { rows } = await query(`SELECT p.id, p.user_id, u.display_name, p.expires_at,
+  const { rows } = await query(`SELECT p.id, p.user_id, u.display_name, p.created_at, p.expires_at,
       image.image_key
     FROM posts p JOIN users u ON u.id = p.user_id
     JOIN LATERAL (
@@ -54,10 +54,15 @@ export const widgetPhotoHandler = asyncHandler(async (req: any, res: any) => {
       AND ${postAudiencePredicate('p', '$1')}
     ORDER BY p.created_at DESC, p.id DESC LIMIT 1`, [viewer, friend, list, feedHistoryDays]);
   const row = rows[0];
+  const historyExpiry = row && feedHistoryDays !== null
+    ? new Date(new Date(row.created_at).getTime() + feedHistoryDays * 86400000) : null;
+  const displayExpiry = row?.expires_at && historyExpiry
+    ? new Date(Math.min(new Date(row.expires_at).getTime(), historyExpiry.getTime()))
+    : row?.expires_at ?? historyExpiry;
   res.json({ post: row ? {
     id: row.id, user_id: row.user_id, display_name: row.display_name,
-    image_url: resolveMediaUrl(row.image_key, req), expires_at: row.expires_at,
-  } : null, refresh_after_seconds: 900 });
+    image_url: resolveMediaUrl(row.image_key, req), expires_at: displayExpiry,
+  } : null, refresh_after_seconds: 1800 });
 });
 router.get('/widget', widgetPhotoHandler);
 

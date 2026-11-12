@@ -17,7 +17,7 @@ final class WidgetStateTests: XCTestCase {
     func testExpiryIsBoundedAndInvalidExpiryFailsClosed() {
         let now = Date(timeIntervalSince1970: 0)
         func photo(_ expiry: String?) -> WidgetPhoto { WidgetPhoto(id: other, user_id: other, display_name: "Friend", image_url: "https://example.test/photo", expires_at: expiry) }
-        XCTAssertEqual(photo(nil).expiration(now: now), now.addingTimeInterval(900))
+        XCTAssertEqual(photo(nil).expiration(now: now), now.addingTimeInterval(86400))
         XCTAssertEqual(photo("1970-01-01T00:05:00.000Z").expiration(now: now), now.addingTimeInterval(300))
         XCTAssertEqual(photo("bad").expiration(now: now), now)
         XCTAssertEqual(photo(nil).deepLink(ownerId: owner)?.host, "post")

@@ -51,7 +51,7 @@ struct WidgetPhoto: Decodable {
     let expires_at: String?
 
     func expiration(now: Date) -> Date {
-        let ceiling = now.addingTimeInterval(15 * 60)
+        let ceiling = now.addingTimeInterval(24 * 60 * 60)
         guard let value = expires_at else { return ceiling }
         let format = ISO8601DateFormatter()
         format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
