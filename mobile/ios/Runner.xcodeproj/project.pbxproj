@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A18000000000000000000001 /* WidgetState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18000000000000000000003 /* WidgetState.swift */; };
+		A18000000000000000000002 /* WidgetState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18000000000000000000003 /* WidgetState.swift */; };
 		09A2E30EE6EFEEFB2D159475 /* Pods_InstadamnWidgetExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA6ED9CFE59D02206B4437C0 /* Pods_InstadamnWidgetExtension.framework */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
@@ -80,6 +82,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A18000000000000000000003 /* WidgetState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared/Sources/WidgetCore/WidgetState.swift; sourceTree = SOURCE_ROOT; };
 		08B283618B422AEA47FCEFA4 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		0ABED6FA8CD23572E47A9E2B /* Pods-InstadamnWidgetExtension.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-InstadamnWidgetExtension.release.xcconfig"; path = "Target Support Files/Pods-InstadamnWidgetExtension/Pods-InstadamnWidgetExtension.release.xcconfig"; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
@@ -276,6 +279,7 @@
 			children = (
 				C22359D42F820E5900FEFA4C /* GoogleService-Info.plist */,
 				C22358072F81D3F400FEFA4C /* WidgetBridgeHandler.swift */,
+				A18000000000000000000003 /* WidgetState.swift */,
 				C2C0NTAC1000000000000002 /* ContactsHandler.swift */,
 				C2SPEECH1000000000000002 /* SpeechPlugin.swift */,
 				C2SCRSHOT1000000000000002 /* ScreenshotPlugin.swift */,
@@ -655,6 +659,7 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				C22358082F81D3F400FEFA4C /* WidgetBridgeHandler.swift in Sources */,
+				A18000000000000000000001 /* WidgetState.swift in Sources */,
 				C2C0NTAC1000000000000001 /* ContactsHandler.swift in Sources */,
 				C2SPEECH1000000000000001 /* SpeechPlugin.swift in Sources */,
 				C2SCRSHOT1000000000000001 /* ScreenshotPlugin.swift in Sources */,
@@ -672,6 +677,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A18000000000000000000002 /* WidgetState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

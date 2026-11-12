@@ -1,138 +1,194 @@
 import WidgetKit
 import SwiftUI
+import AppIntents
+import ImageIO
 
-private let appGroupId = "group.com.lab1908.instadamn"
-
-// MARK: - Entry
+private func currentStore() -> WidgetStore? {
+    FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: WidgetStore.groupId).map { WidgetStore(container: $0) }
+}
 
 struct FeedEntry: TimelineEntry {
     let date: Date
     let imageData: Data?
     let posterName: String?
+    let sourceName: String
+    let postURL: URL?
+    static func empty(_ date: Date = Date(), source: String = "Your friends") -> FeedEntry {
+        FeedEntry(date: date, imageData: nil, posterName: nil, sourceName: source, postURL: nil)
+    }
 }
 
-// MARK: - Provider
+@available(iOS 17.0, *)
+struct PhotoSource: AppEntity {
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Friend or List"
+    static var defaultQuery = PhotoSourceQuery()
+    let id: String
+    let name: String
+    let kind: String
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)", subtitle: "\(kind == "list" ? "List" : "Friend")")
+    }
+    init(_ source: WidgetSource) { id = source.selectionId; name = source.name; kind = source.kind }
+    init(unavailable id: String) { self.id = id; name = "Open A/SIDE to choose again"; kind = "unavailable" }
+}
+
+@available(iOS 17.0, *)
+struct PhotoSourceQuery: EntityQuery {
+    func entities(for identifiers: [String]) async throws -> [PhotoSource] {
+        let available = try await suggestedEntities()
+        return identifiers.map { id in available.first(where: { $0.id == id }) ?? PhotoSource(unavailable: id) }
+    }
+    func suggestedEntities() async throws -> [PhotoSource] {
+        guard let store = currentStore(), let session = store.session else { return [] }
+        return store.sources(for: session).map(PhotoSource.init)
+    }
+}
+
+@available(iOS 17.0, *)
+struct PhotoWidgetIntent: WidgetConfigurationIntent {
+    static var isDiscoverable: Bool = false
+    static var title: LocalizedStringResource = "Your people"
+    static var description = IntentDescription("Choose a friend or one of your personal Lists. Leave this empty for all friends.")
+    @Parameter(title: "Friend or List") var source: PhotoSource?
+    static var parameterSummary: some ParameterSummary { Summary("Photos from \(\.$source)") }
+}
+
+private enum PhotoTimeline {
+    static func load(selectionId: String?) async -> Timeline<FeedEntry> {
+        let now = Date()
+        let retry = now.addingTimeInterval(15 * 60)
+        func empty(_ name: String = "Your friends") -> Timeline<FeedEntry> {
+            Timeline(entries: [.empty(now, source: name)], policy: .after(retry))
+        }
+        guard let store = currentStore(), let session = store.session else { return empty() }
+        let source: WidgetSource?
+        if let selectionId {
+            // A removed choice or an old account's selection never falls back
+            // to somebody else's photos.
+            guard let selected = store.sources(for: session).first(where: { $0.selectionId == selectionId }) else { return empty("Open A/SIDE to choose again") }
+            source = selected
+        } else { source = nil }
+        let name = source?.name ?? "Your friends"
+        guard let url = session.endpoint(source: source) else { return empty(name) }
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.timeoutIntervalForRequest = 12; config.timeoutIntervalForResource = 20
+        let network = URLSession(configuration: config)
+        defer { network.invalidateAndCancel() }
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await network.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  store.session == session,
+                  let photo = try JSONDecoder().decode(WidgetResponse.self, from: data).post,
+                  photo.user_id != session.userId, let imageURL = URL(string: photo.image_url),
+                  imageURL.scheme == "https" || (imageURL.scheme == "http" && ["localhost", "127.0.0.1"].contains(imageURL.host ?? "")) else { return empty(name) }
+            // Stream with a fixed cap and downsample before decoding a full-size
+            // photo. Never attach the API credential to the media request.
+            let (bytes, imageResponse) = try await network.bytes(from: imageURL)
+            guard (imageResponse as? HTTPURLResponse)?.statusCode == 200 else { return empty(name) }
+            var encoded = Data()
+            for try await byte in bytes {
+                if encoded.count >= 10 * 1024 * 1024 { return empty(name) }
+                encoded.append(byte)
+            }
+            guard store.session == session,
+                  let imageSource = CGImageSourceCreateWithData(encoded as CFData, nil),
+                  let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 600,
+                    kCGImageSourceShouldCacheImmediately: true,
+                  ] as CFDictionary),
+                  let image = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.8),
+                  let link = photo.deepLink(ownerId: session.userId) else { return empty(name) }
+            let expiration = photo.expiration(now: now)
+            guard expiration > Date() else { return empty(name) }
+            let entry = FeedEntry(date: now, imageData: image, posterName: photo.display_name, sourceName: name, postURL: link)
+            // Clear the visible photo at expiry even if the next refresh fails.
+            return Timeline(entries: [entry, .empty(expiration, source: name)], policy: .after(expiration))
+        } catch { return empty(name) }
+    }
+}
 
 struct KinWidgetProvider: TimelineProvider {
-    func placeholder(in context: Context) -> FeedEntry {
-        FeedEntry(date: Date(), imageData: nil, posterName: "Friend")
-    }
-
-    func getSnapshot(in context: Context, completion: @escaping (FeedEntry) -> Void) {
-        let entry = loadEntry()
-        completion(entry)
-    }
-
+    func placeholder(in context: Context) -> FeedEntry { .empty() }
+    func getSnapshot(in context: Context, completion: @escaping (FeedEntry) -> Void) { completion(.empty()) }
     func getTimeline(in context: Context, completion: @escaping (Timeline<FeedEntry>) -> Void) {
-        let entry = loadEntry()
-        let next = Date().addingTimeInterval(15 * 60)
-        completion(Timeline(entries: [entry], policy: .after(next)))
-    }
-
-    private func loadEntry() -> FeedEntry {
-        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId) else {
-            return FeedEntry(date: Date(), imageData: nil, posterName: nil)
-        }
-
-        var thumbData: Data? = nil
-        var posterName: String? = nil
-
-        if let fileData = try? Data(contentsOf: container.appendingPathComponent("widget_image.jpg")),
-           let original = UIImage(data: fileData) {
-            let maxDim: CGFloat = 200
-            let scale = min(maxDim / original.size.width, maxDim / original.size.height, 1.0)
-            let newSize = CGSize(width: original.size.width * scale, height: original.size.height * scale)
-            let renderer = UIGraphicsImageRenderer(size: newSize)
-            thumbData = renderer.jpegData(withCompressionQuality: 0.7) { _ in
-                original.draw(in: CGRect(origin: .zero, size: newSize))
-            }
-        }
-
-        if let meta = try? Data(contentsOf: container.appendingPathComponent("widget_meta.json")),
-           let json = try? JSONSerialization.jsonObject(with: meta) as? [String: String] {
-            posterName = json["poster_name"]
-        }
-
-        return FeedEntry(date: Date(), imageData: thumbData, posterName: posterName)
+        Task { completion(await PhotoTimeline.load(selectionId: nil)) }
     }
 }
 
-// MARK: - View
+@available(iOS 17.0, *)
+struct ConfigurablePhotoProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> FeedEntry { .empty() }
+    func snapshot(for configuration: PhotoWidgetIntent, in context: Context) async -> FeedEntry { .empty(source: configuration.source?.name ?? "Your friends") }
+    func timeline(for configuration: PhotoWidgetIntent, in context: Context) async -> Timeline<FeedEntry> {
+        await PhotoTimeline.load(selectionId: configuration.source?.id)
+    }
+}
 
 struct KinWidgetEntryView: View {
-    var entry: FeedEntry
-
+    let entry: FeedEntry
     var body: some View {
-        if entry.imageData != nil {
-            GeometryReader { geo in
-                ZStack {
-                    if let data = entry.imageData, let img = UIImage(data: data) {
-                        Image(uiImage: img)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                    }
-
-                    VStack {
-                        Spacer()
-                        LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom)
-                            .frame(height: 60)
-                    }
-
-                    if let name = entry.posterName, !name.isEmpty {
-                        VStack {
-                            Spacer()
-                            HStack {
-                                Text(name)
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.white)
-                                    .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
-                                Spacer()
-                            }
-                        }
-                        .padding(12)
-                    }
+        ZStack(alignment: .bottomLeading) {
+            if let data = entry.imageData, let image = UIImage(data: data) {
+                GeometryReader { geo in
+                    Image(uiImage: image).resizable().scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height).clipped()
                 }
+                LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.posterName ?? "").font(.headline).lineLimit(2)
+                    if entry.sourceName != "Your friends" && entry.sourceName != entry.posterName {
+                        Text(entry.sourceName).font(.caption).lineLimit(1)
+                    }
+                }.foregroundStyle(.white).padding(14)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo.on.rectangle.angled").font(.title2)
+                    Text(entry.sourceName).font(.headline).lineLimit(2)
+                    Text("Open A/SIDE").font(.caption)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).padding().foregroundStyle(.secondary)
             }
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "person.2.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                Text("Open A/SIDE")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding()
         }
+        .privacySensitive()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(entry.imageData != nil ? "Photo from \(entry.posterName ?? "a friend"). Open this post in A/SIDE." : "\(entry.sourceName). Open A/SIDE to refresh or set up your widget.")
+        .widgetURL(entry.postURL ?? URL(string: "aside://widgets"))
     }
 }
 
-// MARK: - Widget
-
+@available(iOS 17.0, *)
 struct KinWidget: Widget {
     let kind = "KinWidget"
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: KinWidgetProvider()) { entry in
-            if #available(iOSApplicationExtension 17.0, *) {
-                KinWidgetEntryView(entry: entry)
-                    .containerBackground(.black, for: .widget)
-            } else {
-                KinWidgetEntryView(entry: entry)
-            }
+        AppIntentConfiguration(kind: kind, intent: PhotoWidgetIntent.self, provider: ConfigurablePhotoProvider()) { entry in
+            KinWidgetEntryView(entry: entry).containerBackground(.black, for: .widget)
         }
-        .configurationDisplayName("Latest Photo")
-        .description("See the latest photo from your friends.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .configurationDisplayName("Your people")
+        .description("Photos from a friend or personal List. Tap to open the post.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
         .contentMarginsDisabled()
+    }
+}
+
+struct LegacyPhotoWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "KinWidget", provider: KinWidgetProvider()) { KinWidgetEntryView(entry: $0) }
+            .configurationDisplayName("Latest Photo")
+            .description("Photos from your friends. Open A/SIDE to refresh.")
+            .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 @main
 struct KinWidgetBundle: WidgetBundle {
-    var body: some Widget {
-        KinWidget()
+    var body: some Widget { availableWidget() }
+    private func availableWidget() -> some Widget {
+        let selected: any Widget
+        if #available(iOS 17.0, *) { selected = KinWidget() } else { selected = LegacyPhotoWidget() }
+        return WidgetBundleBuilder.buildOptional(WidgetBundleBuilder.buildLimitedAvailability(selected))
     }
 }

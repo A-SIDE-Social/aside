@@ -43,17 +43,36 @@ class WidgetBridgeHandler: NSObject, FlutterPlugin {
 
         case "clearToken":
             Self.writeToContainer(key: "auth_token", value: "")
+            Self.writeToContainer(key: "user_id", value: "")
+            if let store = Self.store {
+                try? FileManager.default.removeItem(at: store.container.appendingPathComponent("widget_session.json"))
+                store.clearWidgetData()
+            }
             reloadWidgets()
             result(true)
 
-        case "cacheWidgetImage":
+        case "setWidgetSession":
+            guard let args = call.arguments as? [String: String],
+                  let session = WidgetSession(userId: args["userId"], token: args["token"], baseURL: args["baseURL"]),
+                  Self.readFromContainer(key: "user_id") == session.userId,
+                  let store = Self.store else { result(false); return }
+            if store.session?.userId != session.userId { store.clearWidgetData() }
+            do {
+                try JSONEncoder().encode(session).write(to: store.container.appendingPathComponent("widget_session.json"), options: [.atomic, .completeFileProtection])
+                reloadWidgets(); result(true)
+            } catch { result(false) }
+
+        case "syncWidgetSources":
             guard let args = call.arguments as? [String: Any],
-                  let imageUrl = args["imageUrl"] as? String,
-                  let posterName = args["posterName"] as? String else {
-                result(FlutterError(code: "INVALID_ARGS", message: "imageUrl and posterName required", details: nil))
-                return
-            }
-            cacheWidgetImage(imageUrl: imageUrl, posterName: posterName, result: result)
+                  let ownerId = args["ownerId"] as? String,
+                  let store = Self.store, store.session?.userId == ownerId,
+                  let data = try? JSONSerialization.data(withJSONObject: args),
+                  let sources = try? JSONDecoder().decode(WidgetSources.self, from: data),
+                  sources.sources.allSatisfy({ $0.isValid && $0.ownerId == ownerId }) else { result(false); return }
+            do {
+                try data.write(to: store.container.appendingPathComponent("widget_sources.json"), options: [.atomic, .completeFileProtection])
+                reloadWidgets(); result(true)
+            } catch { result(false) }
 
         case "reloadWidgets":
             reloadWidgets()
@@ -64,43 +83,8 @@ class WidgetBridgeHandler: NSObject, FlutterPlugin {
         }
     }
 
-    private func cacheWidgetImage(imageUrl: String, posterName: String, result: @escaping FlutterResult) {
-        guard let url = URL(string: imageUrl),
-              let containerUrl = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: Self.appGroupId) else {
-            result(false)
-            return
-        }
-
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            guard let data = data, let original = UIImage(data: data) else {
-                result(false)
-                return
-            }
-
-            // Resize to max 400px for widget memory limits (~30MB)
-            let maxDim: CGFloat = 400
-            let size = original.size
-            let scale = min(maxDim / size.width, maxDim / size.height, 1.0)
-            let newSize = CGSize(width: size.width * scale, height: size.height * scale)
-            let renderer = UIGraphicsImageRenderer(size: newSize)
-            let resized = renderer.jpegData(withCompressionQuality: 0.8) { ctx in
-                original.draw(in: CGRect(origin: .zero, size: newSize))
-            }
-
-            let imageFile = containerUrl.appendingPathComponent("widget_image.jpg")
-            let metaFile = containerUrl.appendingPathComponent("widget_meta.json")
-
-            try? resized.write(to: imageFile)
-
-            let meta: [String: String] = ["poster_name": posterName]
-            if let metaData = try? JSONSerialization.data(withJSONObject: meta) {
-                try? metaData.write(to: metaFile)
-            }
-
-            self.reloadWidgets()
-            result(true)
-        }.resume()
+    private static var store: WidgetStore? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId).map { WidgetStore(container: $0) }
     }
 
     private func reloadWidgets() {

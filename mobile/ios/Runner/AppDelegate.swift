@@ -92,16 +92,10 @@ import WidgetKit
     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
   ) {
-    // Check if this is a new_post notification with an image to cache for the widget
-    // FCM puts custom data fields directly in userInfo (not nested under "data")
-    let type = userInfo["type"] as? String
-    let imageUrl = userInfo["image_url"] as? String
-    let posterName = userInfo["poster_name"] as? String
-    if type == "new_post", let imageUrl = imageUrl, !imageUrl.isEmpty, let posterName = posterName {
-      cacheWidgetImage(imageUrl: imageUrl, posterName: posterName) {
-        completionHandler(.newData)
-      }
-      return
+    // A notification is a refresh hint, never authority to display its image.
+    // Each widget fetches its own selection with the signed-in account's token.
+    if userInfo["type"] as? String == "new_post" {
+      WidgetKit.WidgetCenter.shared.reloadTimelines(ofKind: "KinWidget")
     }
 
     super.application(application, didReceiveRemoteNotification: userInfo, fetchCompletionHandler: completionHandler)
@@ -123,6 +117,9 @@ import WidgetKit
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
     clearAppIconBadge()
+    if notification.request.content.userInfo["type"] as? String == "new_post" {
+      WidgetKit.WidgetCenter.shared.reloadTimelines(ofKind: "KinWidget")
+    }
     super.userNotificationCenter(
       center,
       willPresent: notification,
@@ -130,37 +127,4 @@ import WidgetKit
     )
   }
 
-  /// Download an image and cache it in the App Group container for the widget.
-  private func cacheWidgetImage(imageUrl: String, posterName: String, completion: @escaping () -> Void) {
-    guard let url = URL(string: imageUrl),
-          let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.lab1908.instadamn") else {
-      completion()
-      return
-    }
-
-    URLSession.shared.dataTask(with: url) { data, response, error in
-      defer { completion() }
-
-      guard let data = data, error == nil,
-            let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-        return
-      }
-
-      // Write image
-      let imageFile = container.appendingPathComponent("widget_image.jpg")
-      try? data.write(to: imageFile)
-
-      // Write metadata
-      let meta: [String: String] = ["poster_name": posterName]
-      if let metaData = try? JSONSerialization.data(withJSONObject: meta) {
-        let metaFile = container.appendingPathComponent("widget_meta.json")
-        try? metaData.write(to: metaFile)
-      }
-
-      // Tell WidgetKit to reload
-      if #available(iOS 14.0, *) {
-        WidgetKit.WidgetCenter.shared.reloadAllTimelines()
-      }
-    }.resume()
-  }
 }

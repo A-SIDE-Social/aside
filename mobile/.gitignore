@@ -68,3 +68,6 @@ app.*.map.json
 
 # Rust crate build artifacts (E2EE crypto FFI)
 /rust/target/
+
+# Direct Xcode build output
+/ios/build/

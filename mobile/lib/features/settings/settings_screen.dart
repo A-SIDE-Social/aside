@@ -253,6 +253,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
           const SizedBox(height: 16),
 
+          if (defaultTargetPlatform == TargetPlatform.iOS) ...[
+            AppCard(
+                padding: EdgeInsets.zero,
+                child: _SettingsRow(
+                  title: 'Home Screen widgets',
+                  onTap: () => context.push('/settings/widgets'),
+                  showDivider: false,
+                )),
+            const SizedBox(height: 16),
+          ],
+
           // Info & legal
           AppCard(
             padding: EdgeInsets.zero,

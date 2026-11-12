@@ -753,6 +753,23 @@ export const openApiSpec = {
     },
 
     // ─── Feed ───────────────────────────────────────────────────────────
+    '/feed/widget': {
+      get: {
+        tags: ['Feed'],
+        summary: 'Get one authorized photo or video thumbnail for a Home Screen widget',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'user_id', in: 'query' as const, schema: { type: 'string', format: 'uuid' }, description: 'One mutual connection; cannot be combined with group_id' },
+          { name: 'group_id', in: 'query' as const, schema: { type: 'string', format: 'uuid' }, description: 'One personal List owned by the caller; cannot be combined with user_id' },
+        ],
+        responses: {
+          '200': { description: 'A post with id, user_id, display_name, image_url and expires_at, or post: null. refresh_after_seconds is 900. No-store; current audience, connection, expiry and history limits apply.' },
+          '400': { description: 'Invalid or conflicting selectors' },
+          '401': { description: 'Sign in again in the containing app' },
+          '404': { description: 'Source no longer available to this account' },
+        },
+      },
+    },
     '/feed': {
       get: {
         tags: ['Feed'],
