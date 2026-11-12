@@ -64,7 +64,6 @@ export const widgetPhotoHandler = asyncHandler(async (req: any, res: any) => {
     image_url: resolveMediaUrl(row.image_key, req), expires_at: displayExpiry,
   } : null, refresh_after_seconds: 1800 });
 });
-router.get('/widget', widgetPhotoHandler);
 
 // GET / - Chronological feed from mutual follows
 router.get(

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
-import { deviceRevokeLimit } from '../middleware/rateLimit';
+import { deviceRevokeLimit, writeLimit } from '../middleware/rateLimit';
 import authRouter from './auth';
 import usersRouter from './users';
 import followsRouter from './follows';
@@ -8,7 +8,6 @@ import invitesRouter from './invites';
 import inviteLinkRouter from './invite-link';
 import feedRouter, { widgetPhotoHandler } from './feed';
 import { authenticateWidget, createWidgetSession } from '../middleware/widgetAuth';
-import { writeLimit } from '../middleware/rateLimit';
 import postsRouter from './posts';
 import uploadsRouter from './uploads';
 import commentsRouter from './comments';
@@ -40,7 +39,9 @@ router.use('/follows', authenticate, followsRouter);
 // here. Each route auth-gates internally so the redirect-to-signup
 // flow can call POST /request as soon as the user is authenticated.
 router.use('/invite-link', inviteLinkRouter);
-router.get('/feed/widget', authenticateWidget, widgetPhotoHandler);
+const widgetFeedRouter = Router();
+widgetFeedRouter.get('/widget', authenticateWidget, widgetPhotoHandler);
+router.use('/feed', widgetFeedRouter);
 router.post('/widgets/session', authenticate, writeLimit, createWidgetSession);
 router.use('/feed', authenticate, feedRouter);
 router.use('/posts', authenticate, voiceCaptionsRouter);

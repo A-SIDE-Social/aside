@@ -246,3 +246,24 @@ test('serves numeric metrics only on container loopback', async () => {
     await request(server).get('/metrics.json?anything=1').expect(404);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test('widget routes keep fixed metric templates without source or credential data', async () => {
+  const app = express().use(measureHttp).use(express.json());
+  const root = express.Router();
+  const feed = express.Router();
+  feed.get('/widget', (_req, res) => res.json({ post: null }));
+  root.use('/feed', feed);
+  root.post('/widgets/session', (_req, res) => res.json({ token: 'unused' }));
+  app.use('/v1', root);
+  await request(app).get('/v1/feed/widget?user_id=private-friend').set('Authorization', 'Bearer private-widget');
+  await request(app).post('/v1/widgets/session').send({ refresh_token: 'private-refresh' });
+  const metrics = await performanceRegistry.getMetricsAsJSON();
+  const metric = performanceRegistry.getSingleMetric('aside_http_duration_seconds') as Histogram<string>;
+  const counts = (await metric.get()).values
+    .filter(row => row.metricName?.endsWith('_count'));
+  expect(counts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ labels: { method: 'GET', route: '/v1/feed/widget', outcome: 'ok' } }),
+    expect.objectContaining({ labels: { method: 'POST', route: '/v1/widgets/session', outcome: 'ok' } }),
+  ]));
+  for (const value of ['private-friend', 'private-widget', 'private-refresh']) expect(JSON.stringify(metrics)).not.toContain(value);
+});
