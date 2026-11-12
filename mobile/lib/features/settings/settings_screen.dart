@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/config/app_colors.dart';
 import '../../core/config/constants.dart';
@@ -21,6 +22,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  late final _packageInfo = PackageInfo.fromPlatform();
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -321,10 +323,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
                 _SettingsRow(
                   title: 'Version',
-                  trailing: Text(
-                    '1.0.0',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: colors.textTertiary,
+                  trailing: FutureBuilder<PackageInfo>(
+                    future: _packageInfo,
+                    builder: (context, snapshot) => Text(
+                      snapshot.hasData
+                          ? '${snapshot.data!.version} (${snapshot.data!.buildNumber})'
+                          : '…',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: colors.textTertiary),
                     ),
                   ),
                   showChevron: false,
