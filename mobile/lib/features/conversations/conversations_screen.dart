@@ -8,6 +8,7 @@ import '../../core/config/app_colors.dart';
 import '../../models/models.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
+import 'messaging_recovery_screen.dart';
 
 /// Provider that fetches and caches the conversations list.
 ///
@@ -242,6 +243,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         'Messaging setup couldn’t finish on this device. Your keys have been kept. Retry or contact support.',
       KeyRegistrationIssue.prekeyConflict =>
         'Messaging setup needs another attempt. Your keys have been kept. Retry or contact support if this continues.',
+      KeyRegistrationIssue.conflict =>
+        'Messaging is registered to a different device or login. Your keys have been kept. Retry setup or confirm a move to this device.',
       _ =>
         'Messaging setup needs help with the saved keys. Your keys have been kept. Contact support before reinstalling or changing devices.',
     };
@@ -257,13 +260,26 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
           ? SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(children: [
-                  Expanded(child: Text(recoveryMessage)),
-                  TextButton(
-                    onPressed: () =>
-                        ref.read(authProvider.notifier).retryKeyRegistration(),
-                    child: const Text('Retry setup'),
-                  ),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(recoveryMessage),
+                  Wrap(alignment: WrapAlignment.end, children: [
+                    TextButton(
+                      onPressed: () => ref
+                          .read(authProvider.notifier)
+                          .retryKeyRegistration(),
+                      child: const Text('Retry setup'),
+                    ),
+                    if (auth.keyRegistrationIssue ==
+                        KeyRegistrationIssue.conflict)
+                      TextButton(
+                          onPressed: () async {
+                            await Navigator.of(context).push<bool>(
+                                MaterialPageRoute(
+                                    builder: (_) =>
+                                        const MessagingRecoveryScreen()));
+                          },
+                          child: const Text('Move messaging here')),
+                  ]),
                 ]),
               ),
             )

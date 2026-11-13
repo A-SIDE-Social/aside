@@ -4,6 +4,11 @@ import { asyncHandler } from '../helpers';
 import { AppError } from '../middleware/errorHandler';
 import type { PoolClient } from 'pg';
 import { measureKeyUploadHandler, measureStage } from '../performance';
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+import { config } from '../config';
+import { requestEmailOtp, verifyEmailOtp } from '../services/emailOtp';
+import { authLimit } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -164,6 +169,149 @@ function decodeKyberPub(value: unknown, name: string): Buffer {
   return buf;
 }
 
+function parseBundle(body: any) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new AppError(400, 'A public key bundle is required');
+  const identityPub = decodeBytes(body.identity_key_pub, 33, 'identity_key_pub');
+  const spkId = validateKeyId(body.signed_prekey?.id, 'signed_prekey.id');
+  const spkPub = decodeBytes(body.signed_prekey?.public, 33, 'signed_prekey.public');
+  const spkSig = decodeBytes(body.signed_prekey?.signature, 64, 'signed_prekey.signature');
+  if (!Array.isArray(body.one_time_prekeys) || body.one_time_prekeys.length > 200 ||
+      !Array.isArray(body.kyber_prekeys) || body.kyber_prekeys.length > 100) {
+    throw new AppError(400, 'A bounded public prekey bundle is required');
+  }
+  const otpks = body.one_time_prekeys.map((k: any) => ({
+    id: validateKeyId(k?.id, 'one_time_prekey.id'), pub: decodeBytes(k?.public, 33, 'one_time_prekey.public'),
+  }));
+  const kpks = body.kyber_prekeys.map((k: any) => ({
+    id: validateKeyId(k?.id, 'kyber_prekey.id'), pub: decodeKyberPub(k?.public, 'kyber_prekey.public'),
+    sig: decodeBytes(k?.signature, 64, 'kyber_prekey.signature'),
+  }));
+  // Reject malformed batches before sending a code, not after confirmation.
+  if (new Set(otpks.map((k: any) => k.id)).size !== otpks.length ||
+      new Set(kpks.map((k: any) => k.id)).size !== kpks.length || !kpks.length) {
+    throw new AppError(400, 'Recovery requires unique prekeys and a Kyber prekey');
+  }
+  return { identityPub, spkId, spkPub, spkSig, otpks, kpks };
+}
+
+const recoveryKey = () => crypto.createHmac('sha256', config.jwtSecret).update('messaging-device-recovery-v1').digest();
+const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
+const recoveryRequired = () => new AppError(409, 'Messaging setup changed. Request a new confirmation code.',
+  'key_identity_conflict', 'key_recovery_required');
+
+// Refresh credentials are only compared with current hashes; this operation
+// does not rotate, extend, revive or consume a login session.
+async function currentSession(client: Pick<PoolClient, 'query'>, userId: string, credential: unknown): Promise<string | null> {
+  if (typeof credential !== 'string' || !credential || credential.length > 4096) return null;
+  const { rows } = await client.query(`SELECT id FROM refresh_tokens WHERE user_id=$1 AND token_hash=$2
+    AND revoked_at IS NULL AND expires_at > clock_timestamp() FOR SHARE`, [userId, digest(credential)]);
+  return rows[0]?.id ?? null;
+}
+
+async function requireRegistryOwner(client: PoolClient, userId: string, row: any, credential: unknown) {
+  if (!row?.owner_session_id) return;
+  const sessionId = await currentSession(client, userId, credential);
+  if (!sessionId && credential) throw new AppError(409, 'Refresh the current session and retry.', undefined, 'key_session_changed');
+  if (row.owner_session_id !== sessionId) {
+    throw new AppError(409, 'Messaging belongs to another login session. Confirm a device change to continue.',
+      'key_identity_conflict', 'key_bundle_conflict');
+  }
+}
+
+// These tickets are functional protocol credentials, never diagnostic labels.
+// A separate signing key/audience prevents their use as login or widget tokens.
+router.post('/keys/recovery/request', authLimit, asyncHandler(async (req: any, res: any) => {
+  const userId = req.user!.userId;
+  if (req.body?.owner_user_id !== userId) throw new AppError(403, 'Encryption keys belong to a different account');
+  const bundleHash = digest(JSON.stringify(parseBundle(req.body)));
+  const client = await getClient();
+  let sessionId: string | null;
+  let previousId: string | null;
+  let email: string;
+  try {
+    await client.query('BEGIN');
+    sessionId = await currentSession(client, userId, req.body.refresh_token);
+    if (!sessionId) throw new AppError(409, 'Refresh the current session and retry.', undefined, 'key_session_changed');
+    const account = (await client.query('SELECT email FROM users WHERE id=$1 AND deleted_at IS NULL', [userId])).rows[0];
+    if (!account?.email) throw new AppError(409, 'An email account is required for messaging recovery');
+    email = account.email;
+    previousId = (await client.query('SELECT id FROM device_keys WHERE user_id=$1 AND revoked_at IS NULL', [userId])).rows[0]?.id ?? null;
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+  await requestEmailOtp(email, 'messaging-device-change');
+  const ticket = jwt.sign({ userId, sessionId, previousId, nextId: crypto.randomUUID(), bundleHash, emailHash: digest(email) },
+    recoveryKey(), { algorithm: 'HS256', audience: 'messaging-device-recovery', expiresIn: '10m' });
+  res.set('Cache-Control', 'private, no-store').json({ ticket });
+}));
+
+router.post('/keys/recovery/confirm', authLimit, asyncHandler(async (req: any, res: any) => {
+  const userId = req.user!.userId;
+  if (req.body?.owner_user_id !== userId) throw new AppError(403, 'Encryption keys belong to a different account');
+  const bundle = parseBundle(req.body);
+  let ticket: jwt.JwtPayload;
+  try {
+    if (typeof req.body.ticket !== 'string' || req.body.ticket.length > 4096) throw recoveryRequired();
+    const payload = jwt.verify(req.body.ticket, recoveryKey(), { algorithms: ['HS256'], audience: 'messaging-device-recovery' });
+    if (typeof payload === 'string' || payload.userId !== userId || payload.bundleHash !== digest(JSON.stringify(bundle)) ||
+        typeof payload.sessionId !== 'string' || typeof payload.nextId !== 'string') throw recoveryRequired();
+    ticket = payload;
+  } catch { throw recoveryRequired(); }
+  if (typeof req.body.code !== 'string' || !/^\d{6}$/.test(req.body.code)) throw new AppError(400, 'Enter the six-digit email code');
+  const account = (await query('SELECT email FROM users WHERE id=$1 AND deleted_at IS NULL', [userId])).rows[0];
+  if (!account?.email || digest(account.email) !== ticket.emailHash) throw recoveryRequired();
+
+  // A completed ticket may be retried after its code was consumed. Only its
+  // exact generated registry row qualifies; never reinsert consumed prekeys.
+  async function inspect(client: PoolClient): Promise<boolean> {
+    await lockRegistry(client, userId);
+    const currentAccount = (await client.query('SELECT email, deleted_at FROM users WHERE id=$1', [userId])).rows[0];
+    if (!currentAccount?.email || currentAccount.deleted_at || digest(currentAccount.email) !== ticket.emailHash) throw recoveryRequired();
+    const sessionId = await currentSession(client, userId, req.body.refresh_token);
+    if (sessionId !== ticket.sessionId) throw new AppError(409, 'Refresh the current session and retry.', undefined, 'key_session_changed');
+    const row = (await client.query('SELECT id FROM device_keys WHERE user_id=$1 AND revoked_at IS NULL', [userId])).rows[0];
+    if (row?.id === ticket.nextId) return true;
+    if ((row?.id ?? null) !== ticket.previousId) throw recoveryRequired();
+    return false;
+  }
+  const check = await getClient();
+  let completed: boolean;
+  try {
+    await check.query('BEGIN');
+    completed = await inspect(check);
+    await check.query('COMMIT');
+  } catch (error) { await check.query('ROLLBACK'); throw error; }
+  finally { check.release(); }
+  if (!completed) try { await verifyEmailOtp(account.email, req.body.code, async client => {
+    if (await inspect(client)) return;
+    await client.query('UPDATE device_keys SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL', [userId]);
+    await client.query('DELETE FROM one_time_prekeys WHERE user_id=$1', [userId]);
+    await client.query('DELETE FROM kyber_prekeys WHERE user_id=$1', [userId]);
+    await client.query(`INSERT INTO device_keys
+      (id, user_id, identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig, owner_session_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [ticket.nextId, userId, bundle.identityPub, bundle.spkId, bundle.spkPub, bundle.spkSig, ticket.sessionId]);
+    await storePrekeys(client, userId, 'one_time_prekeys', bundle.otpks);
+    await storePrekeys(client, userId, 'kyber_prekeys', bundle.kpks);
+    // Other group senders must redistribute fresh sender keys to this device.
+    // Do this once per committed transfer, never on an idempotent retry.
+    await client.query(`UPDATE conversations SET epoch=epoch+1 WHERE conversation_type='group' AND is_e2ee=true
+      AND id IN (SELECT conversation_id FROM conversation_members WHERE user_id=$1)`, [userId]);
+  }, 'messaging-device-change'); } catch (error) {
+    // Concurrent retries can both inspect before the winner consumes the code.
+    // Recheck only after a code rejection, never repeat writes or issue a code.
+    if (!(error instanceof AppError) || error.code !== 'otp_invalid') throw error;
+    const retry = await getClient();
+    try {
+      await retry.query('BEGIN');
+      if (!await inspect(retry)) throw error;
+      await retry.query('COMMIT');
+    } catch (retryError) { await retry.query('ROLLBACK'); throw retryError; }
+    finally { retry.release(); }
+  }
+  res.set('Cache-Control', 'private, no-store').json({ message: 'Messaging moved to this device' });
+}));
+
 // POST /keys/upload — First-run upload of a full key bundle.
 //
 // Body:
@@ -235,12 +383,13 @@ router.post(
 
       await measureStage('key_upload_registry', async () => {
         const existing = await client.query(
-          `SELECT identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig
+          `SELECT identity_key_pub, signed_prekey_id, signed_prekey_pub, signed_prekey_sig, owner_session_id
            FROM device_keys WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE`,
           [userId],
         );
         if (existing.rows.length > 0) {
           const old = existing.rows[0];
+          await requireRegistryOwner(client, userId, old, req.body.refresh_token);
           if (!old.identity_key_pub.equals(identityPub) || old.signed_prekey_id !== spkId ||
               !old.signed_prekey_pub.equals(spkPub) || !old.signed_prekey_sig.equals(spkSig)) {
             throw keyConflict();
@@ -369,7 +518,7 @@ router.post(
       await lockRegistry(client, userId);
 
       const keysRow = await client.query(
-        `SELECT id, identity_key_pub FROM device_keys
+        `SELECT id, identity_key_pub, owner_session_id FROM device_keys
          WHERE user_id = $1 AND revoked_at IS NULL`,
         [userId],
       );
@@ -383,6 +532,7 @@ router.post(
       if (expectedIdentity && !keysRow.rows[0].identity_key_pub.equals(expectedIdentity)) {
         throw keyConflict();
       }
+      await requireRegistryOwner(client, userId, keysRow.rows[0], req.body.refresh_token);
 
       await storePrekeys(client, userId, 'one_time_prekeys', otpks);
       await storePrekeys(client, userId, 'kyber_prekeys', kpks);
@@ -422,23 +572,29 @@ router.post(
       'signed_prekey.signature',
     );
 
-    const { rowCount } = await query(
-      `UPDATE device_keys
-       SET signed_prekey_id = $1,
-           signed_prekey_pub = $2,
-           signed_prekey_sig = $3,
-           rotated_at = now()
-       WHERE user_id = $4 AND revoked_at IS NULL`,
-      [spkId, spkPub, spkSig, userId],
-    );
-    if (rowCount === 0) {
-      throw new AppError(
-        404,
-        'no active key set; POST /keys/upload before rotating',
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+      await lockRegistry(client, userId);
+      const row = (await client.query('SELECT owner_session_id FROM device_keys WHERE user_id=$1 AND revoked_at IS NULL', [userId])).rows[0];
+      await requireRegistryOwner(client, userId, row, req.body.refresh_token);
+      const { rowCount } = await client.query(
+        `UPDATE device_keys
+         SET signed_prekey_id = $1,
+             signed_prekey_pub = $2,
+             signed_prekey_sig = $3,
+             rotated_at = now()
+         WHERE user_id = $4 AND revoked_at IS NULL`,
+        [spkId, spkPub, spkSig, userId],
       );
-    }
+      if (rowCount === 0) {
+        throw new AppError(404, 'no active key set; POST /keys/upload before rotating');
+      }
 
-    res.json({ message: 'Signed prekey rotated', id: spkId });
+      await client.query('COMMIT');
+      res.json({ message: 'Signed prekey rotated', id: spkId });
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
   }),
 );
 
@@ -452,11 +608,23 @@ router.post(
   '/revoke',
   asyncHandler(async (req: any, res: any) => {
     const userId = req.user!.userId;
+    if (req.body?.owner_user_id !== undefined && req.body.owner_user_id !== userId) {
+      throw new AppError(403, 'Encryption keys belong to a different account');
+    }
 
     const client = await getClient();
     try {
       await client.query('BEGIN');
       await lockRegistry(client, userId);
+
+      const active = (await client.query('SELECT owner_session_id FROM device_keys WHERE user_id=$1 AND revoked_at IS NULL', [userId])).rows[0];
+      if (active?.owner_session_id && active.owner_session_id !== await currentSession(client, userId, req.body?.refresh_token)) {
+        // Legacy/stale-device sign-out is harmless to a newer registration.
+        // Do not delete its prekeys even if the old client supplies no proof.
+        await client.query('COMMIT');
+        res.json({ message: 'No keys owned by this session to revoke' });
+        return;
+      }
 
       const { rowCount } = await client.query(
         `UPDATE device_keys

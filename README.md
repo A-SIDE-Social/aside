@@ -41,6 +41,9 @@ docker-compose.yml + Dockerfile.dev    Local dev stack
 - Object storage is S3-compatible: AWS S3, DigitalOcean Spaces,
   Cloudflare R2, MinIO, and similar providers work.
 
+For version 1.8 messaging recovery and its migration/rollback requirements,
+see [Messaging on a replacement device](docs/messaging-device-change.md).
+
 ## Running Locally
 
 Prereqs: Docker + Docker Compose, Node 20+, Flutter SDK 3.5+, Rust

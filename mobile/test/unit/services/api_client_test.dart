@@ -212,6 +212,9 @@ void main() {
       addTearDown(() => server.close(force: true));
       final storage = MockSecureStorage();
       when(() => storage.getAuthToken()).thenAnswer((_) async => null);
+      when(() => storage.getUserId()).thenAnswer((_) async => 'fixture-owner');
+      when(() => storage.getRefreshToken())
+          .thenAnswer((_) async => 'fixture-session');
       var authFailures = 0;
       final client = ApiClient(
         secureStorage: storage,
@@ -226,7 +229,7 @@ void main() {
       );
 
       expect(authFailures, 0);
-      verifyNever(() => storage.getRefreshToken());
+      verifyNever(() => storage.refreshNonce(any()));
     });
   });
 }

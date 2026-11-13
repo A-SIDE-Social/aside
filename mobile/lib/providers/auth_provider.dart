@@ -248,6 +248,30 @@ class AuthNotifier extends Notifier<AuthState> {
     }
   }
 
+  Future<void> requestMessagingRecovery() async {
+    final owner = state.user?.id;
+    final sync = _keyRegistrySync;
+    if (owner == null || sync == null) throw StateError('Sign in to continue');
+    await sync.requestMessagingRecovery(ownerUserId: owner);
+    if (!ref.mounted || state.user?.id != owner) {
+      sync.cancelMessagingRecovery();
+      throw StateError('The signed-in account changed');
+    }
+  }
+
+  Future<void> confirmMessagingRecovery(String code) async {
+    final owner = state.user?.id;
+    final sync = _keyRegistrySync;
+    if (owner == null || sync == null) throw StateError('Sign in to continue');
+    await sync.confirmMessagingRecovery(ownerUserId: owner, code: code);
+    if (!ref.mounted || state.user?.id != owner) return;
+    state = state.copyWith(
+        keyRegistrationStatus: KeyRegistrationStatus.ready,
+        keyRegistrationIssue: KeyRegistrationIssue.none);
+  }
+
+  void cancelMessagingRecovery() => _keyRegistrySync?.cancelMessagingRecovery();
+
   void _initPush() {
     _pushService ??= PushNotificationService(
       _apiService,
@@ -465,7 +489,13 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 
   Future<void> _performSignOut({required bool performServerCleanup}) async {
+    _keyRegistrySync?.cancelMessagingRecovery();
     if (performServerCleanup) {
+      // Revoke this session's registry before ending the session that proves
+      // ownership. A stale device's cleanup cannot revoke a newer transfer.
+      try {
+        await _keyRegistrySync?.resetKeys();
+      } catch (_) {}
       try {
         final refreshToken = await _secureStorage.getRefreshToken();
         if (refreshToken != null) {
@@ -474,9 +504,6 @@ class AuthNotifier extends Notifier<AuthState> {
       } catch (_) {
         // Best-effort server logout; continue clearing local state.
       }
-      try {
-        await _keyRegistrySync?.resetKeys();
-      } catch (_) {}
       try {
         await _pushService?.unregister();
       } catch (_) {}

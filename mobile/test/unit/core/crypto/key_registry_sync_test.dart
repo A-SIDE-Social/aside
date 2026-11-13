@@ -691,6 +691,127 @@ void main() {
     });
   });
 
+  group('explicit messaging recovery', () {
+    setUp(() {
+      when(() => api.requestMessagingRecovery(any()))
+          .thenAnswer((_) async => 'scoped-fixture-ticket');
+      when(() => api.confirmMessagingRecovery(any(),
+          ticket: any(named: 'ticket'),
+          code: any(named: 'code'))).thenAnswer((_) async {});
+    });
+
+    test('requires a matching saved owner and never resets private keys',
+        () async {
+      when(() => signal.keyOwner()).thenAnswer((_) async => 'another-account');
+      await expectLater(sync.requestMessagingRecovery(ownerUserId: 'owner'),
+          throwsA(isA<KeyRecoveryRequired>()));
+      verifyNever(() => api.requestMessagingRecovery(any()));
+      verifyNever(() => api.revokeDeviceKeys());
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test(
+        'a code request alone cannot replace keys; confirmation uses the exact bundle',
+        () async {
+      await sync.requestMessagingRecovery(ownerUserId: 'owner');
+      verifyNever(() => api.confirmMessagingRecovery(any(),
+          ticket: any(named: 'ticket'), code: any(named: 'code')));
+      await sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456');
+      final sent = verify(() => api.confirmMessagingRecovery(captureAny(),
+          ticket: 'scoped-fixture-ticket', code: '123456')).captured.single;
+      expect(sent, {..._fakeBundle().toJson(), 'owner_user_id': 'owner'});
+      verifyNever(() => signal.wipeKeys());
+      verifyNever(() => api.revokeDeviceKeys());
+    });
+
+    test(
+        'an interrupted confirmation retains its exact ticket and bundle for retry',
+        () async {
+      var attempts = 0;
+      when(() => api.confirmMessagingRecovery(any(),
+          ticket: any(named: 'ticket'),
+          code: any(named: 'code'))).thenAnswer((_) async {
+        if (++attempts == 1) throw StateError('interrupted fixture');
+      });
+      await sync.requestMessagingRecovery(ownerUserId: 'owner');
+      await expectLater(
+          sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456'),
+          throwsStateError);
+      await sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456');
+      expect(attempts, 2);
+      verify(() => signal.completePrekeyRecovery()).called(1);
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test(
+        'pending confirmation blocks background reconciliation and replenishment',
+        () async {
+      await sync.requestMessagingRecovery(ownerUserId: 'owner');
+      await expectLater(
+          sync.ensureKeysInitialized(ownerUserId: 'owner'), throwsStateError);
+      await expectLater(sync.replenishIfNeeded(), throwsStateError);
+      await expectLater(sync.rotateSignedPreKey(), throwsStateError);
+      sync.cancelMessagingRecovery();
+      await expectLater(
+          sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456'),
+          throwsA(isA<KeyRecoveryRequired>()));
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test(
+        'cancelling during a code request cannot leave a usable late confirmation',
+        () async {
+      final request = Completer<String>();
+      when(() => api.requestMessagingRecovery(any()))
+          .thenAnswer((_) => request.future);
+      final pending = sync.requestMessagingRecovery(ownerUserId: 'owner');
+      await Future<void>.delayed(Duration.zero);
+      sync.cancelMessagingRecovery();
+      request.complete('late-fixture-ticket');
+      await pending;
+      await expectLater(
+          sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456'),
+          throwsA(isA<KeyRecoveryRequired>()));
+      verifyNever(() => signal.wipeKeys());
+    });
+
+    test('account changes cannot use an earlier pending confirmation',
+        () async {
+      await sync.requestMessagingRecovery(ownerUserId: 'owner');
+      when(() => signal.keyOwner()).thenAnswer((_) async => 'another-account');
+      await expectLater(
+          sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456'),
+          throwsA(isA<KeyRecoveryRequired>()));
+      verifyNever(() => api.confirmMessagingRecovery(any(),
+          ticket: any(named: 'ticket'), code: any(named: 'code')));
+    });
+
+    test(
+        'deliberate logout drains an in-flight transfer before revocation and wipe',
+        () async {
+      final confirm = Completer<void>();
+      when(() => api.confirmMessagingRecovery(any(),
+          ticket: any(named: 'ticket'),
+          code: any(named: 'code'))).thenAnswer((_) => confirm.future);
+      when(() => api.revokeDeviceKeys()).thenAnswer((_) async {});
+      when(() => signal.wipeKeys()).thenAnswer((_) async {});
+      await sync.requestMessagingRecovery(ownerUserId: 'owner');
+      final transfer =
+          sync.confirmMessagingRecovery(ownerUserId: 'owner', code: '123456');
+      await Future<void>.delayed(Duration.zero);
+      final reset = sync.resetKeys();
+      verifyNever(() => api.revokeDeviceKeys());
+      confirm.complete();
+      await Future.wait([transfer, reset]);
+      verifyInOrder([
+        () => api.confirmMessagingRecovery(any(),
+            ticket: 'scoped-fixture-ticket', code: '123456'),
+        () => api.revokeDeviceKeys(),
+        () => signal.wipeKeys(),
+      ]);
+    });
+  });
+
   group('fetchPeerKeyBundle', () {
     test('passes through to ApiService', () async {
       final payload = {
