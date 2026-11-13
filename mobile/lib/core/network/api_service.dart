@@ -893,8 +893,23 @@ class ApiService {
   /// Upload or reconcile saved public keys. A different active identity remains
   /// a conflict; never automatically revoke it to make an upload succeed.
   Future<void> uploadDeviceKeys(Map<String, dynamic> bundleJson) async {
-    await _dio.post(ApiEndpoints.deviceKeysUpload,
-        data: bundleJson, options: Options(extra: {'sensitiveMedia': true}));
+    await _client.postForKeySession(ApiEndpoints.deviceKeysUpload, bundleJson);
+  }
+
+  Future<String> requestMessagingRecovery(Map<String, dynamic> bundle) async {
+    final response = await _client.postForKeySession(
+        '/v1/devices/keys/recovery/request', bundle);
+    final data = response.data;
+    if (data is! Map || data['ticket'] is! String) {
+      throw const FormatException('Invalid messaging recovery response');
+    }
+    return data['ticket'] as String;
+  }
+
+  Future<void> confirmMessagingRecovery(Map<String, dynamic> bundle,
+      {required String ticket, required String code}) async {
+    await _client.postForKeySession('/v1/devices/keys/recovery/confirm',
+        {...bundle, 'ticket': ticket, 'code': code});
   }
 
   Future<({int oneTimeFloor, int kyberFloor})> prekeyAllocation(
@@ -936,25 +951,20 @@ class ApiService {
     if (kyberPreKeys.isNotEmpty) {
       body['kyber_prekeys'] = kyberPreKeys;
     }
-    await _dio.post(ApiEndpoints.deviceKeysReplenish,
-        data: body, options: Options(extra: {'sensitiveMedia': true}));
+    await _client.postForKeySession(ApiEndpoints.deviceKeysReplenish, body);
   }
 
   /// Swaps the signed prekey. Called weekly.
   Future<void> rotateSignedPreKey(Map<String, dynamic> signedPreKeyJson) async {
-    await _dio.post(
-      ApiEndpoints.deviceKeysRotateSigned,
-      data: {'signed_prekey': signedPreKeyJson},
-    );
+    await _client.postForKeySession(ApiEndpoints.deviceKeysRotateSigned,
+        {'signed_prekey': signedPreKeyJson});
   }
 
   /// Marks the current key set revoked on the server. Client should
   /// pair with SignalClient.wipeKeys() for a full reset.
   Future<void> revokeDeviceKeys() async {
-    await _dio.post(
-      ApiEndpoints.deviceKeysRevoke,
-      options: Options(extra: {skipAuthRecoveryExtra: true}),
-    );
+    await _client.postForKeySession(ApiEndpoints.deviceKeysRevoke, {},
+        signingOut: true);
   }
 
   /// Fetches a peer's key bundle for session setup. Server atomically
@@ -963,6 +973,16 @@ class ApiService {
   Future<Map<String, dynamic>> getUserKeyBundle(String userId) async {
     final response = await _dio.get(ApiEndpoints.userKeyBundle(userId));
     return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<String> getUserKeyIdentity(String userId) async {
+    final response = await _dio.get('/v1/users/$userId/key-identity',
+        options: Options(extra: {'sensitiveMedia': true}));
+    final data = response.data;
+    if (data is! Map || data['identity_key_pub'] is! String) {
+      throw const FormatException('Invalid public identity response');
+    }
+    return data['identity_key_pub'] as String;
   }
 
   // ── E2EE DM attachments (Phase 1g) ──────────────────────────

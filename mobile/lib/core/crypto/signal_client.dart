@@ -616,12 +616,23 @@ class SignalClient {
   Future<StartSessionOutcome?> ensureSessionWithPeer(
     String ownUserId,
     String peerUserId,
-    Future<PeerKeyBundle> Function() fetchBundle,
-  ) async {
+    Future<PeerKeyBundle> Function() fetchBundle, {
+    Future<String> Function()? fetchIdentity,
+  }) async {
     await initialize();
     return _withPeerSessionLock(peerUserId, () async {
       final existing = await _storage.loadSession(peerUserId);
-      if (existing != null) return null;
+      if (existing != null) {
+        if (fetchIdentity == null) return null;
+        final current = base64.decode(await fetchIdentity());
+        if (current.length != 33) {
+          throw const FormatException('Invalid public identity');
+        }
+        final pinned = await _storage.loadPeerIdentityInfo(peerUserId);
+        if (pinned != null && _bytesEqual(pinned.identityPublic, current)) {
+          return null;
+        }
+      }
       final bundle = await fetchBundle();
       return _startSessionWithPeerUnlocked(ownUserId, peerUserId, bundle);
     });

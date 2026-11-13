@@ -467,16 +467,35 @@ class _ConversationDetailScreenState
     final outcome = await signal.ensureSessionWithPeer(ownId, peerId, () async {
       final bundleJson = await _fetchKeyBundle(peerId);
       return PeerKeyBundle.fromServerJson(bundleJson);
-    });
+    },
+        fetchIdentity: () =>
+            ref.read(apiServiceProvider).getUserKeyIdentity(peerId));
     if (outcome?.identityChanged == true) {
       await _refreshPeerIdentityBanner();
     }
     return outcome;
   }
 
+  bool _messagingReady() {
+    final id = _convId;
+    if (id != null &&
+        ref.read(conversationProvider(id)).value?.isE2ee == false) {
+      return true;
+    }
+    if (ref.read(authProvider).keyRegistrationStatus ==
+        KeyRegistrationStatus.ready) {
+      return true;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'Finish messaging setup from Messages before sending. Your draft has been kept.')));
+    return false;
+  }
+
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty || _sending) return;
+    if (!_messagingReady()) return;
 
     setState(() => _sending = true);
     _messageController.clear();
@@ -698,6 +717,7 @@ class _ConversationDetailScreenState
   /// encrypt for directs.
   Future<void> _sendImageAttachment() async {
     if (_sending) return;
+    if (!_messagingReady()) return;
     final convId = _convId;
     if (convId == null) return;
 
@@ -1934,6 +1954,14 @@ class _MessageBubble extends StatelessWidget {
                     ),
                   ),
                 ],
+                if (message.isEncryptedEnvelope &&
+                    message.body == null &&
+                    message.attachment == null)
+                  const Padding(
+                      padding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Text(
+                          'This encrypted message isn’t readable on this device.')),
                 if (message.body != null && message.body!.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.symmetric(

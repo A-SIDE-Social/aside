@@ -363,6 +363,17 @@ router.delete(
   }),
 );
 
+// Read the current public identity without consuming a prekey. Clients check
+// before sending so a saved ratchet cannot hide an explicit device change.
+router.get('/:id/key-identity', asyncHandler(async (req: any, res: any) => {
+  if (!await canFetchKeyBundle(req.user!.userId, req.params.id)) {
+    throw new AppError(403, 'A connection or shared conversation is required');
+  }
+  const row = (await query('SELECT identity_key_pub FROM device_keys WHERE user_id=$1 AND revoked_at IS NULL', [req.params.id])).rows[0];
+  if (!row) throw new AppError(404, 'No active key set for this user');
+  res.set('Cache-Control', 'private, no-store').json({ identity_key_pub: row.identity_key_pub.toString('base64') });
+}));
+
 // GET /:id/keybundle — E2EE key bundle for a peer (Phase 1c).
 //
 // Returns the target user's identity public key, current signed
@@ -392,6 +403,9 @@ router.get(
     try {
       await client.query('BEGIN');
 
+      // Keep identity and prekeys in the same registry generation while an
+      // explicit transfer or revoke waits. Concurrent peer reads can share it.
+      await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [targetId]);
       const keysResult = await client.query(
         `SELECT identity_key_pub,
                 signed_prekey_id, signed_prekey_pub, signed_prekey_sig

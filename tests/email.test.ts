@@ -39,6 +39,14 @@ test('sends once with a bounded SDK timeout and records delivery time', async ()
   expect(metric.values).toContainEqual(expect.objectContaining({ value: 1, labels: { stage: 'otp_delivery', outcome: 'ok' }, metricName: 'aside_operation_stage_seconds_count' }));
 });
 
+test('device-change email names the action and does not promise history transfer', async () => {
+  await sendOtpEmail('private@example.com', '987654', 'messaging-device-change');
+  const sent = mockSendEmail.mock.calls[0][0];
+  expect(sent.Subject).toContain('messaging device change');
+  expect(sent.TextBody).toContain('only if you chose to move');
+  expect(sent.TextBody).toContain('does not transfer old message history');
+});
+
 test.each([
   [401, 10, 503, 'email_auth_failure'],
   [422, 406, 422, 'email_recipient_rejected'],
@@ -89,6 +97,8 @@ test('development still uses the local OTP flow without making a provider reques
     await sendOtpEmail('private@example.com', '987654');
     expect(ServerClient).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private@example.com');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('987654');
   } finally { log.mockRestore(); }
 });
 

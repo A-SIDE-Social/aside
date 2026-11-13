@@ -2,11 +2,11 @@ import crypto from 'crypto';
 import { PoolClient } from 'pg';
 import { config } from '../config';
 import { getClient, query } from '../db/pool';
-import { OtpDeliveryError, sendOtpEmail } from '../email';
+import { OtpDeliveryError, sendOtpEmail, EmailOtpPurpose } from '../email';
 import { AppError } from '../middleware/errorHandler';
 
 /** Both mobile and admin login share the same per-address code and cooldown. */
-export async function requestEmailOtp(email: string): Promise<void> {
+export async function requestEmailOtp(email: string, purpose: EmailOtpPurpose = 'login'): Promise<void> {
   const isDev = config.nodeEnv === 'development' || config.nodeEnv === 'test';
   // A fixed reviewer code must never apply to arbitrary production addresses.
   const skipDelivery = !!config.devOtp && (isDev || config.devOtpAllowedEmails.includes(email));
@@ -30,9 +30,9 @@ export async function requestEmailOtp(email: string): Promise<void> {
       'rate_limited', 'otp_cooldown', recent[0].retry_after_seconds);
     await client.query('DELETE FROM email_otps WHERE email = $1', [email]);
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO email_otps (email, code_hash, expires_at, created_at)
-       VALUES ($1, $2, clock_timestamp() + INTERVAL '10 minutes', clock_timestamp()) RETURNING id`,
-      [email, codeHash],
+      `INSERT INTO email_otps (email, code_hash, expires_at, created_at, purpose)
+       VALUES ($1, $2, clock_timestamp() + INTERVAL '10 minutes', clock_timestamp(), $3) RETURNING id`,
+      [email, codeHash, purpose],
     );
     otpId = rows[0].id;
     await client.query('COMMIT');
@@ -47,7 +47,8 @@ export async function requestEmailOtp(email: string): Promise<void> {
 
   if (skipDelivery) return;
   try {
-    await sendOtpEmail(email, code);
+    if (purpose === 'login') await sendOtpEmail(email, code);
+    else await sendOtpEmail(email, code, purpose);
   } catch (error) {
     if (error instanceof OtpDeliveryError && error.definitelyRejected) {
       // Retain created_at to enforce the cooldown, but make this code unusable.
@@ -69,6 +70,7 @@ export async function verifyEmailOtp<T>(
   email: string,
   code: string,
   complete: (client: PoolClient) => Promise<T>,
+  purpose: EmailOtpPurpose = 'login',
 ): Promise<T> {
   const client = await getClient();
   let inTransaction = false;
@@ -77,8 +79,8 @@ export async function verifyEmailOtp<T>(
     inTransaction = true;
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('email-otp:' || $1::text, 0))", [email]);
     const { rows } = await client.query(
-      `SELECT * FROM email_otps WHERE email = $1 AND expires_at > clock_timestamp()
-       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [email],
+      `SELECT * FROM email_otps WHERE email = $1 AND purpose = $2 AND expires_at > clock_timestamp()
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [email, purpose],
     );
     const otp = rows[0];
     if (!otp) throw new AppError(400, 'Invalid or expired code', 'otp_invalid_or_expired', 'otp_invalid');
