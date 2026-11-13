@@ -6,7 +6,6 @@ import '../core/platform/app_group_channel.dart';
 import '../models/post.dart';
 import '../models/post_reaction.dart';
 import 'api_provider.dart';
-import 'auth_provider.dart';
 import 'feed_updates_provider.dart';
 
 /// Currently selected group filter for the feed. `null` means show all.
@@ -116,7 +115,7 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
           );
 
       // Cache latest friend's photo for iOS widget
-      _cacheWidgetImage(posts);
+      unawaited(AppGroupChannel.reloadWidgets());
     } catch (e, st) {
       if (ref.mounted && load.generation == _loadGeneration) {
         state = AsyncValue.error(e, st);
@@ -287,18 +286,6 @@ class FeedNotifier extends Notifier<AsyncValue<List<Post>>> {
     final current = state.value;
     if (current == null) return;
     state = AsyncValue.data(current.where((p) => p.id != postId).toList());
-  }
-
-  /// Cache the first friend's post for the iOS widget (skip own posts).
-  void _cacheWidgetImage(List<Post> posts) async {
-    // Get user ID from auth state or App Group container
-    String? currentUserId = ref.read(authProvider).user?.id;
-    currentUserId ??= await AppGroupChannel.getUserId();
-
-    final pick = pickWidgetImage(posts, currentUserId: currentUserId);
-    if (pick != null) {
-      AppGroupChannel.cacheWidgetImage(pick.imageUrl, pick.posterName);
-    }
   }
 
   /// Refresh the feed from scratch.

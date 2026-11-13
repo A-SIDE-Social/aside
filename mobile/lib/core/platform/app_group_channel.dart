@@ -48,15 +48,24 @@ class AppGroupChannel {
     }
   }
 
-  /// Cache the latest feed image and poster name for the widget.
-  static Future<void> cacheWidgetImage(
-      String imageUrl, String posterName) async {
+  /// Publish a complete account snapshot in one native write.
+  static Future<void> setWidgetSession(
+      {required String userId,
+      required String token,
+      required String baseURL}) async {
     if (!Platform.isIOS) return;
     try {
-      await _channel.invokeMethod('cacheWidgetImage', {
-        'imageUrl': imageUrl,
-        'posterName': posterName,
-      });
+      await _channel.invokeMethod('setWidgetSession',
+          {'userId': userId, 'token': token, 'baseURL': baseURL});
+    } catch (_) {}
+  }
+
+  static Future<void> syncWidgetSources(
+      String ownerId, List<Map<String, String>> sources) async {
+    if (!Platform.isIOS) return;
+    try {
+      await _channel.invokeMethod(
+          'syncWidgetSources', {'ownerId': ownerId, 'sources': sources});
     } catch (_) {}
   }
 

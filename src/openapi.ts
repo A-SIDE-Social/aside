@@ -753,6 +753,31 @@ export const openApiSpec = {
     },
 
     // ─── Feed ───────────────────────────────────────────────────────────
+    '/widgets/session': {
+      post: {
+        tags: ['Feed'], security: [{ BearerAuth: [] }],
+        summary: 'Create a read-only widget credential bound to the current login session',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['refresh_token'], properties: { refresh_token: { type: 'string' } } } } } },
+        responses: { '200': { description: 'Read-only token valid for up to 30 days, checked against the live session on every widget-photo request' }, '409': { description: 'Session rotated; retry with the newly saved credential' } },
+      },
+    },
+    '/feed/widget': {
+      get: {
+        tags: ['Feed'],
+        summary: 'Get one authorized photo or video thumbnail for a Home Screen widget',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'user_id', in: 'query' as const, schema: { type: 'string', format: 'uuid' }, description: 'One mutual connection; cannot be combined with group_id' },
+          { name: 'group_id', in: 'query' as const, schema: { type: 'string', format: 'uuid' }, description: 'One personal List owned by the caller; cannot be combined with user_id' },
+        ],
+        responses: {
+          '200': { description: 'A post with id, user_id, display_name, image_url and expires_at, or post: null. refresh_after_seconds is 1800. No-store; current audience, connection, expiry and history limits apply.' },
+          '400': { description: 'Invalid or conflicting selectors' },
+          '401': { description: 'Sign in again in the containing app' },
+          '404': { description: 'Source no longer available to this account' },
+        },
+      },
+    },
     '/feed': {
       get: {
         tags: ['Feed'],

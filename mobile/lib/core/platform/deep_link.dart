@@ -60,3 +60,33 @@ String? routeForNotificationData(Map<String, dynamic> data) {
       return null;
   }
 }
+
+/// Widget links contain an account binding so an old Home Screen image cannot
+/// silently open a different account's post after switching accounts.
+String? routeForWidgetUri(Uri uri, {required String? currentUserId}) {
+  if (uri.scheme != 'aside' ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasPort ||
+      uri.hasFragment) {
+    return null;
+  }
+  if (uri.host == 'widgets' && uri.path.isEmpty && !uri.hasQuery) {
+    return '/settings/widgets';
+  }
+  if (uri.host != 'post' ||
+      uri.pathSegments.length != 1 ||
+      uri.path != '/${uri.pathSegments.single}') {
+    return null;
+  }
+  final id = uri.pathSegments.single;
+  final uuid = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
+  if (!uuid.hasMatch(id) ||
+      currentUserId == null ||
+      uri.queryParametersAll.length != 1 ||
+      uri.queryParametersAll['account']?.length != 1 ||
+      uri.queryParameters['account'] != currentUserId) {
+    return null;
+  }
+  return '/post/$id?widget_account=$currentUserId';
+}

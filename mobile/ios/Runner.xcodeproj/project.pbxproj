@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A18000000000000000000001 /* WidgetState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18000000000000000000003 /* WidgetState.swift */; };
+		A18000000000000000000002 /* WidgetState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18000000000000000000003 /* WidgetState.swift */; };
 		09A2E30EE6EFEEFB2D159475 /* Pods_InstadamnWidgetExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA6ED9CFE59D02206B4437C0 /* Pods_InstadamnWidgetExtension.framework */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
@@ -80,6 +82,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A18000000000000000000014 /* Share.Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Flutter/Share.Debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		A18000000000000000000015 /* Share.Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Flutter/Share.Release.xcconfig; sourceTree = SOURCE_ROOT; };
+		A18000000000000000000016 /* Share.Profile.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Flutter/Share.Profile.xcconfig; sourceTree = SOURCE_ROOT; };
+		A18000000000000000000017 /* Widget.Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Flutter/Widget.Debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		A18000000000000000000018 /* Widget.Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Flutter/Widget.Release.xcconfig; sourceTree = SOURCE_ROOT; };
+		A18000000000000000000019 /* Widget.Profile.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Flutter/Widget.Profile.xcconfig; sourceTree = SOURCE_ROOT; };
+		A18000000000000000000003 /* WidgetState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared/Sources/WidgetCore/WidgetState.swift; sourceTree = SOURCE_ROOT; };
 		08B283618B422AEA47FCEFA4 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		0ABED6FA8CD23572E47A9E2B /* Pods-InstadamnWidgetExtension.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-InstadamnWidgetExtension.release.xcconfig"; path = "Target Support Files/Pods-InstadamnWidgetExtension/Pods-InstadamnWidgetExtension.release.xcconfig"; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
@@ -276,6 +285,7 @@
 			children = (
 				C22359D42F820E5900FEFA4C /* GoogleService-Info.plist */,
 				C22358072F81D3F400FEFA4C /* WidgetBridgeHandler.swift */,
+				A18000000000000000000003 /* WidgetState.swift */,
 				C2C0NTAC1000000000000002 /* ContactsHandler.swift */,
 				C2SPEECH1000000000000002 /* SpeechPlugin.swift */,
 				C2SCRSHOT1000000000000002 /* ScreenshotPlugin.swift */,
@@ -655,6 +665,7 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				C22358082F81D3F400FEFA4C /* WidgetBridgeHandler.swift in Sources */,
+				A18000000000000000000001 /* WidgetState.swift in Sources */,
 				C2C0NTAC1000000000000001 /* ContactsHandler.swift in Sources */,
 				C2SPEECH1000000000000001 /* SpeechPlugin.swift in Sources */,
 				C2SCRSHOT1000000000000001 /* ScreenshotPlugin.swift in Sources */,
@@ -672,6 +683,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A18000000000000000000002 /* WidgetState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1000,7 +1012,7 @@
 		};
 		C223575E2F81BDD700FEFA4C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 7B26BECB6231E883980BD5F4 /* Pods-com.lab1908.instadamn.ShareExtension.debug.xcconfig */;
+			baseConfigurationReference = A18000000000000000000014 /* Share.Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -1012,7 +1024,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CODE_SIGN_ENTITLEMENTS = com.lab1908.instadamn.ShareExtension/com.lab1908.instadamn.ShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = N9LK7NMEYZ;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -1027,7 +1039,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lab1908.instadamn.ShareExtension;
@@ -1046,7 +1058,7 @@
 		};
 		C223575F2F81BDD700FEFA4C /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 32CD38D0686801127AE2D30A /* Pods-com.lab1908.instadamn.ShareExtension.release.xcconfig */;
+			baseConfigurationReference = A18000000000000000000015 /* Share.Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -1058,7 +1070,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CODE_SIGN_ENTITLEMENTS = com.lab1908.instadamn.ShareExtension/com.lab1908.instadamn.ShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = N9LK7NMEYZ;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -1073,7 +1085,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lab1908.instadamn.ShareExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1089,7 +1101,7 @@
 		};
 		C22357602F81BDD700FEFA4C /* Profile */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = EFD07EE173C8B4F15DCB01D0 /* Pods-com.lab1908.instadamn.ShareExtension.profile.xcconfig */;
+			baseConfigurationReference = A18000000000000000000016 /* Share.Profile.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -1101,7 +1113,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CODE_SIGN_ENTITLEMENTS = com.lab1908.instadamn.ShareExtension/com.lab1908.instadamn.ShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = N9LK7NMEYZ;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -1116,7 +1128,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lab1908.instadamn.ShareExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1132,7 +1144,7 @@
 		};
 		C223577F2F81C04B00FEFA4C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 865FBBB6625C0E0FA8DF6BB8 /* Pods-InstadamnWidgetExtension.debug.xcconfig */;
+			baseConfigurationReference = A18000000000000000000017 /* Widget.Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1146,7 +1158,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CODE_SIGN_ENTITLEMENTS = InstadamnWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = N9LK7NMEYZ;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -1161,7 +1173,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lab1908.instadamn.InstadamnWidgetExtension;
@@ -1180,7 +1192,7 @@
 		};
 		C22357802F81C04B00FEFA4C /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 0ABED6FA8CD23572E47A9E2B /* Pods-InstadamnWidgetExtension.release.xcconfig */;
+			baseConfigurationReference = A18000000000000000000018 /* Widget.Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1194,7 +1206,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CODE_SIGN_ENTITLEMENTS = InstadamnWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = N9LK7NMEYZ;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -1209,7 +1221,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lab1908.instadamn.InstadamnWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1225,7 +1237,7 @@
 		};
 		C22357812F81C04B00FEFA4C /* Profile */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 613C34B59E058F7CA56FF8C7 /* Pods-InstadamnWidgetExtension.profile.xcconfig */;
+			baseConfigurationReference = A18000000000000000000019 /* Widget.Profile.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1239,7 +1251,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CODE_SIGN_ENTITLEMENTS = InstadamnWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = N9LK7NMEYZ;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -1254,7 +1266,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lab1908.instadamn.InstadamnWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";

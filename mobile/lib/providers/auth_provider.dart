@@ -277,6 +277,7 @@ class AuthNotifier extends Notifier<AuthState> {
       final refreshToken = await _secureStorage.getRefreshToken();
 
       if (token == null && refreshToken == null) {
+        await AppGroupChannel.clearToken();
         state = state.copyWith(status: AuthStatus.unauthenticated);
         return;
       }
@@ -291,6 +292,7 @@ class AuthNotifier extends Notifier<AuthState> {
       if (currentToken != null) {
         await AppGroupChannel.setToken(currentToken);
         await AppGroupChannel.setApiBaseUrl(Env.apiBaseUrl);
+        await AppGroupChannel.setUserId(user.id);
         await AppGroupChannel.reloadWidgets();
       }
 

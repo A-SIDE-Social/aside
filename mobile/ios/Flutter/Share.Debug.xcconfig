@@ -1,0 +1,2 @@
+#include? "../Pods/Target Support Files/Pods-com.lab1908.instadamn.ShareExtension/Pods-com.lab1908.instadamn.ShareExtension.debug.xcconfig"
+#include "Generated.xcconfig"

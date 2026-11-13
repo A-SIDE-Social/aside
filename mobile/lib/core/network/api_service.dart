@@ -384,6 +384,12 @@ class ApiService {
     return (response.data as Map).cast<String, dynamic>();
   }
 
+  Future<String> createWidgetSession(String refreshToken) async {
+    final response = await _dio
+        .post('/v1/widgets/session', data: {'refresh_token': refreshToken});
+    return response.data['token'] as String;
+  }
+
   // ---------------------------------------------------------------------------
   // Posts — backend wraps in { post: ... } or { posts: [...] }
   // ---------------------------------------------------------------------------

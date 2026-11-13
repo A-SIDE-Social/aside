@@ -13,6 +13,8 @@ import '../../widgets/widgets.dart';
 import '../../models/models.dart';
 import '../../providers/providers.dart';
 import '../../providers/feed_updates_provider.dart';
+import '../../providers/widget_sources_provider.dart';
+import '../widgets/widget_setup_prompt.dart';
 
 /// Bumped when the user re-taps the Home tab in the bottom nav while already
 /// on the feed — FeedScreen listens and animates the scroll view to the top.
@@ -232,6 +234,18 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                     error: (_, __) => const SizedBox.shrink(),
                   ),
                 ),
+
+                if (defaultTargetPlatform == TargetPlatform.iOS &&
+                    currentUser != null &&
+                    (ref
+                            .watch(widgetSourcesProvider)
+                            .value
+                            ?.any((source) => source['kind'] == 'friend') ??
+                        false))
+                  SliverToBoxAdapter(
+                      child: WidgetSetupPrompt(
+                          key: ValueKey('widget-setup-${currentUser.id}'),
+                          userId: currentUser.id)),
 
                 // Feed content
                 feedState.when(

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/config/app_colors.dart';
@@ -93,14 +94,18 @@ class _WelcomeSheet extends StatelessWidget {
               ),
               const SizedBox(height: 12),
 
-              // Home screen widget card (instructional, no button)
-              _WelcomeCard(
-                icon: Icons.widgets_outlined,
-                title: _kWidgetCardTitle,
-                body:
-                    "Pin your friends' latest photos to your home screen. Long-press "
-                    "your home screen \u2192 tap +, search for '${Env.appName}', then pick a size.",
-              ),
+              if (defaultTargetPlatform == TargetPlatform.iOS)
+                _WelcomeCard(
+                  icon: Icons.widgets_outlined,
+                  title: _kWidgetCardTitle,
+                  body:
+                      'Once you’ve connected with a friend, put their photos on your Home Screen. Each widget can show a different friend or List.',
+                  button: 'Widget setup',
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    context.push('/settings/widgets');
+                  },
+                ),
               const SizedBox(height: 20),
 
               // Dismiss

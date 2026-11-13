@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/config/app_theme.dart';
+import 'features/widgets/widget_setup_screen.dart';
+import 'providers/widget_sources_provider.dart';
 import 'core/platform/deep_link.dart';
 import 'core/platform/pending_deep_link_listener.dart';
 import 'core/platform/screenshot_service.dart';
@@ -166,6 +168,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         return authState.isNewRegistration ? '/onboarding/contacts' : '/';
       }
 
+      final widgetAccount = state.uri.queryParameters['widget_account'];
+      if (status == AuthStatus.authenticated &&
+          widgetAccount != null &&
+          widgetAccount != authState.user?.id) {
+        return '/';
+      }
+
       // Allow onboarding screens for authenticated users
       if (state.matchedLocation.startsWith('/onboarding')) {
         return status == AuthStatus.authenticated ? null : '/sign-in';
@@ -185,6 +194,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/onboarding/contacts',
         builder: (context, state) =>
             _constrained(const OnboardingContactsScreen()),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/settings/widgets',
+        builder: (context, state) => _constrained(const WidgetSetupScreen()),
       ),
       GoRoute(
         parentNavigatorKey: _rootNavigatorKey,
@@ -437,8 +451,12 @@ class _AsideAppState extends ConsumerState<AsideApp>
     // — same channel the FCM push handler uses, so the warm-listen +
     // cold-start drain logic below works for URL taps too.
     _universalLinkService = UniversalLinkService(
+      currentUserId: () {
+        final auth = ref.read(authProvider);
+        return auth.status == AuthStatus.authenticated ? auth.user?.id : null;
+      },
       onDeepLink: (route) {
-        debugPrint('[deep_link] universal link → $route');
+        debugPrint('[deep_link] received');
         ref.read(pendingDeepLinkProvider.notifier).set(route);
       },
     );
@@ -468,6 +486,7 @@ class _AsideAppState extends ConsumerState<AsideApp>
         final last = _lastFeedRefresh;
         if (last == null || now.difference(last) >= _feedRefreshInterval) {
           _lastFeedRefresh = now;
+          ref.invalidate(groupsWithMembersProvider);
           ref.read(feedNotifierProvider.notifier).refresh();
         }
 
@@ -518,6 +537,12 @@ class _AsideAppState extends ConsumerState<AsideApp>
     // Keep the socket listener alive while any screen is visible.
     ref.watch(feedUpdatesProvider);
     final authStatus = ref.watch(authProvider.select((s) => s.status));
+    if (authStatus == AuthStatus.authenticated) {
+      ref.watch(widgetSourcesProvider);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _universalLinkService?.drainWidgetLink();
+      });
+    }
 
     // While auth is resolving on cold start, show the splash above the router.
     // Mounting MaterialApp.router only after auth resolves means the router's

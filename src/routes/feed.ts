@@ -11,6 +11,60 @@ type FeedStage = Extract<typeof performanceStages[number], `feed_${string}`>;
 const feedQuery = (stage: FeedStage, ...args: Parameters<typeof query>) =>
   measureStage(stage, () => query(...args));
 
+// A widget needs one authorized image, without loading comments or reactions.
+// Recheck membership, audience, expiry and the history window on every refresh.
+export const widgetPhotoHandler = asyncHandler(async (req: any, res: any) => {
+  const viewer = req.user!.userId;
+  const friend = req.query.user_id ?? null;
+  const list = req.query.group_id ?? null;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if ((friend !== null && (typeof friend !== 'string' || !uuid.test(friend))) ||
+      (list !== null && (typeof list !== 'string' || !uuid.test(list))) ||
+      (friend !== null && list !== null)) throw new AppError(400, 'Choose one friend or List');
+  res.set('Cache-Control', 'private, no-store');
+  if (list) {
+    const owned = await query('SELECT id FROM groups WHERE id = $1 AND user_id = $2', [list, viewer]);
+    if (!owned.rows.length) throw new AppError(404, 'List not found');
+  }
+  if (friend) {
+    const connected = await query(`SELECT 1 FROM follows a JOIN follows b
+      ON a.follower_id = b.followee_id AND a.followee_id = b.follower_id
+      WHERE a.follower_id = $1 AND a.followee_id = $2`, [viewer, friend]);
+    if (!connected.rows.length || friend === viewer) throw new AppError(404, 'Friend not found');
+  }
+  const { feedHistoryDays } = getPlanLimits(await getUserSubscriptionStatus(viewer));
+  const { rows } = await query(`SELECT p.id, p.user_id, u.display_name, p.created_at, p.expires_at,
+      image.image_key
+    FROM posts p JOIN users u ON u.id = p.user_id
+    JOIN LATERAL (
+      SELECT CASE WHEN m.media_type = 'photo' THEN COALESCE(NULLIF(m.thumbnail_url, ''), m.media_url) ELSE m.thumbnail_url END AS image_key
+      FROM post_media m WHERE m.post_id = p.id
+        AND ((m.media_type = 'photo' AND m.media_url <> '') OR (m.media_type = 'video' AND NULLIF(m.thumbnail_url, '') IS NOT NULL))
+      ORDER BY (m.media_type = 'photo') DESC, m.position ASC LIMIT 1
+    ) image ON TRUE
+    WHERE p.user_id != $1 AND p.deleted_at IS NULL AND u.deleted_at IS NULL
+      AND (p.expires_at IS NULL OR p.expires_at > NOW())
+      AND ($2::uuid IS NULL OR p.user_id = $2)
+      AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM group_members gm
+        WHERE gm.group_id = $3 AND gm.member_user_id = p.user_id))
+      AND ($4::int IS NULL OR p.created_at > NOW() - make_interval(days => $4))
+      AND EXISTS (SELECT 1 FROM follows a JOIN follows b
+        ON a.follower_id = b.followee_id AND a.followee_id = b.follower_id
+        WHERE a.follower_id = $1 AND a.followee_id = p.user_id)
+      AND ${postAudiencePredicate('p', '$1')}
+    ORDER BY p.created_at DESC, p.id DESC LIMIT 1`, [viewer, friend, list, feedHistoryDays]);
+  const row = rows[0];
+  const historyExpiry = row && feedHistoryDays !== null
+    ? new Date(new Date(row.created_at).getTime() + feedHistoryDays * 86400000) : null;
+  const displayExpiry = row?.expires_at && historyExpiry
+    ? new Date(Math.min(new Date(row.expires_at).getTime(), historyExpiry.getTime()))
+    : row?.expires_at ?? historyExpiry;
+  res.json({ post: row ? {
+    id: row.id, user_id: row.user_id, display_name: row.display_name,
+    image_url: resolveMediaUrl(row.image_key, req), expires_at: displayExpiry,
+  } : null, refresh_after_seconds: 1800 });
+});
+
 // GET / - Chronological feed from mutual follows
 router.get(
   '/',
